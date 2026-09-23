@@ -1,0 +1,49 @@
+services:
+  signhere:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-3000}:3000"
+    environment:
+      BASE_URL: ${BASE_URL:-http://localhost:3000}
+      DATA_DIR: /data
+      NODE_ENV: production
+      TRUST_PROXY: ${TRUST_PROXY:-}
+      DATABASE_URL: postgresql://signhere:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/signhere
+    volumes:
+      - signhere-data:/data
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 768m
+    cpus: 1.5
+    pids_limit: 128
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: signhere
+      POSTGRES_DB: signhere
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U signhere -d signhere"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  signhere-data:
+  postgres-data:

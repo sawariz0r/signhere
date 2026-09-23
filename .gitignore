@@ -1,0 +1,12 @@
+node_modules/
+dist/
+data/
+.env
+*.log
+.test-artifacts/
+backups/
+coverage/
+*.tsbuildinfo
+.local/
+output/
+tmp/

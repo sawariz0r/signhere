@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Schibsted+Grotesk:wght@400;500;600;700;800&amp;family=JetBrains+Mono:wght@400;500&amp;display=swap" rel="stylesheet">
+<style>
+html,body{margin:0;background:#f6f7f9;color:#0e1116;font-family:'Schibsted Grotesk',system-ui,sans-serif;-webkit-font-smoothing:antialiased}
+*{box-sizing:border-box}
+button,input{font-family:inherit;color:inherit}
+a{color:#0e1116;text-underline-offset:3px}
+a:hover{color:#5b626d}
+@keyframes shIn{from{opacity:0;transform:translateY(10px)}to{opacity:1;transform:none}}
+@media print{[data-noprint]{display:none!important}body{background:#fff}}
+</style>
+</helmet>
+<div style="min-height:100vh">
+
+<sc-if value="{{ isSignup }}" hint-placeholder-val="{{ true }}">
+<div data-screen-label="01 Skapa konto" style="min-height:100vh;display:flex;flex-direction:column">
+  <div style="padding:22px 28px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+    <div style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:19px;letter-spacing:-0.03em"><span style="width:22px;height:22px;border-radius:6px;background:#0e1116;display:grid;place-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#fff"></span></span><span>signhere<span style="color:#6b727d;font-weight:500">.se</span></span></div>
+    <button onClick="{{ openPublicVerify }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer;text-decoration:underline;text-underline-offset:3px">Verifiera ett dokument</button>
+  </div>
+  <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:24px 20px 96px">
+    <div style="width:100%;max-width:400px">
+      <sc-if value="{{ isSignupStep1 }}" hint-placeholder-val="{{ true }}">
+        <form onSubmit="{{ submitSignup }}" style="display:flex;flex-direction:column;gap:16px">
+          <div style="font-size:13px;font-weight:600;color:#5b626d">Steg 1 av 2</div>
+          <div>
+            <h1 style="margin:0 0 8px;font-size:40px;letter-spacing:-0.04em;line-height:1.02;font-weight:700">Skapa konto</h1>
+            <p style="margin:0 0 16px;color:#5b626d;font-size:16px;line-height:1.5">Skicka ditt första avtal för signering på en minut.</p>
+          </div>
+          <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Namn</span><input value="{{ form.name }}" onChange="{{ onName }}" placeholder="För- och efternamn" autoComplete="name" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"><span style="display:block;color:oklch(0.52 0.18 25);font-size:13px;padding-top:4px">{{ err.name }}</span></label>
+          <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">E-post</span><input value="{{ form.email }}" onChange="{{ onEmail }}" placeholder="namn@foretag.se" type="email" autoComplete="email" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"><span style="display:block;color:oklch(0.52 0.18 25);font-size:13px;padding-top:4px">{{ err.email }}</span></label>
+          <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Lösenord</span><input value="{{ form.password }}" onChange="{{ onPassword }}" placeholder="Minst 8 tecken" type="password" autoComplete="new-password" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"><span style="display:block;color:oklch(0.52 0.18 25);font-size:13px;padding-top:4px">{{ err.password }}</span></label>
+          <button type="submit" style="height:48px;padding:0 20px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Fortsätt</button>
+        </form>
+      </sc-if>
+      <sc-if value="{{ isSignupStep2 }}" hint-placeholder-val="{{ false }}">
+        <form onSubmit="{{ submitTeam }}" style="display:flex;flex-direction:column;gap:16px">
+          <div style="font-size:13px;font-weight:600;color:#5b626d">Steg 2 av 2</div>
+          <div>
+            <h1 style="margin:0 0 8px;font-size:40px;letter-spacing:-0.04em;line-height:1.02;font-weight:700">Ditt team</h1>
+            <p style="margin:0 0 16px;color:#5b626d;font-size:16px;line-height:1.5">Vad heter företaget eller teamet?</p>
+          </div>
+          <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Teamnamn</span><input value="{{ form.team }}" onChange="{{ onTeam }}" placeholder="t.ex. Lind &amp; Co AB" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"><span style="display:block;color:oklch(0.52 0.18 25);font-size:13px;padding-top:4px">{{ err.team }}</span></label>
+          <button type="submit" style="height:48px;padding:0 20px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Skapa team</button>
+          <button type="button" onClick="{{ backSignup }}" style="border:0;background:none;padding:4px;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer">Tillbaka</button>
+        </form>
+      </sc-if>
+    </div>
+  </div>
+</div>
+</sc-if>
+
+<sc-if value="{{ isApp }}" hint-placeholder-val="{{ false }}">
+<header data-noprint style="position:sticky;top:0;z-index:10;background:rgba(246,247,249,0.86);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid #e3e6ea">
+  <div style="max-width:1080px;margin:0 auto;padding:0 20px;height:62px;display:flex;align-items:center;gap:24px">
+    <div style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:18px;letter-spacing:-0.03em;flex-shrink:0"><span style="width:22px;height:22px;border-radius:6px;background:#0e1116;display:grid;place-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#fff"></span></span><span>signhere</span></div>
+    <nav style="display:flex;gap:2px;min-width:0;overflow-x:auto">
+      <sc-for list="{{ navItems }}" as="n" hint-placeholder-count="3">
+        <button onClick="{{ n.go }}" style="height:36px;padding:0 12px;border:0;border-radius:8px;background:{{ n.bg }};color:{{ n.color }};font-size:14px;font-weight:600;cursor:pointer;white-space:nowrap" style-hover="color:#0e1116">{{ n.label }}</button>
+      </sc-for>
+    </nav>
+    <div style="margin-left:auto;display:flex;align-items:center;gap:10px;flex-shrink:0">
+      <span style="font-size:13px;font-weight:500;color:#5b626d">{{ teamName }}</span>
+      <span style="width:32px;height:32px;border-radius:50%;background:#0e1116;color:#fff;display:grid;place-items:center;font-size:12px;font-weight:700">{{ userInitials }}</span>
+    </div>
+  </div>
+</header>
+</sc-if>
+
+<sc-if value="{{ isPublic }}" hint-placeholder-val="{{ false }}">
+<header style="border-bottom:1px solid #e3e6ea">
+  <div style="max-width:1080px;margin:0 auto;padding:0 20px;height:62px;display:flex;align-items:center;justify-content:space-between;gap:16px">
+    <div style="display:flex;align-items:center;gap:9px;font-weight:700;font-size:18px;letter-spacing:-0.03em"><span style="width:22px;height:22px;border-radius:6px;background:#0e1116;display:grid;place-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#fff"></span></span><span>signhere<span style="color:#6b727d;font-weight:500">.se</span></span></div>
+    <button onClick="{{ leavePublic }}" style="height:36px;padding:0 14px;border:1px solid #d9dde2;border-radius:8px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">{{ leavePublicLabel }}</button>
+  </div>
+</header>
+</sc-if>
+
+<sc-if value="{{ showMain }}" hint-placeholder-val="{{ false }}">
+<main style="max-width:1080px;margin:0 auto;padding:40px 20px 96px">
+
+  <sc-if value="{{ isDocs }}" hint-placeholder-val="{{ true }}">
+  <div data-screen-label="02 Dokument">
+    <div style="display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:22px">
+      <h1 style="margin:0;font-size:36px;font-weight:700;letter-spacing:-0.04em;line-height:1">Dokument</h1>
+      <button onClick="{{ newDoc }}" style="height:44px;padding:0 18px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:8px" style-hover="background:#2a3039"><span style="font-size:20px;line-height:1;font-weight:400">+</span>Nytt dokument</button>
+    </div>
+    <sc-if value="{{ hasDocs }}" hint-placeholder-val="{{ true }}">
+      <div style="display:flex;gap:6px;margin-bottom:14px;flex-wrap:wrap">
+        <sc-for list="{{ filters }}" as="f" hint-placeholder-count="3">
+          <button onClick="{{ f.go }}" style="height:32px;padding:0 12px;border-radius:999px;border:1px solid {{ f.border }};background:{{ f.bg }};color:{{ f.color }};font-size:13px;font-weight:600;cursor:pointer;display:flex;align-items:center;gap:6px">{{ f.label }}<span style="opacity:0.6;font-weight:500">{{ f.count }}</span></button>
+        </sc-for>
+      </div>
+      <div style="background:#e9ecef;border:1px solid #e3e6ea;border-radius:16px;overflow:hidden;display:flex;flex-direction:column;gap:1px">
+        <sc-for list="{{ visibleDocs }}" as="d" hint-placeholder-count="3">
+          <button onClick="{{ d.open }}" style="display:flex;width:100%;align-items:center;gap:16px;padding:16px 20px;border:0;background:#fff;text-align:left;cursor:pointer" style-hover="background:#fafbfc">
+            <span style="width:34px;height:42px;border-radius:5px;border:1px solid #d9dde2;display:flex;align-items:flex-end;justify-content:center;padding-bottom:5px;font-family:'JetBrains Mono',monospace;font-size:8px;font-weight:500;color:#5b626d;flex-shrink:0;background:#fff">PDF</span>
+            <span style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
+              <span style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.title }}</span>
+              <span style="font-size:13px;color:#5b626d;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ d.toNames }}</span>
+            </span>
+            <span style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600;white-space:nowrap"><span style="width:8px;height:8px;border-radius:50%;background:{{ d.dotColor }}"></span>{{ d.statusLabel }}</span>
+            <span style="font-size:13px;color:#5b626d;white-space:nowrap;min-width:84px;text-align:right">{{ d.dateLabel }}</span>
+          </button>
+        </sc-for>
+        <sc-if value="{{ noVisible }}" hint-placeholder-val="{{ false }}">
+          <div style="background:#fff;padding:40px 20px;text-align:center;color:#5b626d;font-size:14px">Inga dokument här.</div>
+        </sc-if>
+      </div>
+    </sc-if>
+    <sc-if value="{{ isEmpty }}" hint-placeholder-val="{{ false }}">
+      <button onClick="{{ newDoc }}" style="width:100%;border:1.5px dashed #c4cad1;border-radius:18px;background:#fff;padding:72px 24px;display:flex;flex-direction:column;align-items:center;gap:14px;cursor:pointer" style-hover="border-color:#0e1116">
+        <span style="width:56px;height:56px;border-radius:50%;background:#0e1116;color:#fff;display:grid;place-items:center;font-size:28px;font-weight:300">+</span>
+        <span style="font-size:20px;font-weight:700;letter-spacing:-0.02em">Skicka ditt första avtal</span>
+        <span style="font-size:15px;color:#5b626d">Ladda upp en PDF så är du igång.</span>
+      </button>
+    </sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isNew }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="03 Nytt dokument" style="max-width:640px;margin:0 auto">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:28px;flex-wrap:wrap">
+      <h1 style="margin:0;font-size:32px;font-weight:700;letter-spacing:-0.04em;line-height:1">Nytt dokument</h1>
+      <button onClick="{{ cancelNew }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer">{{ cancelLabel }}</button>
+    </div>
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:20px">
+      <sc-for list="{{ stepItems }}" as="st" hint-placeholder-count="3">
+        <div style="display:flex;align-items:center;gap:8px;flex:1;min-width:0">
+          <span style="width:24px;height:24px;border-radius:50%;background:{{ st.bg }};color:{{ st.color }};border:1px solid {{ st.border }};display:grid;place-items:center;font-size:12px;font-weight:700;flex-shrink:0">{{ st.mark }}</span>
+          <span style="font-size:14px;font-weight:600;color:{{ st.labelColor }};white-space:nowrap">{{ st.label }}</span>
+          <span style="flex:1;height:1px;background:#e3e6ea;min-width:8px"></span>
+        </div>
+      </sc-for>
+    </div>
+
+    <div style="background:#fff;border:1px solid #e3e6ea;border-radius:18px;padding:24px">
+      <input type="file" accept="application/pdf,.pdf" ref="{{ fileRef }}" onChange="{{ onFile }}" style="display:none">
+
+      <sc-if value="{{ stepUpload }}" hint-placeholder-val="{{ true }}">
+        <sc-if value="{{ noFile }}" hint-placeholder-val="{{ true }}">
+          <div onClick="{{ pickFile }}" onDragOver="{{ onDragOver }}" onDragLeave="{{ onDragLeave }}" onDrop="{{ onDrop }}" style="border:1.5px dashed {{ dropBorder }};background:{{ dropBg }};border-radius:14px;padding:64px 24px;display:flex;flex-direction:column;align-items:center;gap:12px;cursor:pointer;text-align:center" style-hover="border-color:#0e1116">
+            <span style="width:52px;height:52px;border-radius:50%;background:#0e1116;color:#fff;display:grid;place-items:center;font-size:26px;font-weight:300">+</span>
+            <span style="font-size:18px;font-weight:700;letter-spacing:-0.02em">Släpp din PDF här</span>
+            <span style="font-size:14px;color:#5b626d">eller klicka för att välja fil</span>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:14px;gap:12px;flex-wrap:wrap">
+            <span style="font-size:13px;color:oklch(0.52 0.18 25)">{{ uploadError }}</span>
+            <button onClick="{{ useSample }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer;text-decoration:underline;text-underline-offset:3px">Använd exempelfil</button>
+          </div>
+        </sc-if>
+        <sc-if value="{{ hasFile }}" hint-placeholder-val="{{ false }}">
+          <div style="display:flex;flex-direction:column;gap:20px">
+            <div style="display:flex;align-items:center;gap:14px;padding:14px;border:1px solid #e3e6ea;border-radius:12px;background:#fafbfc">
+              <span style="width:38px;height:48px;border-radius:5px;border:1px solid #d9dde2;display:flex;align-items:flex-end;justify-content:center;padding-bottom:6px;font-family:'JetBrains Mono',monospace;font-size:9px;font-weight:500;color:#5b626d;flex-shrink:0;background:#fff">PDF</span>
+              <div style="flex:1;min-width:0">
+                <div style="font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ draftFile.name }}</div>
+                <div style="font-size:13px;color:#5b626d;margin-top:2px">{{ fileMeta }}</div>
+              </div>
+              <button onClick="{{ clearFile }}" style="height:34px;padding:0 12px;border:1px solid #d9dde2;border-radius:8px;background:#fff;font-size:13px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Byt</button>
+            </div>
+            <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Titel</span><input value="{{ draftTitle }}" onChange="{{ onTitle }}" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"></label>
+            <div style="display:flex;align-items:center;gap:10px;font-size:14px;color:#5b626d"><span style="width:18px;height:18px;border-radius:50%;background:#eef0f2;display:grid;place-items:center;font-size:11px;color:#0e1116;font-weight:700;flex-shrink:0">✓</span>En signatursida läggs till automatiskt sist i dokumentet.</div>
+            <div style="display:flex;justify-content:flex-end"><button onClick="{{ toRecipients }}" style="height:46px;padding:0 22px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Nästa</button></div>
+          </div>
+        </sc-if>
+      </sc-if>
+
+      <sc-if value="{{ stepRecipients }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;flex-direction:column;gap:18px">
+          <div>
+            <h2 style="margin:0 0 4px;font-size:20px;font-weight:700;letter-spacing:-0.02em">Vem ska signera?</h2>
+            <p style="margin:0;font-size:14px;color:#5b626d">Alla signerar samtidigt.</p>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <sc-for list="{{ draftRecipients }}" as="r" hint-placeholder-count="1">
+              <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                <input value="{{ r.name }}" onChange="{{ r.onName }}" placeholder="Namn" style="flex:1 1 160px;min-width:0;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)">
+                <input value="{{ r.email }}" onChange="{{ r.onEmail }}" placeholder="E-post" type="email" style="flex:1.4 1 200px;min-width:0;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)">
+                <button onClick="{{ r.onRemove }}" title="Ta bort" style="width:40px;height:46px;border:0;border-radius:10px;background:none;color:#5b626d;font-size:20px;cursor:pointer" style-hover="background:#f1f3f5;color:#0e1116">×</button>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+            <button onClick="{{ addRecipient }}" style="height:38px;padding:0 14px;border:1px solid #d9dde2;border-radius:9px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">+ Lägg till mottagare</button>
+            <label style="display:flex;align-items:center;gap:8px;font-size:14px;cursor:pointer"><input type="checkbox" checked="{{ includeMe }}" onChange="{{ toggleMe }}" style="accent-color:#0e1116;width:18px;height:18px;margin:0">Jag ska också signera</label>
+          </div>
+          <span style="font-size:13px;color:oklch(0.52 0.18 25)">{{ recipError }}</span>
+          <div style="display:flex;justify-content:space-between;gap:10px;border-top:1px solid #eef0f2;padding-top:18px">
+            <button onClick="{{ toUpload }}" style="height:46px;padding:0 18px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Tillbaka</button>
+            <button onClick="{{ send }}" style="height:46px;padding:0 22px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Skicka för signering</button>
+          </div>
+        </div>
+      </sc-if>
+
+      <sc-if value="{{ stepShare }}" hint-placeholder-val="{{ false }}">
+        <div data-screen-label="04 Dela länk" style="display:flex;flex-direction:column;gap:20px">
+          <div style="display:flex;align-items:center;gap:14px">
+            <span style="width:44px;height:44px;border-radius:50%;background:#0e1116;color:#fff;display:grid;place-items:center;font-size:20px;flex-shrink:0">✓</span>
+            <div>
+              <h2 style="margin:0 0 2px;font-size:22px;font-weight:700;letter-spacing:-0.02em">Redo att signeras</h2>
+              <p style="margin:0;font-size:14px;color:#5b626d">Dela den personliga länken med varje mottagare.</p>
+            </div>
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <sc-for list="{{ cur.recipientsVM }}" as="r" hint-placeholder-count="2">
+              <div style="border:1px solid #e3e6ea;border-radius:12px;padding:14px;display:flex;flex-direction:column;gap:10px">
+                <div style="display:flex;align-items:center;gap:10px">
+                  <span style="width:30px;height:30px;border-radius:50%;background:#eef0f2;display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0">{{ r.initials }}</span>
+                  <div style="min-width:0"><div style="font-size:14px;font-weight:600">{{ r.name }}</div><div style="font-size:13px;color:#5b626d;overflow:hidden;text-overflow:ellipsis">{{ r.email }}</div></div>
+                </div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <div style="flex:1 1 220px;min-width:0;height:40px;padding:0 12px;border-radius:9px;background:#f6f7f9;display:flex;align-items:center;font-family:'JetBrains Mono',monospace;font-size:12.5px;color:#3a4049;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{ r.link }}</div>
+                  <button onClick="{{ r.onCopy }}" style="height:40px;padding:0 14px;border:0;border-radius:9px;background:#0e1116;color:#fff;font-size:13px;font-weight:600;cursor:pointer;min-width:92px" style-hover="background:#2a3039">{{ r.copyLabel }}</button>
+                  <button onClick="{{ r.onOpen }}" style="height:40px;padding:0 14px;border:1px solid #d9dde2;border-radius:9px;background:#fff;font-size:13px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Öppna</button>
+                </div>
+              </div>
+            </sc-for>
+          </div>
+          <div style="display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;border-top:1px solid #eef0f2;padding-top:18px">
+            <button disabled style="height:46px;padding:0 16px;border:1px solid #e3e6ea;border-radius:10px;background:#fafbfc;font-size:14px;font-weight:600;color:#6b727d;cursor:not-allowed;display:flex;align-items:center;gap:8px">Skicka via e-post<span style="font-size:11px;font-weight:700;padding:3px 7px;border-radius:999px;background:#eef0f2;color:#3a4049">SNART</span></button>
+            <button onClick="{{ goToDoc }}" style="height:46px;padding:0 22px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:15px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Till dokumentet</button>
+          </div>
+        </div>
+      </sc-if>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isDoc }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="05 Dokument-detalj">
+    <button onClick="{{ backToDocs }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer" style-hover="color:#0e1116">← Dokument</button>
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap;margin:18px 0 28px">
+      <div style="min-width:0;display:flex;flex-direction:column;gap:10px">
+        <span style="display:flex;align-items:center;gap:7px;font-size:13px;font-weight:600"><span style="width:8px;height:8px;border-radius:50%;background:{{ cur.dotColor }}"></span>{{ cur.statusLabel }}</span>
+        <h1 style="margin:0;font-size:34px;font-weight:700;letter-spacing:-0.04em;line-height:1.05;text-wrap:pretty">{{ cur.title }}</h1>
+        <div style="font-size:13px;color:#5b626d;display:flex;gap:6px;flex-wrap:wrap"><span style="font-family:'JetBrains Mono',monospace">{{ cur.id }}</span><span>·</span><span>{{ cur.pagesLabel }}</span><span>·</span><span>Skapad {{ cur.dateLabel }}</span></div>
+      </div>
+      <sc-if value="{{ cur.done }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;gap:8px">
+          <button onClick="{{ openCert }}" style="height:44px;padding:0 16px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Verifikat</button>
+          <button onClick="{{ download }}" style="height:44px;padding:0 18px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Ladda ner PDF</button>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));gap:20px;align-items:start">
+      <section style="background:#fff;border:1px solid #e3e6ea;border-radius:16px;padding:20px">
+        <h2 style="margin:0 0 16px;font-size:15px;font-weight:700">Förhandsvisning</h2>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(92px,1fr));gap:14px">
+          <sc-for list="{{ cur.pagesArr }}" as="p" hint-placeholder-count="3">
+            <div>
+              <div style="aspect-ratio:1/1.414;background:#fff;border:1px solid #e3e6ea;border-radius:5px;padding:14px 12px;display:flex;flex-direction:column;gap:5px;box-shadow:0 1px 3px rgba(14,17,22,0.05)">
+                <div style="height:5px;width:60%;background:#c9ced4;border-radius:2px;margin-bottom:4px"></div>
+                <div style="height:3px;width:100%;background:#e3e6ea;border-radius:2px"></div>
+                <div style="height:3px;width:92%;background:#e3e6ea;border-radius:2px"></div>
+                <div style="height:3px;width:97%;background:#e3e6ea;border-radius:2px"></div>
+                <div style="height:3px;width:70%;background:#e3e6ea;border-radius:2px;margin-bottom:4px"></div>
+                <div style="height:3px;width:100%;background:#e3e6ea;border-radius:2px"></div>
+                <div style="height:3px;width:88%;background:#e3e6ea;border-radius:2px"></div>
+                <div style="height:3px;width:95%;background:#e3e6ea;border-radius:2px"></div>
+              </div>
+              <div style="font-size:12px;color:#5b626d;margin-top:6px;text-align:center">{{ p.n }}</div>
+            </div>
+          </sc-for>
+          <div>
+            <div style="aspect-ratio:1/1.414;background:#fff;border:1.5px solid #0e1116;border-radius:5px;padding:12px 10px;display:flex;flex-direction:column;gap:6px">
+              <div style="font-size:7px;font-weight:700;letter-spacing:0.06em">SIGNATURER</div>
+              <sc-for list="{{ cur.recipientsVM }}" as="r" hint-placeholder-count="2">
+                <div style="border-bottom:1px solid #c9ced4;height:18px;display:flex;align-items:flex-end;overflow:hidden">
+                  <sc-if value="{{ r.hasSig }}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Signatur" style="height:16px;width:100%;background-image:{{ r.sigBg }};background-size:contain;background-repeat:no-repeat;background-position:left center"></div></sc-if>
+                </div>
+              </sc-for>
+            </div>
+            <div style="font-size:12px;color:#0e1116;font-weight:600;margin-top:6px;text-align:center">Signatursida</div>
+          </div>
+        </div>
+      </section>
+
+      <div style="display:flex;flex-direction:column;gap:20px">
+        <section style="background:#fff;border:1px solid #e3e6ea;border-radius:16px;overflow:hidden">
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:18px 20px 14px">
+            <h2 style="margin:0;font-size:15px;font-weight:700">Mottagare</h2>
+            <span style="font-size:13px;color:#5b626d">{{ cur.signedCountLabel }}</span>
+          </div>
+          <sc-for list="{{ cur.recipientsVM }}" as="r" hint-placeholder-count="2">
+            <div style="border-top:1px solid #eef0f2;padding:14px 20px;display:flex;flex-direction:column;gap:10px">
+              <div style="display:flex;align-items:center;gap:12px">
+                <span style="width:34px;height:34px;border-radius:50%;background:#eef0f2;display:grid;place-items:center;font-size:12px;font-weight:700;flex-shrink:0">{{ r.initials }}</span>
+                <div style="flex:1;min-width:0">
+                  <div style="font-size:14px;font-weight:600">{{ r.name }}</div>
+                  <div style="font-size:13px;color:#5b626d;display:flex;align-items:center;gap:6px"><span style="width:7px;height:7px;border-radius:50%;background:{{ r.dotColor }};flex-shrink:0"></span><span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ r.statusText }}</span></div>
+                </div>
+                <sc-if value="{{ r.hasSig }}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Signatur" style="height:34px;width:110px;flex-shrink:0;background-image:{{ r.sigBg }};background-size:contain;background-repeat:no-repeat;background-position:left center"></div></sc-if>
+              </div>
+              <sc-if value="{{ r.notSigned }}" hint-placeholder-val="{{ false }}">
+                <div style="display:flex;gap:6px;flex-wrap:wrap">
+                  <div style="flex:1 1 160px;min-width:0;height:36px;padding:0 10px;border-radius:8px;background:#f6f7f9;display:flex;align-items:center;font-family:'JetBrains Mono',monospace;font-size:12px;color:#3a4049;overflow:hidden;white-space:nowrap;text-overflow:ellipsis">{{ r.linkShort }}</div>
+                  <button onClick="{{ r.onCopy }}" style="height:36px;padding:0 12px;border:1px solid #d9dde2;border-radius:8px;background:#fff;font-size:13px;font-weight:600;cursor:pointer;min-width:84px" style-hover="background:#f1f3f5">{{ r.copyLabel }}</button>
+                  <button onClick="{{ r.onOpen }}" style="height:36px;padding:0 12px;border:0;border-radius:8px;background:#0e1116;color:#fff;font-size:13px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Öppna som mottagare</button>
+                </div>
+              </sc-if>
+            </div>
+          </sc-for>
+        </section>
+
+        <section style="background:#fff;border:1px solid #e3e6ea;border-radius:16px;padding:18px 20px 4px">
+          <h2 style="margin:0 0 16px;font-size:15px;font-weight:700">Händelser</h2>
+          <sc-for list="{{ cur.eventsVM }}" as="e" hint-placeholder-count="3">
+            <div style="display:grid;grid-template-columns:12px minmax(0,1fr);gap:14px">
+              <div style="display:flex;flex-direction:column;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#0e1116;margin-top:6px;flex-shrink:0"></span><span style="flex:1;width:1px;background:#e3e6ea;margin-top:4px"></span></div>
+              <div style="padding-bottom:16px">
+                <div style="font-size:14px;line-height:1.45">{{ e.text }}</div>
+                <div style="font-size:12px;color:#5b626d;font-family:'JetBrains Mono',monospace;margin-top:2px">{{ e.date }} · {{ e.time }}</div>
+                <div style="font-size:12px;color:#5b626d;font-family:'JetBrains Mono',monospace">{{ e.meta }}</div>
+              </div>
+            </div>
+          </sc-for>
+        </section>
+      </div>
+    </div>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isCert }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="06 Verifikat">
+    <div data-noprint style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap;max-width:820px;margin:0 auto 20px">
+      <button onClick="{{ backToDoc }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer" style-hover="color:#0e1116">← Tillbaka</button>
+      <button onClick="{{ printCert }}" style="height:40px;padding:0 16px;border:1px solid #d9dde2;border-radius:9px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Skriv ut / spara PDF</button>
+    </div>
+    <article style="max-width:820px;margin:0 auto;background:#fff;border:1px solid #e3e6ea;border-radius:4px;padding:52px clamp(22px,6vw,64px) 28px;box-shadow:0 24px 60px -36px rgba(14,17,22,0.3)">
+      <div style="height:6px;background:#0e1116;margin-bottom:30px"></div>
+      <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:20px">
+        <div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;color:#5b626d;letter-spacing:0.04em">signhere.se</div>
+          <h1 style="margin:6px 0 0;font-size:48px;font-weight:800;letter-spacing:-0.045em;line-height:1">Verifikat</h1>
+        </div>
+        <div style="width:104px;height:104px;border-radius:50%;border:2px solid #0e1116;padding:5px;flex-shrink:0">
+          <div style="width:100%;height:100%;border-radius:50%;border:1px solid #0e1116;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;text-align:center">
+            <span style="font-size:8.5px;font-weight:700;letter-spacing:0.14em">SIGNHERE</span>
+            <span style="width:10px;height:10px;border-radius:50%;background:#0e1116"></span>
+            <span style="font-size:10px;font-weight:700;letter-spacing:0.02em">FÖRSEGLAT</span>
+            <span style="font-family:'JetBrains Mono',monospace;font-size:7.5px;color:#3a4049">{{ cur.sealedShort }}</span>
+          </div>
+        </div>
+      </div>
+      <div style="height:10px;margin:26px 0 38px;background-image:radial-gradient(#c3c8cf 1px,transparent 1.3px);background-size:6px 6px"></div>
+
+      <h2 style="margin:0 0 14px;font-size:21px;font-weight:700;letter-spacing:-0.02em">Dokument</h2>
+      <div style="display:grid;grid-template-columns:minmax(120px,170px) minmax(0,1fr);border-top:1px solid #e3e6ea;font-size:14px;margin-bottom:40px">
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Titel</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-weight:600">{{ cur.title }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Dokument-ID</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-family:'JetBrains Mono',monospace;font-size:13px">{{ cur.id }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Omfattning</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2">{{ cur.pagesLabel }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Avsändare</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2">{{ senderLine }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Förseglat</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2">{{ cur.sealedFull }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">SHA-256 original</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;line-height:1.5">{{ cur.hash }}</div>
+        <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">SHA-256 signerad</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;line-height:1.5">{{ cur.sealedHash }}</div>
+      </div>
+
+      <h2 style="margin:0 0 14px;font-size:21px;font-weight:700;letter-spacing:-0.02em">Signerande parter</h2>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(min(100%,300px),1fr));gap:14px;margin-bottom:32px">
+        <sc-for list="{{ cur.recipientsVM }}" as="r" hint-placeholder-count="2">
+          <div style="background:#f4f5f7;border-radius:8px;padding:18px;font-size:13.5px;line-height:1.55">
+            <div style="font-size:15px;font-weight:700">{{ r.name }}</div>
+            <div style="color:#3a4049">Undertecknare · {{ r.email }}</div>
+            <div style="background:#fff;border-radius:6px;height:72px;margin:14px 0 12px;display:flex;align-items:center;justify-content:center;padding:6px;border-bottom:1px solid #c9ced4">
+              <sc-if value="{{ r.hasSig }}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Signatur" style="height:60px;width:100%;background-image:{{ r.sigBg }};background-size:contain;background-repeat:no-repeat;background-position:center"></div></sc-if>
+            </div>
+            <div style="font-weight:600">Undertecknad med ritad signatur</div>
+            <div style="color:#3a4049">Signerade {{ r.signedFull }}</div>
+            <div style="color:#3a4049;font-family:'JetBrains Mono',monospace;font-size:12px">IP {{ r.ip }}</div>
+            <div style="color:#3a4049">{{ r.device }}</div>
+            <div style="color:#3a4049">{{ r.viewsLabel }}</div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="border:1px solid #d9dde2;background:#f6f7f9;padding:18px 20px;font-size:13.5px;line-height:1.6;color:#23282f;margin-bottom:40px">Dokumentet är förseglat med en elektronisk signatur och kan inte ändras utan att förseglingen bryts. Äktheten kan kontrolleras av en oberoende part och på <a href="#" onClick="{{ goVerify }}" style="color:#0e1116;font-weight:600">signhere.se/verifiera</a>.</div>
+
+      <h2 style="margin:0 0 18px;font-size:21px;font-weight:700;letter-spacing:-0.02em">Händelser</h2>
+      <div style="margin-bottom:40px">
+        <sc-for list="{{ cur.eventsVM }}" as="e" hint-placeholder-count="3">
+          <div style="display:grid;grid-template-columns:110px 12px minmax(0,1fr);gap:16px">
+            <div style="padding-bottom:20px"><div style="font-size:13.5px;font-weight:600">{{ e.date }}</div><div style="font-size:12px;color:#5b626d;font-family:'JetBrains Mono',monospace">{{ e.time }}</div></div>
+            <div style="display:flex;flex-direction:column;align-items:center"><span style="width:8px;height:8px;border-radius:50%;background:#9aa1ab;margin-top:6px;flex-shrink:0"></span><span style="flex:1;width:1px;background:#d9dde2;margin-top:4px"></span></div>
+            <div style="padding-bottom:20px"><div style="font-size:14px;line-height:1.45">{{ e.text }}</div><div style="font-size:12px;color:#5b626d;font-family:'JetBrains Mono',monospace;margin-top:2px">{{ e.meta }}</div></div>
+          </div>
+        </sc-for>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;font-size:11px;color:#5b626d">
+        <span style="flex:1;height:1px;background:#d9dde2"></span>
+        <span style="font-family:'JetBrains Mono',monospace">Transaktion {{ cur.id }}</span>
+        <span style="width:8px;height:8px;border-radius:50%;background:#0e1116"></span>
+        <span>Förseglat av signhere.se</span>
+        <span style="flex:1;height:1px;background:#d9dde2"></span>
+      </div>
+    </article>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isVerify }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="07 Verifiera" style="max-width:620px;margin:0 auto">
+    <h1 style="margin:16px 0 10px;font-size:40px;font-weight:700;letter-spacing:-0.04em;line-height:1.02">Verifiera dokument</h1>
+    <p style="margin:0 0 28px;font-size:16px;color:#5b626d;line-height:1.5">Kontrollera att ett signerat dokument är äkta och oförändrat.</p>
+    <input type="file" accept="application/pdf,.pdf" ref="{{ verifyRef }}" onChange="{{ onVerifyFile }}" style="display:none">
+
+    <sc-if value="{{ verifyIdle }}" hint-placeholder-val="{{ true }}">
+      <div onClick="{{ pickVerify }}" onDragOver="{{ onVDragOver }}" onDragLeave="{{ onVDragLeave }}" onDrop="{{ onVerifyDrop }}" style="border:1.5px dashed {{ vDropBorder }};background:#fff;border-radius:18px;padding:64px 24px;display:flex;flex-direction:column;align-items:center;gap:12px;cursor:pointer;text-align:center" style-hover="border-color:#0e1116">
+        <span style="width:52px;height:52px;border-radius:50%;border:1.5px solid #0e1116;display:grid;place-items:center;font-size:22px">↑</span>
+        <span style="font-size:18px;font-weight:700;letter-spacing:-0.02em">Släpp den signerade PDF:en här</span>
+        <span style="font-size:14px;color:#5b626d">Filen lämnar aldrig din enhet – bara dess fingeravtryck jämförs.</span>
+      </div>
+      <sc-if value="{{ hasSampleDoc }}" hint-placeholder-val="{{ false }}">
+        <div style="display:flex;justify-content:flex-end;margin-top:14px"><button onClick="{{ verifySample }}" style="border:0;background:none;padding:0;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer;text-decoration:underline;text-underline-offset:3px">Prova med ett signerat exempel</button></div>
+      </sc-if>
+    </sc-if>
+
+    <sc-if value="{{ verifyBusy }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#fff;border:1px solid #e3e6ea;border-radius:18px;padding:56px 24px;text-align:center;font-size:15px;color:#5b626d">Kontrollerar {{ verify.fileName }}…</div>
+    </sc-if>
+
+    <sc-if value="{{ verifyFound }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#fff;border:1px solid #e3e6ea;border-radius:18px;overflow:hidden;animation:shIn .3s ease">
+        <div style="padding:28px 24px;display:flex;align-items:center;gap:16px;background:{{ vBandBg }};border-bottom:1px solid #e3e6ea">
+          <span style="width:48px;height:48px;border-radius:50%;background:{{ vBandInk }};color:#fff;display:grid;place-items:center;font-size:22px;flex-shrink:0">{{ vMark }}</span>
+          <div>
+            <div style="font-size:22px;font-weight:700;letter-spacing:-0.02em">{{ vTitle }}</div>
+            <div style="font-size:14px;color:#3a4049;margin-top:2px">{{ vSub }}</div>
+          </div>
+        </div>
+        <div style="display:grid;grid-template-columns:minmax(100px,140px) minmax(0,1fr);padding:8px 24px 8px;font-size:14px">
+          <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Dokument</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-weight:600">{{ vDoc.title }}</div>
+          <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">ID</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2;font-family:'JetBrains Mono',monospace;font-size:13px">{{ vDoc.id }}</div>
+          <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Signerat av</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2">{{ vDoc.signerNames }}</div>
+          <div style="padding:10px 0;border-bottom:1px solid #eef0f2;color:#5b626d">Förseglat</div><div style="padding:10px 0;border-bottom:1px solid #eef0f2">{{ vDoc.sealedFull }}</div>
+          <div style="padding:10px 0;color:#5b626d">SHA-256</div><div style="padding:10px 0;font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all;line-height:1.5">{{ verify.hash }}</div>
+        </div>
+        <div style="display:flex;gap:8px;justify-content:flex-end;padding:0 24px 22px;flex-wrap:wrap">
+          <button onClick="{{ resetVerify }}" style="height:42px;padding:0 16px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Kontrollera en till</button>
+          <sc-if value="{{ canOpenVCert }}" hint-placeholder-val="{{ false }}"><button onClick="{{ openVCert }}" style="height:42px;padding:0 16px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Visa verifikat</button></sc-if>
+        </div>
+      </div>
+    </sc-if>
+
+    <sc-if value="{{ verifyInvalid }}" hint-placeholder-val="{{ false }}">
+      <div style="background:#fff;border:1px solid #e3e6ea;border-radius:18px;overflow:hidden;animation:shIn .3s ease">
+        <div style="padding:28px 24px;display:flex;align-items:center;gap:16px;background:oklch(0.97 0.02 25);border-bottom:1px solid #e3e6ea">
+          <span style="width:48px;height:48px;border-radius:50%;background:oklch(0.52 0.18 25);color:#fff;display:grid;place-items:center;font-size:24px;flex-shrink:0">!</span>
+          <div>
+            <div style="font-size:22px;font-weight:700;letter-spacing:-0.02em">Kunde inte verifieras</div>
+            <div style="font-size:14px;color:#3a4049;margin-top:2px">Filen matchar inget förseglat dokument. Den kan ha ändrats efter signering.</div>
+          </div>
+        </div>
+        <div style="padding:18px 24px;font-size:13px;color:#5b626d;display:flex;flex-direction:column;gap:4px">
+          <div>{{ verify.fileName }}</div>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:12px;word-break:break-all">{{ verify.hash }}</div>
+        </div>
+        <div style="display:flex;justify-content:flex-end;padding:0 24px 22px"><button onClick="{{ resetVerify }}" style="height:42px;padding:0 16px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#f1f3f5">Försök igen</button></div>
+      </div>
+    </sc-if>
+  </div>
+  </sc-if>
+
+  <sc-if value="{{ isTeam }}" hint-placeholder-val="{{ false }}">
+  <div data-screen-label="08 Team" style="max-width:640px;margin:0 auto;display:flex;flex-direction:column;gap:20px">
+    <h1 style="margin:0 0 6px;font-size:36px;font-weight:700;letter-spacing:-0.04em;line-height:1">Team</h1>
+    <section style="background:#fff;border:1px solid #e3e6ea;border-radius:16px;padding:22px">
+      <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Teamnamn</span><input value="{{ teamName }}" onChange="{{ onTeamName }}" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"></label>
+    </section>
+    <section style="background:#fff;border:1px solid #e3e6ea;border-radius:16px;overflow:hidden">
+      <div style="padding:20px 22px 16px">
+        <h2 style="margin:0 0 14px;font-size:15px;font-weight:700">Medlemmar</h2>
+        <form onSubmit="{{ sendInvite }}" style="display:flex;gap:8px;flex-wrap:wrap">
+          <input value="{{ invite }}" onChange="{{ onInvite }}" placeholder="kollega@foretag.se" type="email" style="flex:1 1 220px;min-width:0;height:44px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)">
+          <button type="submit" style="height:44px;padding:0 18px;border:0;border-radius:10px;background:#0e1116;color:#fff;font-size:14px;font-weight:600;cursor:pointer" style-hover="background:#2a3039">Bjud in</button>
+        </form>
+      </div>
+      <sc-for list="{{ members }}" as="m" hint-placeholder-count="1">
+        <div style="border-top:1px solid #eef0f2;padding:14px 22px;display:flex;align-items:center;gap:12px">
+          <span style="width:34px;height:34px;border-radius:50%;background:{{ m.avBg }};color:{{ m.avInk }};display:grid;place-items:center;font-size:12px;font-weight:700;flex-shrink:0">{{ m.initials }}</span>
+          <div style="flex:1;min-width:0"><div style="font-size:14px;font-weight:600">{{ m.name }}</div><div style="font-size:13px;color:#5b626d;overflow:hidden;text-overflow:ellipsis">{{ m.email }}</div></div>
+          <span style="font-size:12px;font-weight:600;padding:4px 10px;border-radius:999px;background:#f1f3f5;color:#3a4049">{{ m.role }}</span>
+        </div>
+      </sc-for>
+    </section>
+    <div style="display:flex;justify-content:center;padding-top:12px"><button onClick="{{ resetProto }}" style="border:0;background:none;padding:0;font-size:13px;font-weight:500;color:#5b626d;cursor:pointer;text-decoration:underline;text-underline-offset:3px">Återställ prototypen</button></div>
+  </div>
+  </sc-if>
+
+</main>
+</sc-if>
+
+<sc-if value="{{ isSign }}" hint-placeholder-val="{{ false }}">
+<div data-screen-label="09 Signera (mottagare)" style="min-height:100vh;background:#eceef1;display:flex;flex-direction:column">
+  <div data-noprint style="position:fixed;top:12px;right:12px;z-index:70"><button onClick="{{ backToSender }}" style="height:32px;padding:0 12px;border-radius:999px;border:1px dashed #9aa1ab;background:rgba(255,255,255,0.92);font-size:12px;font-weight:600;color:#3a4049;cursor:pointer">Prototyp · tillbaka till avsändaren</button></div>
+  <header style="background:#fff;border-bottom:1px solid #e3e6ea">
+    <div style="max-width:720px;margin:0 auto;padding:0 18px;height:58px;display:flex;align-items:center;gap:9px;font-weight:700;font-size:17px;letter-spacing:-0.03em"><span style="width:20px;height:20px;border-radius:6px;background:#0e1116;display:grid;place-items:center"><span style="width:7px;height:7px;border-radius:50%;background:#fff"></span></span><span>signhere</span></div>
+  </header>
+
+  <sc-if value="{{ signNotDone }}" hint-placeholder-val="{{ true }}">
+    <div style="max-width:720px;width:100%;margin:0 auto;padding:28px 16px 140px">
+      <div style="font-size:14px;color:#5b626d;margin-bottom:6px">{{ senderLine }}</div>
+      <h1 style="margin:0 0 8px;font-size:30px;font-weight:700;letter-spacing:-0.035em;line-height:1.1;text-wrap:pretty">{{ sDoc.title }}</h1>
+      <p style="margin:0 0 24px;font-size:15px;color:#3a4049;line-height:1.5">Hej {{ sFirstName }}, läs igenom dokumentet och signera längst ned.</p>
+      <div style="display:flex;flex-direction:column;gap:14px">
+        <sc-for list="{{ sDoc.pagesArr }}" as="p" hint-placeholder-count="2">
+          <div style="aspect-ratio:1/1.414;background:#fff;border-radius:4px;box-shadow:0 1px 2px rgba(14,17,22,0.06),0 10px 30px -18px rgba(14,17,22,0.25);padding:9% 9% 6%;display:flex;flex-direction:column;gap:10px;position:relative">
+            <div style="height:12px;width:48%;background:#c9ced4;border-radius:3px;margin-bottom:12px"></div>
+            <div style="height:6px;width:100%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:94%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:98%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:62%;background:#e6e9ec;border-radius:3px;margin-bottom:12px"></div>
+            <div style="height:8px;width:32%;background:#d5d9de;border-radius:3px"></div>
+            <div style="height:6px;width:100%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:90%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:96%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:84%;background:#e6e9ec;border-radius:3px"></div>
+            <div style="height:6px;width:40%;background:#e6e9ec;border-radius:3px"></div>
+            <span style="position:absolute;right:6%;bottom:3.5%;font-size:11px;color:#5b626d;font-family:'JetBrains Mono',monospace">{{ p.n }}</span>
+          </div>
+        </sc-for>
+        <div style="background:#fff;border-radius:4px;box-shadow:0 1px 2px rgba(14,17,22,0.06),0 10px 30px -18px rgba(14,17,22,0.25);padding:36px 9%;display:flex;flex-direction:column;gap:22px">
+          <div style="font-size:12px;font-weight:700;letter-spacing:0.1em">SIGNATURER</div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:24px">
+            <sc-for list="{{ sDoc.recipientsVM }}" as="r" hint-placeholder-count="2">
+              <div>
+                <div style="height:64px;border-bottom:1px solid #9aa1ab;display:flex;align-items:flex-end;padding-bottom:4px">
+                  <sc-if value="{{ r.hasSig }}" hint-placeholder-val="{{ false }}"><div role="img" aria-label="Signatur" style="height:58px;width:100%;background-image:{{ r.sigBg }};background-size:contain;background-repeat:no-repeat;background-position:left center"></div></sc-if>
+                </div>
+                <div style="font-size:13px;font-weight:600;margin-top:8px">{{ r.name }}</div>
+                <div style="font-size:12px;color:#5b626d">{{ r.sigCaption }}</div>
+              </div>
+            </sc-for>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div style="position:fixed;left:0;right:0;bottom:0;background:#fff;border-top:1px solid #e3e6ea;padding:14px 16px calc(14px + env(safe-area-inset-bottom));z-index:40">
+      <div style="max-width:720px;margin:0 auto;display:flex;align-items:center;gap:16px">
+        <div style="flex:1;min-width:0;font-size:13px;color:#5b626d;line-height:1.35"><div style="font-weight:600;color:#0e1116;font-size:14px">{{ sRec.name }}</div>{{ sDoc.pagesLabel }}</div>
+        <button onClick="{{ startSign }}" style="height:50px;padding:0 28px;border:0;border-radius:12px;background:#0e1116;color:#fff;font-size:16px;font-weight:700;cursor:pointer" style-hover="background:#2a3039">Signera</button>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ signDraw }}" hint-placeholder-val="{{ false }}">
+    <div style="position:fixed;inset:0;background:rgba(14,17,22,0.5);z-index:50;display:flex;align-items:flex-end;justify-content:center;padding:12px">
+      <div style="width:100%;max-width:560px;max-height:calc(100vh - 24px);overflow:auto;background:#fff;border-radius:20px;padding:22px;display:flex;flex-direction:column;gap:18px;animation:shIn .25s ease">
+        <div style="display:flex;justify-content:space-between;align-items:center">
+          <h2 style="margin:0;font-size:22px;font-weight:700;letter-spacing:-0.02em">Signera</h2>
+          <button onClick="{{ closeSheet }}" style="border:0;background:none;padding:6px;font-size:14px;font-weight:500;color:#5b626d;cursor:pointer">Avbryt</button>
+        </div>
+        <label style="display:block"><span style="display:block;font-size:13px;font-weight:600;margin:0 0 6px">Ditt fullständiga namn</span><input value="{{ signName }}" onChange="{{ onSignName }}" autoComplete="name" style="width:100%;height:46px;padding:0 14px;border:1px solid #d9dde2;border-radius:10px;background:#fff;font-size:15px;outline:none" style-focus="border-color:#0e1116;box-shadow:0 0 0 3px rgba(14,17,22,0.08)"></label>
+        <div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px"><span style="font-size:13px;font-weight:600">Rita din signatur</span><button onClick="{{ clearSig }}" style="border:0;background:none;padding:0;font-size:13px;font-weight:500;color:#5b626d;cursor:pointer;text-decoration:underline;text-underline-offset:3px">Rensa</button></div>
+          <div style="position:relative">
+            <canvas ref="{{ sigRef }}" onPointerDown="{{ sigDown }}" onPointerMove="{{ sigMove }}" onPointerUp="{{ sigUp }}" onPointerLeave="{{ sigUp }}" onPointerCancel="{{ sigUp }}" style="display:block;width:100%;height:190px;background:#f8f9fa;border:1px solid #d9dde2;border-radius:12px;touch-action:none;cursor:crosshair"></canvas>
+            <div style="position:absolute;left:22px;right:22px;bottom:46px;border-bottom:1px solid #c9ced4;pointer-events:none"></div>
+            <span style="position:absolute;left:22px;bottom:52px;font-size:18px;color:#9aa1ab;pointer-events:none">×</span>
+            <sc-if value="{{ noInk }}" hint-placeholder-val="{{ true }}"><span style="position:absolute;inset:0;display:grid;place-items:center;font-size:14px;color:#6b727d;pointer-events:none;padding-bottom:40px">Rita med mus eller finger</span></sc-if>
+          </div>
+        </div>
+        <label style="display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.45;cursor:pointer"><input type="checkbox" checked="{{ agree }}" onChange="{{ toggleAgree }}" style="accent-color:#0e1116;width:18px;height:18px;margin:1px 0 0;flex-shrink:0">Jag har läst dokumentet och godkänner innehållet.</label>
+        <button onClick="{{ submitSign }}" disabled="{{ cannotSign }}" style="height:52px;border:0;border-radius:12px;background:{{ signBtnBg }};color:#fff;font-size:16px;font-weight:700;cursor:{{ signBtnCursor }};transition:background .15s">Signera dokumentet</button>
+        <p style="margin:0;font-size:12.5px;color:#5b626d;line-height:1.5;text-align:center">Tidpunkt, IP-adress och enhet sparas som bevis för din signatur.</p>
+      </div>
+    </div>
+  </sc-if>
+
+  <sc-if value="{{ signDone }}" hint-placeholder-val="{{ false }}">
+    <div style="flex:1;display:flex;align-items:center;justify-content:center;padding:48px 20px">
+      <div style="max-width:420px;width:100%;text-align:center;display:flex;flex-direction:column;align-items:center;gap:14px;animation:shIn .35s ease">
+        <span style="width:76px;height:76px;border-radius:50%;background:#0e1116;color:#fff;display:grid;place-items:center;font-size:34px;margin-bottom:6px">✓</span>
+        <h1 style="margin:0;font-size:36px;font-weight:700;letter-spacing:-0.04em">Signerat</h1>
+        <p style="margin:0;font-size:16px;color:#3a4049;line-height:1.5">Du har signerat <strong>{{ sDoc.title }}</strong>.</p>
+        <p style="margin:0;font-size:14px;color:#5b626d;line-height:1.5">{{ sDoneNote }}</p>
+        <div style="width:100%;margin-top:14px;background:#fff;border:1px solid #e3e6ea;border-radius:14px;padding:16px;display:flex;align-items:center;gap:14px;text-align:left">
+          <div role="img" aria-label="Signatur" style="height:44px;width:110px;flex-shrink:0;background-image:{{ sRec.sigBg }};background-size:contain;background-repeat:no-repeat;background-position:left center"></div>
+          <div style="min-width:0;font-size:12px;color:#5b626d;font-family:'JetBrains Mono',monospace;line-height:1.6"><div style="color:#0e1116">{{ sRec.signedFull }}</div><div>{{ sDoc.id }}</div></div>
+        </div>
+      </div>
+    </div>
+  </sc-if>
+</div>
+</sc-if>
+
+<sc-if value="{{ hasToast }}" hint-placeholder-val="{{ false }}">
+  <div style="position:fixed;left:50%;bottom:28px;transform:translateX(-50%);background:#0e1116;color:#fff;padding:12px 18px;border-radius:12px;font-size:14px;font-weight:500;z-index:100;box-shadow:0 12px 30px -10px rgba(14,17,22,0.5);animation:shIn .2s ease;white-space:nowrap">{{ toast }}</div>
+</sc-if>
+
+</div>
+</x-dc>
+<script type="text/x-dc" data-dc-script data-props="{&quot;startAt&quot;:{&quot;editor&quot;:&quot;enum&quot;,&quot;options&quot;:[&quot;signup&quot;,&quot;dashboard&quot;],&quot;default&quot;:&quot;signup&quot;,&quot;tsType&quot;:&quot;'signup'|'dashboard'&quot;,&quot;section&quot;:&quot;Prototyp&quot;},&quot;demoData&quot;:{&quot;editor&quot;:&quot;boolean&quot;,&quot;default&quot;:true,&quot;tsType&quot;:&quot;boolean&quot;,&quot;section&quot;:&quot;Prototyp&quot;}}">
+const LS = 'signhere-proto-v1';
+const INK = '#0e1116', GREEN = 'oklch(0.56 0.13 155)', AMBER = 'oklch(0.72 0.15 70)', GREY = '#b5bbc3';
+const ALPH = 'abcdefghijkmnpqrstuvwxyz23456789';
+const rid = (n = 10) => { const a = new Uint8Array(n); crypto.getRandomValues(a); return Array.from(a, b => ALPH[b % 32]).join(''); };
+const rhex = () => { const a = new Uint8Array(32); crypto.getRandomValues(a); return Array.from(a, b => b.toString(16).padStart(2, '0')).join(''); };
+const toHex = buf => Array.from(new Uint8Array(buf), b => b.toString(16).padStart(2, '0')).join('');
+const fmtD = t => new Date(t).toLocaleDateString('sv-SE', { day: 'numeric', month: 'short', year: 'numeric' });
+const fmtT = t => new Date(t).toLocaleTimeString('sv-SE');
+const fmtDT = t => fmtD(t) + ', ' + fmtT(t);
+const fmtSize = b => b > 1e6 ? (b / 1e6).toFixed(1).replace('.', ',') + ' MB' : Math.max(1, Math.round(b / 1024)) + ' kB';
+const initials = n => (n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+const emailOk = e => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(e || '');
+const device = () => {
+  const u = navigator.userAgent;
+  const b = /Edg\//.test(u) ? 'Edge' : /Firefox\//.test(u) ? 'Firefox' : /Chrome\//.test(u) ? 'Chrome' : /Safari\//.test(u) ? 'Safari' : 'Webbläsare';
+  const o = /iPhone|iPad/.test(u) ? 'iOS' : /Android/.test(u) ? 'Android' : /Windows/.test(u) ? 'Windows' : /Mac OS/.test(u) ? 'macOS' : /Linux/.test(u) ? 'Linux' : 'Okänt OS';
+  return b + ', ' + o;
+};
+const fakeIp = () => { const a = new Uint8Array(3); crypto.getRandomValues(a); return `193.${a[0] % 40 + 10}.${a[1]}.${a[2] % 250 + 2}`; };
+const scriptSig = name => {
+  try {
+    const c = document.createElement('canvas'); c.width = 520; c.height = 160;
+    const x = c.getContext('2d'); x.fillStyle = INK;
+    x.font = 'italic 58px "Snell Roundhand","Segoe Script","Brush Script MT",cursive';
+    x.textBaseline = 'middle'; x.fillText(name, 20, 84);
+    return c.toDataURL('image/png');
+  } catch (e) { return null; }
+};
+const mkRec = (name, email) => ({ id: rid(6), token: rid(14), name, email, views: 0, viewedAt: null, signedAt: null, sig: null, ip: null, device: null });
+const docId = () => 'SH-' + rid(8).toUpperCase();
+
+function seedDocs(user) {
+  const now = Date.now(), M = 6e4, H = 60 * M, D = 24 * H;
+  const a = mkRec('Hampus Linde', 'hampus@gradusante.se'), b = mkRec('Maja Holm', 'maja@holmbygg.se');
+  const t0 = now - 2 * D - 3 * H;
+  Object.assign(a, { views: 3, viewedAt: t0 + 12 * M, signedAt: t0 + 13 * H, sig: scriptSig('H. Linde'), ip: '193.13.64.132', device: 'Edge, Windows' });
+  Object.assign(b, { views: 1, viewedAt: t0 + 2 * H, signedAt: t0 + 20 * H, sig: scriptSig('Maja Holm'), ip: '83.251.19.207', device: 'Safari, iOS' });
+  const d1 = {
+    id: docId(), title: 'Hyresavtal – kontor Södermalm', fileName: 'Hyresavtal_Sodermalm.pdf', size: 412000, pages: 6, hash: rhex(),
+    createdAt: t0, sealedAt: t0 + 20 * H + 2000, sealedHash: rhex(), recipients: [a, b],
+    events: [
+      { t: t0, text: `Dokumentet skapades av ${user.name}.` },
+      { t: t0 + 1000, text: 'Skickat till Hampus Linde och Maja Holm.' },
+      { t: t0 + 12 * M, text: 'Hampus Linde öppnade dokumentet.' },
+      { t: t0 + 2 * H, text: 'Maja Holm öppnade dokumentet.' },
+      { t: t0 + 13 * H, text: 'Hampus Linde signerade dokumentet.', meta: 'IP 193.13.64.132 · Edge, Windows' },
+      { t: t0 + 20 * H, text: 'Maja Holm signerade dokumentet.', meta: 'IP 83.251.19.207 · Safari, iOS' },
+      { t: t0 + 20 * H + 2000, text: 'Alla parter har signerat. Dokumentet förseglades.' },
+    ],
+  };
+  const c = mkRec('Sara Ek', 'sara@ekkonsult.se'), e = mkRec('Johan Berg', 'johan.berg@nordvik.se');
+  const t1 = now - 3 * H;
+  Object.assign(c, { views: 1, viewedAt: t1 + 40 * M, signedAt: t1 + 55 * M, sig: scriptSig('Sara Ek'), ip: '78.72.141.9', device: 'Chrome, macOS' });
+  const d2 = {
+    id: docId(), title: 'Konsultavtal Q4', fileName: 'Konsultavtal_Q4.pdf', size: 188000, pages: 3, hash: rhex(),
+    createdAt: t1, sealedAt: null, sealedHash: null, recipients: [c, e],
+    events: [
+      { t: t1, text: `Dokumentet skapades av ${user.name}.` },
+      { t: t1 + 1000, text: 'Skickat till Sara Ek och Johan Berg.' },
+      { t: t1 + 40 * M, text: 'Sara Ek öppnade dokumentet.' },
+      { t: t1 + 55 * M, text: 'Sara Ek signerade dokumentet.', meta: 'IP 78.72.141.9 · Chrome, macOS' },
+    ],
+  };
+  return [d2, d1];
+}
+const joinNames = arr => arr.length <= 1 ? (arr[0] || '') : arr.slice(0, -1).join(', ') + ' och ' + arr[arr.length - 1];
+
+class Component extends DCLogic {
+  state = (() => {
+    try { const s = JSON.parse(localStorage.getItem(LS)); if (s && s.v === 1) return { ...s, toast: null, copied: null, drag: false, vdrag: false }; } catch (e) {}
+    return this.initial();
+  })();
+
+  initial() {
+    const P = this.props || {};
+    const skip = P.startAt === 'dashboard';
+    const user = skip ? { name: 'Oscar Lind', email: 'oscar@lindco.se' } : null;
+    return {
+      v: 1, screen: skip ? 'app' : 'signup', signupStep: 1,
+      form: { name: '', email: '', password: '', team: '' }, err: {},
+      user, team: skip ? { name: 'Lind & Co' } : null, members: [],
+      docs: skip && P.demoData !== false ? seedDocs(user) : [],
+      view: 'docs', filter: 'all', draft: null, step: 'upload', docId: null, uploadError: '', recipError: '',
+      sign: null, verify: { state: 'idle' }, invite: '', toast: null, copied: null, drag: false, vdrag: false,
+    };
+  }
+
+  componentDidUpdate(prev) {
+    if (prev && prev.startAt !== this.props.startAt) { this.setState(this.initial()); return; }
+    try { const { toast, copied, drag, vdrag, ...rest } = this.state; localStorage.setItem(LS, JSON.stringify(rest)); } catch (e) {}
+  }
+
+  toastMsg(msg) { this.setState({ toast: msg }); clearTimeout(this._tt); this._tt = setTimeout(() => this.setState({ toast: null }), 2200); }
+  setForm = k => e => { const v = e.target.value; this.setState(s => ({ form: { ...s.form, [k]: v } })); };
+  updDoc(id, fn) { this.setState(s => ({ docs: s.docs.map(d => d.id === id ? fn(d) : d) })); }
+
+  submitSignup = e => {
+    e && e.preventDefault();
+    const f = this.state.form, err = {};
+    if (!f.name.trim()) err.name = 'Ange ditt namn.';
+    if (!emailOk(f.email)) err.email = 'Ange en giltig e-postadress.';
+    if (f.password.length < 8) err.password = 'Minst 8 tecken.';
+    if (Object.keys(err).length) return this.setState({ err });
+    this.setState({ err: {}, signupStep: 2 });
+  };
+  submitTeam = e => {
+    e && e.preventDefault();
+    const f = this.state.form;
+    if (!f.team.trim()) return this.setState({ err: { team: 'Ange ett teamnamn.' } });
+    const user = { name: f.name.trim(), email: f.email.trim() };
+    this.setState({ err: {}, user, team: { name: f.team.trim() }, screen: 'app', view: 'docs', docs: this.props.demoData === false ? [] : seedDocs(user) });
+    this.toastMsg(`Välkommen, ${user.name.split(' ')[0]}`);
+  };
+
+  go = view => this.setState({ view, screen: 'app' });
+  newDoc = () => this.setState({ view: 'new', step: 'upload', uploadError: '', recipError: '', draft: { file: null, title: '', recipients: [{ name: '', email: '' }], includeMe: false } });
+
+  fileRef = el => { this.fileEl = el; };
+  verifyRef = el => { this.verifyEl = el; };
+  pickFile = () => this.fileEl && this.fileEl.click();
+  onFile = e => { const f = e.target.files[0]; e.target.value = ''; this.handleFile(f); };
+  onDragOver = e => { e.preventDefault(); if (!this.state.drag) this.setState({ drag: true }); };
+  onDragLeave = () => this.setState({ drag: false });
+  onDrop = e => { e.preventDefault(); this.setState({ drag: false }); this.handleFile(e.dataTransfer.files[0]); };
+
+  async digest(file) {
+    const buf = await file.arrayBuffer();
+    let hash; try { hash = toHex(await crypto.subtle.digest('SHA-256', buf)); } catch (e) { hash = rhex(); }
+    return { buf, hash };
+  }
+  async handleFile(file) {
+    if (!file) return;
+    if (!/pdf/i.test(file.type) && !/\.pdf$/i.test(file.name)) return this.setState({ uploadError: 'Välj en PDF-fil.' });
+    const { buf, hash } = await this.digest(file);
+    let pages = 1;
+    try { const m = new TextDecoder('latin1').decode(buf).match(/\/Type\s*\/Page(?![a-zA-Z])/g); pages = m ? m.length : 1; } catch (e) {}
+    this.setState(s => ({ uploadError: '', draft: { ...s.draft, file: { name: file.name, size: file.size, pages, hash }, title: s.draft.title || file.name.replace(/\.pdf$/i, '').replace(/[_-]+/g, ' ') } }));
+  }
+  useSample = () => this.setState(s => ({ uploadError: '', draft: { ...s.draft, file: { name: 'Samarbetsavtal_2026.pdf', size: 236544, pages: 4, hash: rhex() }, title: s.draft.title || 'Samarbetsavtal 2026' } }));
+  clearFile = () => this.setState(s => ({ draft: { ...s.draft, file: null } }));
+  onTitle = e => { const v = e.target.value; this.setState(s => ({ draft: { ...s.draft, title: v } })); };
+  setRecip(i, k, v) { this.setState(s => ({ recipError: '', draft: { ...s.draft, recipients: s.draft.recipients.map((r, j) => j === i ? { ...r, [k]: v } : r) } })); }
+  removeRecip(i) { this.setState(s => { const r = s.draft.recipients.filter((_, j) => j !== i); return { draft: { ...s.draft, recipients: r.length ? r : [{ name: '', email: '' }] } }; }); }
+  addRecipient = () => this.setState(s => ({ draft: { ...s.draft, recipients: [...s.draft.recipients, { name: '', email: '' }] } }));
+  toggleMe = () => this.setState(s => ({ recipError: '', draft: { ...s.draft, includeMe: !s.draft.includeMe } }));
+
+  send = () => {
+    const s = this.state, d = s.draft;
+    const list = d.recipients.filter(r => r.name.trim() || r.email.trim()).map(r => ({ name: r.name.trim(), email: r.email.trim() }));
+    if (d.includeMe) list.push({ ...s.user });
+    if (!list.length) return this.setState({ recipError: 'Lägg till minst en mottagare.' });
+    if (list.some(r => !r.name || !emailOk(r.email))) return this.setState({ recipError: 'Kontrollera namn och e-post.' });
+    const now = Date.now();
+    const recipients = list.map(r => mkRec(r.name, r.email));
+    const doc = {
+      id: docId(), title: d.title.trim() || d.file.name, fileName: d.file.name, size: d.file.size, pages: d.file.pages, hash: d.file.hash,
+      createdAt: now, sealedAt: null, sealedHash: null, recipients,
+      events: [{ t: now, text: `Dokumentet skapades av ${s.user.name}.` }, { t: now + 1, text: `Skickat till ${joinNames(recipients.map(r => r.name))}.` }],
+    };
+    this.setState({ docs: [doc, ...s.docs], docId: doc.id, step: 'share', recipError: '' });
+  };
+
+  copy(r) {
+    const url = `https://signhere.se/s/${r.token}`;
+    try { navigator.clipboard.writeText(url); } catch (e) {}
+    this.setState({ copied: r.id }); clearTimeout(this._ct); this._ct = setTimeout(() => this.setState({ copied: null }), 1600);
+  }
+
+  openAsSigner(docId, recId) {
+    const d = this.state.docs.find(x => x.id === docId), r = d.recipients.find(x => x.id === recId);
+    const now = Date.now();
+    this.updDoc(docId, doc => ({
+      ...doc,
+      recipients: doc.recipients.map(x => x.id === recId ? { ...x, views: (x.views || 0) + 1, viewedAt: x.viewedAt || now } : x),
+      events: r.views ? doc.events : [...doc.events, { t: now, text: `${r.name} öppnade dokumentet.` }],
+    }));
+    this.setState({ screen: 'sign', sign: { docId, recId, step: r.signedAt ? 'done' : 'read', name: r.name, agree: false, hasInk: false } });
+    window.scrollTo(0, 0);
+  }
+  backToSender = () => { const id = this.state.sign && this.state.sign.docId; this.setState({ screen: 'app', view: 'doc', docId: id, sign: null }); window.scrollTo(0, 0); };
+  setSign(p) { this.setState(s => ({ sign: { ...s.sign, ...p } })); }
+  startSign = () => this.setSign({ step: 'draw', hasInk: false });
+  closeSheet = () => this.setSign({ step: 'read' });
+  onSignName = e => this.setSign({ name: e.target.value });
+  toggleAgree = () => this.setState(s => ({ sign: { ...s.sign, agree: !s.sign.agree } }));
+
+  sigRef = el => {
+    this.canvas = el;
+    if (!el) return;
+    requestAnimationFrame(() => {
+      const r = el.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+      el.width = Math.round(r.width * dpr); el.height = Math.round(r.height * dpr);
+      const ctx = el.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.lineWidth = 2.6; ctx.lineCap = 'round'; ctx.lineJoin = 'round'; ctx.strokeStyle = INK; ctx.fillStyle = INK;
+    });
+  };
+  pt(e) { const r = this.canvas.getBoundingClientRect(); return { x: e.clientX - r.left, y: e.clientY - r.top }; }
+  sigDown = e => {
+    if (!this.canvas) return;
+    try { this.canvas.setPointerCapture(e.pointerId); } catch (x) {}
+    this.drawing = true; const p = this.pt(e); this.last = p; this.mid = p;
+    const ctx = this.canvas.getContext('2d'); ctx.beginPath(); ctx.arc(p.x, p.y, 1.3, 0, Math.PI * 2); ctx.fill();
+    if (!this.state.sign.hasInk) this.setSign({ hasInk: true });
+  };
+  sigMove = e => {
+    if (!this.drawing) return;
+    const p = this.pt(e), ctx = this.canvas.getContext('2d');
+    const m = { x: (this.last.x + p.x) / 2, y: (this.last.y + p.y) / 2 };
+    ctx.beginPath(); ctx.moveTo(this.mid.x, this.mid.y); ctx.quadraticCurveTo(this.last.x, this.last.y, m.x, m.y); ctx.stroke();
+    this.last = p; this.mid = m;
+  };
+  sigUp = () => { this.drawing = false; };
+  clearSig = () => { const c = this.canvas; if (c) c.getContext('2d').clearRect(0, 0, c.width, c.height); this.setSign({ hasInk: false }); };
+
+  submitSign = () => {
+    const s = this.state.sign;
+    if (!s.hasInk || !s.agree || !s.name.trim()) return;
+    const sig = this.canvas.toDataURL('image/png'), now = Date.now(), ip = fakeIp(), dev = device(), name = s.name.trim();
+    this.updDoc(s.docId, d => {
+      const recipients = d.recipients.map(r => r.id === s.recId ? { ...r, name, signedAt: now, sig, ip, device: dev } : r);
+      const events = [...d.events, { t: now, text: `${name} signerade dokumentet.`, meta: `IP ${ip} · ${dev}` }];
+      const all = recipients.every(r => r.signedAt);
+      if (all) events.push({ t: now + 1500, text: 'Alla parter har signerat. Dokumentet förseglades.' });
+      return { ...d, recipients, events, sealedAt: all ? now + 1500 : null, sealedHash: all ? rhex() : null };
+    });
+    this.setSign({ step: 'done' });
+    window.scrollTo(0, 0);
+  };
+
+  onVerifyFile = e => { const f = e.target.files[0]; e.target.value = ''; this.runVerify(f); };
+  pickVerify = () => this.verifyEl && this.verifyEl.click();
+  onVDragOver = e => { e.preventDefault(); if (!this.state.vdrag) this.setState({ vdrag: true }); };
+  onVDragLeave = () => this.setState({ vdrag: false });
+  onVerifyDrop = e => { e.preventDefault(); this.setState({ vdrag: false }); this.runVerify(e.dataTransfer.files[0]); };
+  async runVerify(file) {
+    if (!file) return;
+    this.setState({ verify: { state: 'busy', fileName: file.name } });
+    const { hash } = await this.digest(file);
+    await new Promise(r => setTimeout(r, 700));
+    const d = this.state.docs.find(x => x.hash === hash || x.sealedHash === hash);
+    this.setState({ verify: { state: d ? (d.sealedAt ? 'valid' : 'pending') : 'invalid', fileName: file.name, hash, docId: d ? d.id : null } });
+  }
+  verifySample = () => {
+    const d = this.state.docs.find(x => x.sealedAt);
+    if (d) this.setState({ verify: { state: 'valid', fileName: d.fileName.replace(/\.pdf$/i, '_signerad.pdf'), hash: d.sealedHash, docId: d.id } });
+  };
+  resetVerify = () => this.setState({ verify: { state: 'idle' } });
+
+  docVM(d) {
+    const s = this.state;
+    const signed = d.recipients.filter(r => r.signedAt).length, total = d.recipients.length, done = total > 0 && signed === total;
+    return {
+      ...d, done,
+      statusLabel: done ? 'Signerat' : `Väntar · ${signed}/${total}`,
+      dotColor: done ? GREEN : AMBER,
+      toNames: 'Till ' + d.recipients.map(r => r.name).join(', '),
+      signerNames: joinNames(d.recipients.map(r => r.name)),
+      signedCountLabel: `${signed} av ${total} signerat`,
+      dateLabel: fmtD(d.createdAt),
+      pagesLabel: `${d.pages} ${d.pages === 1 ? 'sida' : 'sidor'} + signatursida`,
+      pagesArr: Array.from({ length: Math.min(d.pages, 12) }, (_, i) => ({ n: i + 1 })),
+      sealedFull: d.sealedAt ? fmtDT(d.sealedAt) : 'Ej förseglat',
+      sealedShort: d.sealedAt ? new Date(d.sealedAt).toLocaleDateString('sv-SE') : '—',
+      sealedHash: d.sealedHash || '—',
+      open: () => this.setState({ view: 'doc', docId: d.id }),
+      eventsVM: d.events.map(e => ({ text: e.text, meta: e.meta || '', date: fmtD(e.t), time: fmtT(e.t) })),
+      recipientsVM: d.recipients.map(r => ({
+        ...r,
+        initials: initials(r.name),
+        link: `https://signhere.se/s/${r.token}`,
+        linkShort: `signhere.se/s/${r.token}`,
+        hasSig: !!r.sig, sigBg: r.sig ? `url(${r.sig})` : 'none', notSigned: !r.signedAt,
+        statusText: r.signedAt ? 'Signerade ' + fmtDT(r.signedAt) : r.views ? `Öppnat ${r.views} ${r.views > 1 ? 'gånger' : 'gång'}` : 'Ej öppnat',
+        dotColor: r.signedAt ? GREEN : r.views ? AMBER : GREY,
+        sigCaption: r.signedAt ? fmtDT(r.signedAt) : 'Väntar på signatur',
+        signedFull: r.signedAt ? fmtDT(r.signedAt) : '—',
+        ip: r.ip || '—', device: r.device || '—',
+        viewsLabel: `Visade dokumentet ${r.views || 0} ${r.views === 1 ? 'gång' : 'gånger'}`,
+        copyLabel: s.copied === r.id ? 'Kopierad ✓' : 'Kopiera',
+        onCopy: () => this.copy(r),
+        onOpen: () => this.openAsSigner(d.id, r.id),
+      })),
+    };
+  }
+
+  renderVals() {
+    const s = this.state;
+    const isApp = s.screen === 'app', isPublic = s.screen === 'verify';
+    const docs = s.docs.map(d => this.docVM(d));
+    const cur = docs.find(d => d.id === s.docId) || null;
+    const counts = { all: docs.length, pending: docs.filter(d => !d.done).length, done: docs.filter(d => d.done).length };
+    const visibleDocs = docs.filter(d => s.filter === 'all' || (s.filter === 'done' ? d.done : !d.done));
+    const navKey = ['docs', 'new', 'doc', 'cert'].includes(s.view) ? 'docs' : s.view;
+    const draft = s.draft || { recipients: [] };
+    const stepIdx = { upload: 0, recipients: 1, share: 2 }[s.step] || 0;
+    const sign = s.sign;
+    const sDocRaw = sign ? docs.find(d => d.id === sign.docId) : null;
+    const sRec = sDocRaw ? sDocRaw.recipientsVM.find(r => r.id === sign.recId) : null;
+    const canSign = !!(sign && sign.hasInk && sign.agree && sign.name.trim());
+    const v = s.verify || { state: 'idle' };
+    const vDoc = v.docId ? docs.find(d => d.id === v.docId) : null;
+    const valid = v.state === 'valid';
+    const user = s.user || { name: '', email: '' };
+
+    return {
+      isSignup: s.screen === 'signup', isSignupStep1: s.signupStep === 1, isSignupStep2: s.signupStep === 2,
+      form: s.form, err: s.err || {},
+      onName: this.setForm('name'), onEmail: this.setForm('email'), onPassword: this.setForm('password'), onTeam: this.setForm('team'),
+      submitSignup: this.submitSignup, submitTeam: this.submitTeam,
+      backSignup: () => this.setState({ signupStep: 1, err: {} }),
+      openPublicVerify: () => this.setState({ screen: 'verify', verify: { state: 'idle' } }),
+      leavePublic: () => this.setState({ screen: s.user ? 'app' : 'signup', view: 'docs' }),
+      leavePublicLabel: s.user ? 'Till appen' : 'Skapa konto',
+
+      isApp, isPublic, showMain: isApp || isPublic, isSign: s.screen === 'sign',
+      teamName: s.team ? s.team.name : '', userInitials: initials(user.name),
+      senderLine: `${user.name}${s.team ? ' · ' + s.team.name : ''}`,
+      navItems: [['docs', 'Dokument'], ['team', 'Team'], ['verify', 'Verifiera']].map(([k, label]) => ({
+        label, bg: navKey === k ? '#e6e9ed' : 'transparent', color: navKey === k ? INK : '#5b626d',
+        go: () => this.setState({ view: k, verify: k === 'verify' ? { state: 'idle' } : s.verify }),
+      })),
+
+      isDocs: isApp && s.view === 'docs', hasDocs: docs.length > 0, isEmpty: docs.length === 0,
+      noVisible: docs.length > 0 && visibleDocs.length === 0, visibleDocs,
+      filters: [['all', 'Alla'], ['pending', 'Väntar'], ['done', 'Signerade']].map(([k, label]) => ({
+        label, count: counts[k], go: () => this.setState({ filter: k }),
+        bg: s.filter === k ? INK : '#fff', color: s.filter === k ? '#fff' : INK, border: s.filter === k ? INK : '#d9dde2',
+      })),
+      newDoc: this.newDoc,
+
+      isNew: isApp && s.view === 'new',
+      cancelNew: () => this.setState({ view: s.step === 'share' ? 'doc' : 'docs' }),
+      cancelLabel: s.step === 'share' ? 'Stäng' : 'Avbryt',
+      stepItems: ['Dokument', 'Mottagare', 'Dela'].map((label, i) => ({
+        label, mark: i < stepIdx ? '✓' : String(i + 1),
+        bg: i <= stepIdx ? INK : '#fff', color: i <= stepIdx ? '#fff' : '#5b626d', border: i <= stepIdx ? INK : '#d9dde2',
+        labelColor: i <= stepIdx ? INK : '#5b626d',
+      })),
+      stepUpload: s.step === 'upload', stepRecipients: s.step === 'recipients', stepShare: s.step === 'share',
+      noFile: !draft.file, hasFile: !!draft.file, draftFile: draft.file || {}, draftTitle: draft.title || '',
+      fileMeta: draft.file ? `${fmtSize(draft.file.size)} · ${draft.file.pages} ${draft.file.pages === 1 ? 'sida' : 'sidor'}` : '',
+      dropBorder: s.drag ? INK : '#c4cad1', dropBg: s.drag ? '#f1f3f5' : '#fff',
+      fileRef: this.fileRef, onFile: this.onFile, pickFile: this.pickFile, onDragOver: this.onDragOver, onDragLeave: this.onDragLeave, onDrop: this.onDrop,
+      useSample: this.useSample, clearFile: this.clearFile, uploadError: s.uploadError, onTitle: this.onTitle,
+      toRecipients: () => this.setState({ step: 'recipients' }), toUpload: () => this.setState({ step: 'upload' }),
+      draftRecipients: draft.recipients.map((r, i) => ({
+        ...r, onName: e => this.setRecip(i, 'name', e.target.value), onEmail: e => this.setRecip(i, 'email', e.target.value), onRemove: () => this.removeRecip(i),
+      })),
+      addRecipient: this.addRecipient, includeMe: !!draft.includeMe, toggleMe: this.toggleMe, send: this.send, recipError: s.recipError,
+      goToDoc: () => this.setState({ view: 'doc' }),
+
+      cur: cur || { recipientsVM: [], eventsVM: [], pagesArr: [] },
+      isDoc: isApp && s.view === 'doc' && !!cur,
+      backToDocs: () => this.setState({ view: 'docs' }),
+      openCert: () => { this.setState({ view: 'cert' }); window.scrollTo(0, 0); },
+      download: () => this.toastMsg('Signerad PDF med verifikat laddas ner'),
+      isCert: isApp && s.view === 'cert' && !!cur,
+      backToDoc: () => this.setState({ view: 'doc' }),
+      printCert: () => window.print(),
+      goVerify: e => { e && e.preventDefault(); this.setState({ view: 'verify', verify: { state: 'idle' } }); },
+
+      isVerify: (isApp && s.view === 'verify') || isPublic,
+      verify: v, verifyIdle: v.state === 'idle', verifyBusy: v.state === 'busy',
+      verifyFound: valid || v.state === 'pending', verifyInvalid: v.state === 'invalid',
+      vDoc: vDoc || {}, vDropBorder: s.vdrag ? INK : '#c4cad1',
+      vBandBg: valid ? 'oklch(0.97 0.03 155)' : 'oklch(0.97 0.03 75)', vBandInk: valid ? GREEN : 'oklch(0.6 0.14 70)',
+      vMark: valid ? '✓' : '…',
+      vTitle: valid ? 'Äkta och oförändrat' : 'Inte färdigsignerat',
+      vSub: valid ? 'Dokumentet matchar ett förseglat signhere-dokument.' : 'Dokumentet finns men alla parter har inte signerat än.',
+      canOpenVCert: isApp && valid,
+      openVCert: () => this.setState({ view: 'cert', docId: v.docId }),
+      verifyRef: this.verifyRef, onVerifyFile: this.onVerifyFile, pickVerify: this.pickVerify,
+      onVDragOver: this.onVDragOver, onVDragLeave: this.onVDragLeave, onVerifyDrop: this.onVerifyDrop,
+      verifySample: this.verifySample, hasSampleDoc: s.docs.some(d => d.sealedAt), resetVerify: this.resetVerify,
+
+      isTeam: isApp && s.view === 'team',
+      onTeamName: e => { const val = e.target.value; this.setState({ team: { name: val } }); },
+      invite: s.invite, onInvite: e => this.setState({ invite: e.target.value }),
+      sendInvite: e => {
+        e && e.preventDefault();
+        if (!emailOk(s.invite)) return this.toastMsg('Ange en giltig e-postadress');
+        this.setState({ members: [...s.members, { email: s.invite.trim() }], invite: '' });
+        this.toastMsg('Inbjudan skickad');
+      },
+      members: [{ name: user.name, email: user.email, role: 'Ägare', initials: initials(user.name), avBg: INK, avInk: '#fff' },
+        ...s.members.map(m => ({ name: m.email.split('@')[0], email: m.email, role: 'Inbjuden', initials: m.email[0].toUpperCase(), avBg: '#eef0f2', avInk: INK }))],
+      resetProto: () => { try { localStorage.removeItem(LS); } catch (e) {} this.setState(this.initial()); },
+
+      sDoc: sDocRaw || { recipientsVM: [], pagesArr: [] }, sRec: sRec || {},
+      sFirstName: sRec ? sRec.name.split(' ')[0] : '',
+      signNotDone: !!sign && sign.step !== 'done', signDraw: !!sign && sign.step === 'draw', signDone: !!sign && sign.step === 'done',
+      sDoneNote: sDocRaw && sDocRaw.done ? 'Alla parter har signerat. Dokumentet är förseglat och en kopia skickas till din e-post.' : 'Du får en kopia när alla parter har signerat.',
+      startSign: this.startSign, closeSheet: this.closeSheet, backToSender: this.backToSender,
+      signName: sign ? sign.name : '', onSignName: this.onSignName, agree: !!(sign && sign.agree), toggleAgree: this.toggleAgree,
+      noInk: !(sign && sign.hasInk), clearSig: this.clearSig,
+      sigRef: this.sigRef, sigDown: this.sigDown, sigMove: this.sigMove, sigUp: this.sigUp,
+      submitSign: this.submitSign, cannotSign: !canSign, signBtnBg: canSign ? INK : '#b5bbc3', signBtnCursor: canSign ? 'pointer' : 'not-allowed',
+
+      hasToast: !!s.toast, toast: s.toast,
+    };
+  }
+}
+</script>
+</body>
+</html>

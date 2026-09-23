@@ -1,0 +1,12 @@
+.git
+node_modules
+dist
+data
+.env
+backups
+.test-artifacts
+design
+*.log
+.local/
+output/
+tmp/

@@ -1,0 +1,432 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir, writeFile } from 'node:fs/promises';
+import { existsSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { resolve } from 'node:path';
+import { chromium, expect } from '@playwright/test';
+import { PDFDocument, StandardFonts, PDFName, PDFString } from 'pdf-lib';
+import { createApp } from '../dist/server/app.js';
+import { verifyEvidence } from '../scripts/verify-evidence.mjs';
+const databaseUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!databaseUrl) throw new Error('Set TEST_DATABASE_URL or DATABASE_URL for browser tests.');
+const schema = 'browser_' + randomBytes(10).toString('hex');
+const output = resolve('.test-artifacts/browser');
+await mkdir(output, { recursive: true });
+const setupToken = randomBytes(32).toString('base64url');
+const server = createServer();
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const baseURL = `http://127.0.0.1:${server.address().port}`;
+let runtime, browser;
+try {
+  runtime = await createApp({ databaseUrl, dataDir: output, baseUrl: baseURL, schema, setupToken, rateLimit: false });
+  server.on('request', runtime.app);
+  browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) });
+  const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await ownerContext.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.goto(baseURL);
+  await expect(page.getByRole('heading', { name: 'Skapa konto' })).toBeVisible();
+  await page.screenshot({ path: output + '/01-signup.png', fullPage: true });
+  await page.getByLabel('Namn', { exact: true }).fill('Test Ägare');
+  await page.getByLabel('E-post', { exact: true }).fill('owner@example.test');
+  await page.getByLabel('Lösenord', { exact: true }).fill('Local-browser-test-password-2026');
+  await page.getByRole('button', { name: 'Fortsätt', exact: true }).click();
+  await page.getByLabel('Teamnamn').fill('Signhere testteam');
+  await page.getByLabel('Installationsnyckel').fill(setupToken);
+  await page.getByRole('button', { name: 'Skapa team', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Dokument', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Nytt dokument' }).click();
+  // Sending a document must not depend on the optional browser PDF renderer.
+  const pdfWorkerPattern = /\/pdf\.worker[^/]*\.mjs(?:\?.*)?$/;
+  let senderPdfWorkerRequests = 0;
+  await ownerContext.route(pdfWorkerPattern, route => { senderPdfWorkerRequests++; return route.abort(); });
+  const pdf = await PDFDocument.create(); const sheet = pdf.addPage([595, 842]);
+  const font = await pdf.embedFont(StandardFonts.Helvetica);
+  sheet.drawText('Signhere / testdokument', { x: 55, y: 770, font, size: 14 });
+  sheet.drawText('Konsultavtal', { x: 55, y: 715, font, size: 28 });
+  sheet.drawText('Detta är ett test, inte ett verkligt avtal.', { x: 55, y: 650, font, size: 12 });
+  const noteText = 'Granska <img src=x onerror=alert(1)> och https://example.com som vanlig text.';
+  const comment = pdf.context.obj({ Type: 'Annot', Subtype: 'Text', Rect: [55,570,75,590], Contents: PDFString.of(noteText), T: PDFString.of('Granskare') });
+  const commentRef = pdf.context.register(comment);
+  const popupRef = pdf.context.register(pdf.context.obj({ Type:'Annot', Subtype:'Popup', Rect:[80,500,300,590], Parent:commentRef }));
+  comment.set(PDFName.of('Popup'), popupRef);
+  const linkRef = pdf.context.register(pdf.context.obj({ Type:'Annot', Subtype:'Link', Rect:[55,640,300,670], A:{ S:'URI', URI:PDFString.of('https://example.com/terms') } }));
+  sheet.node.set(PDFName.of('Annots'), pdf.context.obj([linkRef, commentRef, popupRef]));
+  const uploaded = Buffer.from(await pdf.save());
+  // A late response for a replaced selection must not replace the current preview or error state.
+  let obsoleteRoute, captureObsolete;
+  const obsoleteCaptured = new Promise(resolve => { captureObsolete = resolve; });
+  await page.route('**/api/documents/prepare', route => { obsoleteRoute = route; captureObsolete(); }, { times: 1 });
+  await page.locator('input[type=file]').setInputFiles({ name: 'ersatt.pdf', mimeType: 'application/pdf', buffer: uploaded });
+  await obsoleteCaptured;
+  await page.getByRole('button', { name: 'Byt', exact: true }).click();
+  const preparingResponse = page.waitForResponse(response => response.url().endsWith('/api/documents/prepare') && response.request().method() === 'POST');
+  await page.locator('input[type=file]').setInputFiles({ name: 'konsultavtal.pdf', mimeType: 'application/pdf', buffer: uploaded });
+  const preparedResponse = await preparingResponse;
+  assert.equal(preparedResponse.status(), 200);
+  const prepared = await preparedResponse.json();
+  assert.equal(prepared.preparation.kind, 'flatten');
+  assert.equal(prepared.preparation.noteCount, 1);
+  assert.equal(prepared.pages, 2, 'The original page and static comment appendix must both be present.');
+  const original = Buffer.from(prepared.pdfBase64, 'base64');
+  assert.notDeepEqual(original, uploaded, 'Interactive source must be normalized before signing.');
+  const flattened = await PDFDocument.load(original);
+  assert.equal(flattened.getPageCount(), 2);
+  for (const pdfPage of flattened.getPages()) assert.equal(pdfPage.node.Annots()?.size() ?? 0, 0, 'Prepared pages must not contain interactive annotations.');
+  await expect(page.locator('.preparation-note')).toContainText('PDF:en är klar för signering.');
+  await expect(page.locator('.upload-preview summary')).toHaveText('Förhandsvisa PDF');
+  await expect(page.locator('.upload-preview')).toHaveJSProperty('open', false);
+  await expect(page.locator('.upload-pdf-preview')).toHaveCount(0);
+  await expect(page.getByText('Kontrollera förhandsvisningen innan du går vidare.')).toHaveCount(0);
+  await expect(page.getByText('Förhandsgranska den förberedda PDF-filen innan du skickar den för signering.')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Nästa', exact: true })).toBeEnabled();
+  const obsoleteResponse = page.waitForResponse(response => response.status() === 400 && response.url().endsWith('/api/documents/prepare'));
+  await obsoleteRoute.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ error: 'obsolete-selection-error' }) });
+  await obsoleteResponse;
+  await page.waitForLoadState('networkidle');
+  await expect(page.getByText('obsolete-selection-error')).toHaveCount(0);
+  await expect(page.locator('.file-summary')).toContainText('konsultavtal.pdf');
+  await expect(page.getByRole('button', { name: 'Nästa', exact: true })).toBeEnabled();
+  await page.screenshot({ path: output + '/00-prepared-upload.png', fullPage: true });
+  await page.getByLabel('Titel', { exact: true }).fill('Konsultavtal Q4 – test');
+  await page.getByRole('button', { name: 'Nästa', exact: true }).click();
+  await page.getByLabel('Mottagare 1, namn', { exact: true }).fill('Åsa Test');
+  await page.getByLabel('Mottagare 1, e-post', { exact: true }).fill('asa@example.test');
+  const creationRequest = page.waitForRequest(request => request.url() === baseURL + '/api/documents' && request.method() === 'POST');
+  await page.getByRole('button', { name: 'Skicka för signering' }).click();
+  const creationPayload = (await creationRequest).postDataJSON();
+  assert.equal(Object.hasOwn(creationPayload, 'preparedHash'), false, 'Sending must not require preview acknowledgment.');
+  assert.equal(creationPayload.pdfBase64, uploaded.toString('base64'));
+  await expect(page.getByRole('heading', { name: 'Redo att signeras' })).toBeVisible({ timeout: 15000 });
+  assert.equal(senderPdfWorkerRequests, 0, 'The collapsed optional preview must not load a PDF worker before sending.');
+  await ownerContext.unroute(pdfWorkerPattern);
+  const signingURL = await page.getByRole('textbox', { name: 'Personlig länk' }).inputValue();
+  await page.getByRole('button', { name: 'Till dokumentet', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Konsultavtal Q4 – test', exact: true })).toBeVisible();
+  const documentURL = page.url();
+  const documentId = documentURL.split('/').at(-1);
+  await expect(page.locator('.pdf-page canvas').first()).toHaveJSProperty('width', 260);
+  await page.screenshot({ path: output + '/02-document-pending.png', fullPage: true });
+  const recipientContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const signer = await recipientContext.newPage();
+  signer.on('pageerror', error => errors.push(error.message));
+  await signer.goto(signingURL);
+  await expect(signer.getByRole('button', { name: 'Signera', exact: true })).toBeEnabled({ timeout: 15000 });
+  await expect(signer.locator('.pdf-page canvas')).toHaveCount(2);
+  await expect(signer.locator('.pdf-annotations')).toHaveCount(0);
+  await signer.locator('.pdf-page canvas').nth(1).scrollIntoViewIfNeeded();
+  await expect(signer.locator('.pdf-page canvas').nth(1)).toHaveJSProperty('width', 1380);
+  await signer.screenshot({ path: output + '/03-static-comments.png', fullPage: true });
+  await signer.evaluate(() => window.scrollTo(0, 0));
+  assert.equal(await signer.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Mobile signer overflows horizontally.');
+  await signer.screenshot({ path: output + '/03-mobile-signing.png', fullPage: true });
+  await signer.getByRole('button', { name: 'Signera', exact: true }).click();
+  const dialog = signer.getByRole('dialog');
+  await dialog.getByLabel('Ditt fullständiga namn').fill('Åsa Q. Test');
+  const ink = dialog.locator('canvas'); await ink.focus(); await ink.press('Space');
+  for (let i = 0; i < 25; i++) await ink.press('ArrowRight');
+  for (let i = 0; i < 8; i++) await ink.press('ArrowUp');
+  await ink.press('Space');
+  await dialog.getByRole('checkbox').check();
+  await signer.screenshot({ path: output + '/04-mobile-signature.png', fullPage: true });
+  await dialog.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
+  await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible({ timeout: 15000 });
+  await expect(signer.getByText('Åsa Q. Test', { exact: true })).toBeVisible();
+  const [download] = await Promise.all([signer.waitForEvent('download'), signer.getByRole('button', { name: 'Ladda ner signerad PDF' }).click()]);
+  const completedPath = output + '/completed.pdf'; await download.saveAs(completedPath);
+  await page.goto(documentURL);
+  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible();
+  await page.screenshot({ path: output + '/05-document-completed.png', fullPage: true });
+  await page.getByRole('button', { name: 'Verifikat', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Verifikat', exact: true })).toBeVisible();
+  await expect(page.getByText('Åsa Q. Test', { exact: true })).toBeVisible();
+  await page.screenshot({ path: output + '/06-certificate.png', fullPage: true });
+  const evidenceResponse = await ownerContext.request.get(`${baseURL}/api/documents/${documentId}/evidence`);
+  const evidence = await evidenceResponse.json();
+  const finalResponse = await ownerContext.request.get(`${baseURL}/api/documents/${documentId}/pdf?version=completed`);
+  const signingPdfResponse = await ownerContext.request.get(`${baseURL}/api/documents/${documentId}/pdf?version=original`);
+  const uploadedResponse = await ownerContext.request.get(`${baseURL}/api/documents/${documentId}/pdf?version=uploaded`);
+  assert.equal(uploadedResponse.status(), 200);
+  assert.deepEqual(await signingPdfResponse.body(), original, 'Signers must see exactly the PDF prepared for signing.');
+  assert.deepEqual(await uploadedResponse.body(), uploaded, 'Keep the uploaded source byte for byte.');
+  verifyEvidence(evidence, original, await finalResponse.body(), uploaded);
+  await writeFile(output + '/evidence.json', JSON.stringify(evidence, null, 2));
+  await writeFile(output + '/original.pdf', original);
+  await writeFile(output + '/uploaded.pdf', uploaded);
+  // Public verification must work without an account or a successful bootstrap request.
+  const publicContext = await browser.newContext({ viewport: { width: 390, height: 844 } });
+  const verifier = await publicContext.newPage();
+  verifier.on('pageerror', error => errors.push(error.message));
+  let publicBootstrapRequests = 0;
+  const verificationPosts = [];
+  publicContext.on('request', request => { if (request.method() === 'POST') verificationPosts.push(request); });
+  await publicContext.route('**/api/bootstrap', route => { publicBootstrapRequests++; return route.abort(); });
+  const expectPublicVerification = async target => {
+    await expect(target.getByRole('heading', { name: 'Verifiera dokument', exact: true })).toBeVisible();
+    await expect(target.getByRole('link', { name: 'Till signhere', exact: true })).toHaveAttribute('href', '/');
+    await expect(target.getByRole('navigation', { name: 'Huvudmeny' })).toHaveCount(0);
+    await expect(target.locator('.header-account')).toHaveCount(0);
+    await expect(target.getByRole('heading', { name: /^(Logga in|Skapa konto)$/ })).toHaveCount(0);
+    await expect(target.getByRole('button', { name: 'Team', exact: true })).toHaveCount(0);
+  };
+  await verifier.goto(baseURL + '/verify');
+  await expectPublicVerification(verifier);
+  await verifier.locator('input[type=file]').setInputFiles(completedPath);
+  await expect(verifier.getByRole('heading', { name: 'Oförändrad signerad PDF' })).toBeVisible();
+  assert.equal(await verifier.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Public verification overflows horizontally on mobile.');
+  await verifier.screenshot({ path: output + '/07-verification.png', fullPage: true });
+  await verifier.goto(baseURL + '/verifiera');
+  await expectPublicVerification(verifier);
+  await verifier.reload();
+  await expectPublicVerification(verifier);
+  const finalPdf = await finalResponse.body();
+  const changedPdf = Buffer.concat([finalPdf, Buffer.from('\n% Verification test: modified bytes\n')]);
+  await verifier.locator('input[type=file]').setInputFiles({ name: 'andrat-avtal.pdf', mimeType: 'application/pdf', buffer: changedPdf });
+  await expect(verifier.getByRole('heading', { name: 'Kunde inte verifieras' })).toBeVisible();
+  assert.equal(publicBootstrapRequests, 0, 'Public verification must not request account bootstrap, including alias reloads.');
+  assert.equal(verificationPosts.length, 2, 'Only the two hash checks should send data.');
+  for (const [index, bytes] of [finalPdf, changedPdf].entries()) {
+    assert.equal(verificationPosts[index].url(), baseURL + '/api/verify');
+    assert.deepEqual(verificationPosts[index].postDataJSON(), { sha256: createHash('sha256').update(bytes).digest('hex') }, 'Verification sends only the SHA-256 fingerprint, never the PDF or filename.');
+  }
+  // The same standalone shell is used when an already authenticated owner follows the app link.
+  await page.getByRole('navigation', { name: 'Huvudmeny' }).getByRole('button', { name: 'Verifiera', exact: true }).click();
+  await expectPublicVerification(page);
+  await expect(page.getByText('Signhere testteam', { exact: true })).toHaveCount(0);
+  await expect(page.getByText('Test Ägare', { exact: true })).toHaveCount(0);
+  await page.goto(documentURL);
+  await expect(page.getByRole('heading', { name: 'Konsultavtal Q4 – test', exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Team', exact: true }).click();
+  await page.getByLabel('E-post till ny medlem').fill('member@example.test');
+  await page.getByRole('button', { name: 'Bjud in', exact: true }).click();
+  const invitationURL = await page.getByRole('textbox', { name: 'Personlig länk' }).inputValue();
+  const memberContext = await browser.newContext(); const member = await memberContext.newPage();
+  await member.goto(invitationURL);
+  await expect(member.getByRole('heading', { name: 'Gå med i teamet' })).toBeVisible();
+  await member.getByLabel('Namn', { exact: true }).fill('Test Medlem');
+  await member.getByLabel('Lösenord', { exact: true }).fill('Local-member-test-password-2026');
+  await member.getByRole('button', { name: 'Gå med i teamet', exact: true }).click();
+  await expect(member.getByRole('heading', { name: 'Dokument', exact: true })).toBeVisible();
+  await member.getByRole('button', { name: 'Team', exact: true }).click();
+  await expect(member.getByText('Test Medlem', { exact: true })).toBeVisible();
+  await expect(member.getByRole('button', { name: 'Bjud in', exact: true })).toHaveCount(0);
+  // A sender who checks "Jag ska också signera" must actually sign, not just
+  // receive another sharing link. Creation must never imply signature consent.
+  async function createSenderDocument(title, parties = []) {
+    await page.goto(baseURL + '/new');
+    await page.locator('input[type=file]').setInputFiles({ name: 'sender-avtal.pdf', mimeType: 'application/pdf', buffer: uploaded });
+    await expect(page.getByRole('button', { name: 'Nästa', exact: true })).toBeEnabled({ timeout: 15000 });
+    await page.getByLabel('Titel', { exact: true }).fill(title);
+    await page.getByRole('button', { name: 'Nästa', exact: true }).click();
+    for (const [index, party] of parties.entries()) {
+      if (index) await page.getByRole('button', { name: '+ Lägg till mottagare', exact: true }).click();
+      await page.getByLabel(`Mottagare ${index + 1}, namn`, { exact: true }).fill(party.name);
+      await page.getByLabel(`Mottagare ${index + 1}, e-post`, { exact: true }).fill(party.email);
+    }
+    await page.getByRole('checkbox', { name: 'Jag ska också signera' }).check();
+    const countLabel = `Du (Test Ägare)${parties.length ? ` + ${parties.length} mottagare` : ''} · ${parties.length + 1} ${parties.length ? 'signaturer' : 'signatur'}`;
+    await expect(page.getByText(countLabel, { exact: true })).toBeVisible();
+    if (parties.some(party => party.email === 'owner@example.test')) {
+      await expect(page.getByText('Du och mottagaren signerar var för sig, även när ni använder samma e-postadress.', { exact: true })).toBeVisible();
+      await page.screenshot({ path: output + '/10-shared-email-signer-count.png', fullPage: true, animations: 'disabled' });
+    }
+    const responsePromise = page.waitForResponse(response => response.url() === baseURL + '/api/documents' && response.request().method() === 'POST');
+    await page.getByRole('button', { name: 'Skapa och signera', exact: true }).click();
+    const response = await responsePromise;
+    assert.equal(response.status(), 201);
+    assert.equal(response.request().postDataJSON().includeSender, true);
+    const created = await response.json();
+    assert.equal(created.document.status, 'pending');
+    assert.ok(created.document.recipients.every(recipient => !recipient.signedAt));
+    assert.equal(created.document.recipients.length, parties.length + 1);
+    assert.deepEqual(response.request().postDataJSON().recipients, parties);
+    assert.equal(created.document.senderRecipientId, created.senderRecipientId);
+    const assignedSender = created.document.recipients.find(recipient => recipient.id === created.senderRecipientId);
+    assert.equal(assignedSender.name, 'Test Ägare');
+    assert.equal(assignedSender.email, 'owner@example.test');
+    assert.ok(created.senderRecipientId);
+    await expect(page.getByRole('dialog')).toBeVisible({ timeout: 15000 });
+    return created;
+  }
+  async function signDialog(target, name) {
+    const signature = target.getByRole('dialog');
+    await signature.getByLabel('Ditt fullständiga namn').fill(name);
+    const canvas = signature.locator('canvas');
+    await canvas.focus(); await canvas.press('Space');
+    for (let i = 0; i < 25; i++) await canvas.press('ArrowRight');
+    for (let i = 0; i < 8; i++) await canvas.press('ArrowUp');
+    await canvas.press('Space');
+    await expect(signature.getByRole('button', { name: 'Signera dokumentet', exact: true })).toBeDisabled();
+    await signature.getByRole('checkbox').check();
+    await signature.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
+    await expect(signature).not.toBeVisible({ timeout: 15000 });
+  }
+  const senderCreated = await createSenderDocument('Avtal med egen underskrift', [{ name: 'Extern Part', email: 'external@example.test' }]);
+  await page.screenshot({ path: output + '/08-sender-signing.png', fullPage: true, animations: 'disabled' });
+  await signDialog(page, 'Test Ägare');
+  const externalLink = senderCreated.links.find(link => link.recipientId !== senderCreated.senderRecipientId);
+  await expect(page.getByRole('textbox', { name: 'Personlig länk' })).toHaveCount(1);
+  assert.equal(await page.getByRole('textbox', { name: 'Personlig länk' }).inputValue(), externalLink.url);
+  const senderPending = (await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}`)).json()).document;
+  assert.equal(senderPending.status, 'pending');
+  assert.equal(senderPending.completedHash, null);
+  assert.equal(senderPending.recipients.filter(recipient => recipient.signedAt).length, 1);
+  assert.ok(senderPending.recipients.find(recipient => recipient.id === senderCreated.senderRecipientId).signedAt);
+  await page.screenshot({ path: output + '/09-sender-signed-sharing.png', fullPage: true, animations: 'disabled' });
+  await signer.goto(externalLink.url);
+  await expect(signer.getByRole('button', { name: 'Signera', exact: true })).toBeEnabled({ timeout: 15000 });
+  await signer.getByRole('button', { name: 'Signera', exact: true }).click();
+  await signDialog(signer, 'Extern Part');
+  await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible();
+  const senderEvidence = await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}/evidence`)).json();
+  assert.equal(senderEvidence.document.status, 'completed');
+  const senderOriginal = await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}/pdf?version=original`)).body();
+  const senderCompleted = await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}/pdf?version=completed`)).body();
+  assert.equal(verifyEvidence(senderEvidence, senderOriginal, senderCompleted, uploaded).signatures, 2);
+
+  // A shared inbox must never merge an entered party with the sender. Each
+  // assignment needs its own signature, sharing link, and hash-linked event.
+  const sharedAddress = await createSenderDocument('Avtal med gemensam e-post', [
+    { name: 'Part med samma adress', email: 'owner@example.test' },
+    { name: 'Ytterligare part', email: 'additional@example.test' },
+  ]);
+  assert.equal(sharedAddress.document.recipients.length, 3);
+  assert.equal(new Set(sharedAddress.document.recipients.map(recipient => recipient.id)).size, 3);
+  await expect(page.getByRole('dialog').getByLabel('Ditt fullständiga namn')).toHaveValue('Test Ägare');
+  await signDialog(page, 'Test Ägare');
+  const partyLinks = sharedAddress.links.filter(link => link.recipientId !== sharedAddress.senderRecipientId);
+  await expect(page.getByRole('textbox', { name: 'Personlig länk' })).toHaveCount(2);
+  assert.deepEqual(await page.getByRole('textbox', { name: 'Personlig länk' }).evaluateAll(inputs => inputs.map(input => input.value)), partyLinks.map(link => link.url));
+  await page.screenshot({ path: output + '/11-sender-and-parties-sharing.png', fullPage: true, animations: 'disabled' });
+  await page.goto(`${baseURL}/documents/${sharedAddress.document.id}`);
+  await expect(page.getByRole('heading', { name: 'Avtal med gemensam e-post', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Signera dokumentet', exact: true })).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Skapa ny personlig länk', exact: true })).toHaveCount(2);
+  for (const [index, partyLink] of partyLinks.entries()) {
+    const pending = (await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}`)).json()).document;
+    assert.equal(pending.status, 'pending');
+    assert.equal(pending.completedHash, null);
+    assert.equal(pending.recipients.filter(recipient => recipient.signedAt).length, index + 1);
+    assert.ok(pending.recipients.find(recipient => recipient.id === sharedAddress.senderRecipientId).signedAt);
+    assert.equal(pending.recipients.find(recipient => recipient.id === partyLink.recipientId).signedAt, null);
+    await signer.goto(partyLink.url);
+    await expect(signer.getByRole('button', { name: 'Signera', exact: true })).toBeEnabled({ timeout: 15000 });
+    await signer.getByRole('button', { name: 'Signera', exact: true }).click();
+    await expect(signer.getByRole('dialog').getByLabel('Ditt fullständiga namn')).toHaveValue(partyLink.name);
+    await signDialog(signer, partyLink.name);
+    await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible();
+  }
+  const sharedEvidence = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/evidence`)).json();
+  const sharedOriginal = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/pdf?version=original`)).body();
+  const sharedCompleted = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/pdf?version=completed`)).body();
+  assert.equal(verifyEvidence(sharedEvidence, sharedOriginal, sharedCompleted, uploaded).signatures, 3);
+  assert.equal(sharedEvidence.document.senderRecipientId, sharedAddress.senderRecipientId);
+  assert.equal(sharedEvidence.events[0].data.senderRecipientId, sharedAddress.senderRecipientId);
+  assert.equal(sharedEvidence.events.filter(event => event.type === 'recipient.signed' && event.data.recipientId === sharedAddress.senderRecipientId).length, 1);
+
+  // Self-only documents also need an explicit signature. Cancelling the dialog
+  // leaves the document pending, with a direct signing action after a reload.
+  const selfOnly = await createSenderDocument('Bara min underskrift');
+  assert.equal(selfOnly.document.recipients.length, 1);
+  await page.getByRole('dialog').getByRole('button', { name: 'Avbryt', exact: true }).click();
+  await expect(page.getByRole('dialog')).not.toBeVisible();
+  let selfDocument = (await (await ownerContext.request.get(`${baseURL}/api/documents/${selfOnly.document.id}`)).json()).document;
+  assert.equal(selfDocument.status, 'pending'); assert.equal(selfDocument.recipients[0].signedAt, null);
+  await page.goto(`${baseURL}/documents/${selfOnly.document.id}`);
+  await page.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible({ timeout: 15000 });
+  await page.getByRole('dialog').getByRole('button', { name: 'Avbryt', exact: true }).click();
+  await page.getByRole('button', { name: '← Tillbaka', exact: true }).click();
+  // Another tab may replace this recipient's token while the detail stays open.
+  // Resuming must obtain a current token instead of reusing a revoked one.
+  const rotatedSenderLink = await ownerContext.request.post(`${baseURL}/api/documents/${selfOnly.document.id}/recipients/${selfOnly.senderRecipientId}/link`, { headers: { Origin: baseURL }, data: {} });
+  assert.equal(rotatedSenderLink.status(), 200);
+  await page.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
+  await expect(page.getByRole('dialog')).toBeVisible({ timeout: 15000 });
+  await signDialog(page, 'Test Ägare');
+  await expect(page.getByRole('heading', { name: 'Bara min underskrift', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Signera dokumentet', exact: true })).toHaveCount(0);
+  selfDocument = (await (await ownerContext.request.get(`${baseURL}/api/documents/${selfOnly.document.id}`)).json()).document;
+  assert.equal(selfDocument.status, 'completed'); assert.ok(selfDocument.recipients[0].signedAt);
+  // A browser must never open the client's token if an older or inconsistent
+  // creation response does not designate the sender separately.
+  for (const mode of ['collapsed', 'wrong-sender-id']) {
+    let savedDocumentId;
+    let createCalls = 0;
+    let signingRequests = 0;
+    const countSigningRequests = request => {
+      if (request.url().startsWith(baseURL + '/api/sign/')) signingRequests++;
+    };
+    page.on('request', countSigningRequests);
+    const creationRoute = async route => {
+      if (route.request().method() !== 'POST') return route.continue();
+      createCalls++;
+      const response = await route.fetch();
+      assert.equal(response.status(), 201);
+      const body = await response.json();
+      savedDocumentId = body.document.id;
+      const client = body.document.recipients.find(recipient => recipient.id !== body.senderRecipientId);
+      body.senderRecipientId = client.id;
+      if (mode === 'collapsed') {
+        body.document.recipients = [client];
+        body.links = body.links.filter(link => link.recipientId === client.id);
+        delete body.document.senderRecipientId;
+      } else body.document.senderRecipientId = client.id;
+      await route.fulfill({ response, json: body });
+    };
+    await page.route(baseURL + '/api/documents', creationRoute);
+    await page.goto(baseURL + '/new');
+    await page.locator('input[type=file]').setInputFiles({ name: 'guard.pdf', mimeType: 'application/pdf', buffer: uploaded });
+    await expect(page.getByRole('button', { name: 'Nästa', exact: true })).toBeEnabled({ timeout: 15000 });
+    const guardTitle = 'Kontroll av signerande parter ' + mode;
+    await page.getByLabel('Titel', { exact: true }).fill(guardTitle);
+    await page.getByRole('button', { name: 'Nästa', exact: true }).click();
+    await page.getByLabel('Mottagare 1, namn', { exact: true }).fill('Client Ocar');
+    await page.getByLabel('Mottagare 1, e-post', { exact: true }).fill('owner@example.test');
+    await page.getByRole('checkbox', { name: 'Jag ska också signera' }).check();
+    await page.getByRole('button', { name: 'Skapa och signera', exact: true }).click();
+    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.getByRole('dialog')).toHaveCount(0);
+    await expect(page.getByRole('textbox', { name: 'Personlig länk' })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Skapa och signera', exact: true })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Signera dokumentet', exact: true })).toHaveCount(0);
+    assert.equal(createCalls, 1);
+    assert.equal(signingRequests, 0, 'An inconsistent assignment must never open a signing session.');
+    await page.unroute(baseURL + '/api/documents', creationRoute);
+    page.off('request', countSigningRequests);
+    await page.getByRole('button', { name: 'Öppna dokumentet', exact: true }).click();
+    await expect(page.getByRole('heading', { name: guardTitle, exact: true })).toBeVisible();
+    const saved = (await (await ownerContext.request.get(`${baseURL}/api/documents/${savedDocumentId}`)).json()).document;
+    assert.equal(saved.status, 'pending');
+    assert.ok(saved.recipients.every(recipient => recipient.signedAt === null));
+  }
+  assert.deepEqual(errors, [], 'Uncaught browser errors.');
+  if (process.env.TEST_BACKUP_RESTORE === '1') {
+    const exec = promisify(execFile);
+    const connection = new URL(databaseUrl);
+    const env = { ...process.env, PGHOST: connection.hostname, PGPORT: connection.port || '5432', PGUSER: decodeURIComponent(connection.username), PGPASSWORD: decodeURIComponent(connection.password), PGDATABASE: decodeURIComponent(connection.pathname.slice(1)) };
+    const nativeBin = resolve('.local/postgres/bin');
+    const dumpTool = process.env.PG_DUMP ?? (existsSync(nativeBin + '/pg_dump.exe') ? nativeBin + '/pg_dump.exe' : 'pg_dump');
+    const restoreTool = process.env.PG_RESTORE ?? (existsSync(nativeBin + '/pg_restore.exe') ? nativeBin + '/pg_restore.exe' : 'pg_restore');
+    const dump = output + '/restore-test.dump';
+    await exec(dumpTool, ['--format=custom', '--no-owner', '--no-acl', '--schema=' + schema, '--file', dump], { env, windowsHide: true });
+    await runtime.db.query(`DROP SCHEMA "${schema}" CASCADE`);
+    await exec(restoreTool, ['--no-owner', '--no-acl', '--exit-on-error', '--dbname', env.PGDATABASE, dump], { env, windowsHide: true });
+    const restored = (await runtime.db.query('SELECT original,completed,completed_hash,uploaded FROM documents WHERE id=$1', [documentId])).rows[0];
+    assert.deepEqual(restored.uploaded, uploaded);
+    verifyEvidence(evidence, restored.original, restored.completed, restored.uploaded);
+    assert.equal(restored.completed_hash, evidence.document.completedHash);
+    console.log('PostgreSQL backup/restore roundtrip passed for the completed document and evidence.');
+  }
+  console.log('Browser test passed: setup, automatic PDF flattening without mandatory preview or PDF worker, mobile signing, final PDF, offline evidence, standalone public verification with hash-only requests, invitation and member role, sender plus all parties (including shared emails) with verified signature evidence, resuming self-only signatures, and refusing inconsistent sender assignments before opening any signature.');
+} finally {
+  await browser?.close();
+  server.closeAllConnections();
+  await new Promise(resolve => server.close(resolve));
+  if (runtime) { await runtime.db.query(`DROP SCHEMA "${schema}" CASCADE`); await runtime.close(); }
+}

@@ -1,0 +1,470 @@
+import express, { type Request, type Response, type NextFunction } from 'express';
+import helmet from 'helmet';
+import { rateLimit } from 'express-rate-limit';
+import { z, ZodError } from 'zod';
+import { mkdir, readFile, writeFile, unlink, access } from 'node:fs/promises';
+import { resolve, join } from 'node:path';
+import type { Pool, PoolClient } from 'pg';
+import { createDatabase, transaction, appendEvent, uid, canonical, type Row } from './db.js';
+import { ApiError, token, equalSecret, hashPassword, verifyPassword } from './security.js';
+import { sha256, preparePdf, finalizePdf, MAX_PDF_BYTES } from './pdf.js';
+import { CONSENT, getSigningMethod, listMethods } from './plugins.js';
+
+export interface AppConfig {
+  databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
+  setupToken?: string; now?: () => number; rateLimit?: boolean; webDir?: string; trustProxy?: string[];
+  pdfFinalizer?: typeof finalizePdf;
+}
+const DAY = 86400000;
+const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
+const emailSchema = z.email().trim().toLowerCase().max(254);
+const passwordSchema = z.string().min(12, 'Lösenordet behöver minst 12 tecken.').max(128);
+const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
+const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
+const id = (value: unknown) => z.uuid().parse(value);
+type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
+const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation';
+const toUser = (row: Row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name });
+const eventDto = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
+function requestEvidence(req: Request) { return { ip: (req.ip ?? '').slice(0, 128), userAgent: (req.get('user-agent') ?? '').slice(0, 512) }; }
+async function documentDto(db: Queryable, row: Row, publicView = false, summary = false): Promise<Row> {
+  const recipients = (await db.query('SELECT ' + (summary ? 'id,name,email,method_id,method_version,viewed_at,signed_at' : '*') + ' FROM recipients WHERE document_id=$1 ORDER BY position', [row.id])).rows;
+  const events = publicView || summary ? [] : (await db.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [row.id])).rows.map(eventDto);
+  const created = events[0]?.data ?? (await db.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data;
+  // New documents explicitly distinguish the sender assignment from other parties,
+  // including parties who share the same email address. Older snapshots did not.
+  const legacySenderMatches = recipients.filter(recipient => recipient.email === row.sender.email && recipient.name === row.sender.name);
+  const senderRecipientId = created && Object.hasOwn(created, 'senderRecipientId')
+    ? created.senderRecipientId
+    : legacySenderMatches.length === 1 ? legacySenderMatches[0].id : null;
+  const result: Row = {
+    id: row.id, title: row.title, fileName: row.file_name, size: row.size, pages: row.pages, status: row.status,
+    originalHash: row.original_hash, completedHash: row.completed_hash, createdAt: row.created_at, completedAt: row.completed_at,
+    sender: row.sender, senderRecipientId,
+    ...(row.preparation ? { preparation: row.preparation } : {}),
+    recipients: recipients.map((recipient: Row) => ({
+      id: recipient.id, name: recipient.name, ...(publicView ? {} : { email: recipient.email }),
+      methodId: recipient.method_id, methodVersion: recipient.method_version, viewedAt: recipient.viewed_at, signedAt: recipient.signed_at,
+      ...(recipient.signature ? { signature: recipient.signature, signedName: recipient.claimed_name } : {}),
+      ...(!publicView && recipient.evidence ? { ip: recipient.evidence.ip, userAgent: recipient.evidence.userAgent } : {}),
+    })),
+    events,
+  };
+  return result;
+}
+
+export async function createApp(config: AppConfig) {
+  const base = new URL(config.baseUrl);
+  if (!['http:', 'https:'].includes(base.protocol) || base.pathname !== '/' || base.search || base.hash || base.username || base.password) throw new Error('BASE_URL must be an http(s) origin without a path.');
+  if (base.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)) throw new Error('BASE_URL must use HTTPS except on localhost.');
+  const origin = base.origin;
+  const now = config.now ?? Date.now;
+  const at = () => new Date(now()).toISOString();
+  const pool = await createDatabase(config.databaseUrl, config.schema);
+  await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
+  const setupPath = join(config.dataDir, 'setup-token');
+  const setupRequired = () => pool.query('SELECT EXISTS(SELECT 1 FROM users) AS exists').then(result => !result.rows[0].exists);
+  let setupHash: string | undefined;
+  if (await setupRequired()) {
+    if (config.setupToken) {
+      if (config.setupToken.length < 32 || config.setupToken.length > 256) throw new Error('SETUP_TOKEN must contain 32–256 characters.');
+      setupHash = sha256(config.setupToken);
+    } else {
+      let secret: string;
+      try { secret = (await readFile(setupPath, 'utf8')).trim(); }
+      catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+        secret = token();
+        try { await writeFile(setupPath, secret + '\n', { mode: 0o600, flag: 'wx' }); }
+        catch (writeError) { if ((writeError as NodeJS.ErrnoException).code !== 'EEXIST') throw writeError; secret = (await readFile(setupPath, 'utf8')).trim(); }
+      }
+      if (secret.length < 32 || secret.length > 256) throw new Error('Invalid setup-token file.');
+      setupHash = sha256(secret);
+    }
+  } else await unlink(setupPath).catch(() => {});
+
+  const app = express();
+  app.disable('x-powered-by');
+  if (config.trustProxy?.length) app.set('trust proxy', config.trustProxy);
+  app.use(helmet({
+    contentSecurityPolicy: { directives: {
+      defaultSrc: ["'self'"], scriptSrc: ["'self'"], styleSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", 'data:', 'blob:'], fontSrc: ["'self'", 'data:'], connectSrc: ["'self'"],
+      workerSrc: ["'self'", 'blob:'], frameSrc: ["'self'", 'blob:'], objectSrc: ["'none'"],
+      frameAncestors: ["'none'"], baseUri: ["'none'"], formAction: ["'self'"],
+      upgradeInsecureRequests: base.protocol === 'https:' ? [] : null,
+    } },
+    referrerPolicy: { policy: 'no-referrer' },
+    strictTransportSecurity: base.protocol === 'https:' ? undefined : false,
+  }));
+  app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+  if (config.rateLimit !== false) {
+    app.use('/api', rateLimit({ windowMs: 60000, limit: 150, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
+    app.use(['/api/login', '/api/setup', '/api/invitations/accept'], rateLimit({ windowMs: 15 * 60000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många inloggningsförsök. Försök igen senare.' } }));
+    app.use(['/api/sign', '/api/verify'], rateLimit({ windowMs: 60000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
+  }
+  app.use('/api', (req, _res, next) => {
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      if (req.get('origin') !== origin) return next(new ApiError(403, 'Förfrågan måste komma från plattformens egen adress.'));
+      if (!req.is('application/json')) return next(new ApiError(415, 'Förfrågan måste vara JSON.'));
+    }
+    next();
+  });
+  const smallJson = express.json({ limit: '32kb', strict: true });
+  const signingJson = express.json({ limit: '1mb', strict: true });
+  const uploadJson = express.json({ limit: '15mb', strict: true });
+  app.use('/api', async (req, res, next) => {
+    if (req.method === 'POST' && /^\/documents(?:\/prepare)?\/?$/i.test(req.path)) {
+      // Authenticate before allocating the large base64 upload body.
+      await requireUser(req, res, () => uploadJson(req, res, next));
+      return;
+    }
+    if (req.method === 'POST' && /^\/sign\/complete\/?$/i.test(req.path)) signingJson(req, res, next);
+    else smallJson(req, res, next);
+  });
+  const cookieOptions = { httpOnly: true, secure: base.protocol === 'https:', sameSite: 'strict' as const, path: '/', maxAge: 12 * 60 * 60 * 1000 };
+  function sessionToken(req: Request) {
+    const value = (req.get('cookie') ?? '').split(';').map(item => item.trim()).find(item => item.startsWith('signhere_session='))?.slice('signhere_session='.length);
+    return value && tokenSchema.safeParse(value).success ? value : undefined;
+  }
+  async function currentUser(req: Request) {
+    const value = sessionToken(req);
+    if (!value) return undefined;
+    return (await pool.query('SELECT u.*,t.name AS team_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN teams t ON t.id=u.team_id WHERE s.token_hash=$1 AND s.expires_at>$2', [sha256(value), now()])).rows[0];
+  }
+  async function requireUser(req: Request, res: Response, next: NextFunction) {
+    const user = await currentUser(req);
+    if (!user) throw new ApiError(401, 'Logga in för att fortsätta.');
+    res.locals.user = user;
+    next();
+  }
+  function owner(res: Response) { if (res.locals.user.role !== 'owner') throw new ApiError(403, 'Endast teamägaren kan göra detta.'); }
+  async function newSession(client: PoolClient, userId: string) {
+    const raw = token();
+    await client.query('DELETE FROM sessions WHERE expires_at<=$1', [now()]);
+    await client.query('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,$3)', [sha256(raw), userId, now() + cookieOptions.maxAge]);
+    return raw;
+  }
+  async function ownedDocument(db: Queryable, documentId: unknown, teamId: string, lock = false) {
+    const row = (await db.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1 AND team_id=$2' + (lock ? ' FOR UPDATE' : ''), [id(documentId), teamId])).rows[0];
+    if (!row) throw new ApiError(404, 'Dokumentet finns inte.');
+    return row;
+  }
+  async function bearer(client: Queryable, raw: string, lock = false) {
+    const found = (await client.query('SELECT document_id FROM recipients WHERE token_hash=$1', [sha256(raw)])).rows[0];
+    if (!found) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
+    const document = (await client.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1' + (lock ? ' FOR UPDATE' : ''), [found.document_id])).rows[0];
+    const recipient = (await client.query('SELECT * FROM recipients WHERE document_id=$1 AND token_hash=$2', [found.document_id, sha256(raw)])).rows[0];
+    if (!document || !recipient || Number(recipient.expires_at) <= now()) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
+    if (document.status === 'cancelled') throw new ApiError(410, 'Dokumentet har avbrutits.');
+    return { document, recipient };
+  }
+  const pdfResponse = (res: Response, bytes: Uint8Array, documentId: string, download = false) => res.type('application/pdf').set('Content-Disposition', (download ? 'attachment' : 'inline') + '; filename="signhere-' + documentId + '.pdf"').send(Buffer.from(bytes));
+
+  app.get('/api/health', async (_req, res) => {
+    try { await pool.query('SELECT 1'); res.json({ ok: true }); }
+    catch { res.status(503).json({ ok: false }); }
+  });
+  app.get('/api/bootstrap', async (req, res) => {
+    const user = await currentUser(req);
+    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods() });
+  });
+  app.post('/api/setup', async (req, res) => {
+    const input = z.object({ setupToken: z.string().min(1).max(256), name: nameSchema, email: emailSchema, password: passwordSchema, teamName: nameSchema }).strict().parse(req.body);
+    if (!setupHash || !await setupRequired()) throw new ApiError(409, 'Plattformen är redan konfigurerad.');
+    if (!equalSecret(input.setupToken, setupHash)) throw new ApiError(403, 'Fel installationsnyckel.');
+    const password = await hashPassword(input.password);
+    const result = await transaction(pool, async client => {
+      await client.query("SELECT pg_advisory_xact_lock(hashtext('signhere-owner-bootstrap'))");
+      if ((await client.query('SELECT EXISTS(SELECT 1 FROM users) AS exists')).rows[0].exists) throw new ApiError(409, 'Plattformen är redan konfigurerad.');
+      const teamId = uid(), userId = uid();
+      await client.query('INSERT INTO teams(id,name) VALUES($1,$2)', [teamId, input.teamName]);
+      const user = (await client.query("INSERT INTO users(id,team_id,name,email,password_hash,role,created_at) VALUES($1,$2,$3,$4,$5,'owner',$6) RETURNING *", [userId, teamId, input.name, input.email, password, at()])).rows[0];
+      return { user: toUser({ ...user, team_name: input.teamName }), session: await newSession(client, userId) };
+    });
+    setupHash = undefined;
+    await unlink(setupPath).catch(() => {});
+    res.cookie('signhere_session', result.session, cookieOptions).status(201).json({ user: result.user });
+  });
+  app.post('/api/login', async (req, res) => {
+    const input = z.object({ email: emailSchema, password: z.string().min(1).max(128) }).strict().parse(req.body);
+    const user = (await pool.query('SELECT u.*,t.name AS team_name FROM users u JOIN teams t ON t.id=u.team_id WHERE email=$1', [input.email])).rows[0];
+    if (!await verifyPassword(input.password, user?.password_hash)) throw new ApiError(401, 'Fel e-postadress eller lösenord.');
+    const session = await transaction(pool, client => newSession(client, user.id));
+    res.cookie('signhere_session', session, cookieOptions).json({ user: toUser(user) });
+  });
+  app.post('/api/logout', async (req, res) => {
+    const value = sessionToken(req);
+    if (value) await pool.query('DELETE FROM sessions WHERE token_hash=$1', [sha256(value)]);
+    res.clearCookie('signhere_session', { ...cookieOptions, maxAge: undefined }).json({ ok: true });
+  });
+
+
+  app.get('/api/documents', requireUser, async (_req, res) => {
+    const rows = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE team_id=$1 ORDER BY created_at DESC LIMIT 200', [res.locals.user.team_id])).rows;
+    res.json({ documents: await Promise.all(rows.map(row => documentDto(pool, row, false, true))) });
+  });
+  const pdfBase64Schema = z.string().min(12).max(Math.ceil(MAX_PDF_BYTES / 3) * 4);
+  function decodeUpload(value: string) {
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(value)) throw new ApiError(400, 'PDF-filen har ett ogiltigt format.');
+    const bytes = Buffer.from(value, 'base64');
+    if (bytes.toString('base64') !== value) throw new ApiError(400, 'PDF-filen har ett ogiltigt format.');
+    return bytes;
+  }
+  async function prepareUpload(bytes: Buffer) {
+    try { return await preparePdf(bytes); }
+    catch (error) { throw new ApiError(400, error instanceof Error ? error.message : 'PDF-filen kunde inte förberedas.'); }
+  }
+  app.post('/api/documents/prepare', requireUser, async (req, res) => {
+    const input = z.object({ pdfBase64: pdfBase64Schema }).strict().parse(req.body);
+    const prepared = await prepareUpload(decodeUpload(input.pdfBase64));
+    res.json({ pdfBase64: prepared.bytes.toString('base64'), hash: prepared.hash, pages: prepared.pages, size: prepared.bytes.length, preparation: prepared.preparation });
+  });
+  app.post('/api/documents', requireUser, async (req, res) => {
+    const input = z.object({
+      title: nameSchema,
+      fileName: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f/\\]/.test(value) && /\.pdf$/i.test(value), 'Filnamnet måste sluta på .pdf.'),
+      pdfBase64: pdfBase64Schema,
+      // Accepted for older clients; a sender preview is optional.
+      preparedHash: hashSchema.optional(),
+      recipients: z.array(z.object({ name: nameSchema, email: emailSchema }).strict()).max(25),
+      includeSender: z.boolean().default(false),
+      methodId: z.literal('draw'),
+    }).strict().parse(req.body);
+    if (new Set(input.recipients.map(recipient => recipient.email)).size !== input.recipients.length) throw new ApiError(400, 'Varje mottagare behöver en unik e-postadress.');
+    const recipients = [...input.recipients];
+    if (input.includeSender) {
+      recipients.push({ name: res.locals.user.name, email: res.locals.user.email });
+    }
+    if (!recipients.length) throw new ApiError(400, 'Lägg till en mottagare eller välj att signera själv.');
+    if (recipients.length > 25) throw new ApiError(400, 'Dokumentet får ha högst 25 mottagare, inklusive dig själv.');
+    const uploaded = decodeUpload(input.pdfBase64);
+    const parsed = await prepareUpload(uploaded);
+    // Preparation belongs to document creation, not to a separate user approval.
+    // The server owns these bytes; recipient signatures bind to this frozen copy.
+    const bytes = parsed.bytes;
+    const method = getSigningMethod(input.methodId)!;
+    const result = await transaction(pool, async client => {
+      const documentId = uid();
+      const sender = { name: res.locals.user.name, email: res.locals.user.email, teamName: res.locals.user.team_name };
+      const createdAt = at();
+      const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15) RETURNING " + docColumns,
+        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, sender, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation])).rows[0];
+      const links: Row[] = [];
+      for (const [position, recipient] of recipients.entries()) {
+        const recipientId = uid(), raw = token();
+        await client.query('INSERT INTO recipients(id,document_id,position,name,email,method_id,method_version,token_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)', [recipientId, documentId, position, recipient.name, recipient.email, method.id, method.version, sha256(raw), now() + 7 * DAY]);
+        links.push({ recipientId, name: recipient.name, url: origin + '/sign#' + raw });
+      }
+      const senderRecipientId = input.includeSender ? links[links.length - 1].recipientId : null;
+      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      return { document: await documentDto(client, row), links, senderRecipientId };
+    });
+    res.status(201).json(result);
+  });
+  app.get('/api/documents/:id', requireUser, async (req, res) => {
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    res.json({ document: await documentDto(pool, row) });
+  });
+  app.get('/api/documents/:id/pdf', requireUser, async (req, res) => {
+    const version = z.enum(['original', 'completed', 'uploaded']).parse(req.query.version ?? 'original');
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (version === 'completed' && row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+    const bytes = (await pool.query('SELECT ' + (version === 'completed' ? 'completed' : version === 'uploaded' ? 'COALESCE(uploaded,original)' : 'original') + ' AS bytes FROM documents WHERE id=$1', [row.id])).rows[0].bytes;
+    pdfResponse(res, bytes, row.id, true);
+  });
+  app.get('/api/documents/:id/evidence', requireUser, async (req, res) => {
+    const manifest = await transaction(pool, async client => {
+      const row = await ownedDocument(client, req.params.id, res.locals.user.team_id, true);
+      const { events, ...document } = await documentDto(client, row);
+      return {
+        schemaVersion: 1, document, events, chainHead: events.at(-1)?.hash ?? '0'.repeat(64),
+        signingCheckpoint: row.signing_checkpoint ?? null,
+        assurance: { identityVerified: false, qualifiedSignature: false, trustedTimestamp: false, cryptographicPdfSeal: false },
+        hashAlgorithm: 'SHA-256', canonicalization: 'JSON with recursively sorted object keys, no whitespace; arrays retain order',
+      };
+    });
+    res.type('application/json').set('Content-Disposition', 'attachment; filename="signhere-' + manifest.document.id + '-evidence.json"').send(JSON.stringify(manifest, null, 2));
+  });
+  app.post('/api/documents/:id/recipients/:recipientId/link', requireUser, async (req, res) => {
+    const result = await transaction(pool, async client => {
+      const row = await ownedDocument(client, req.params.id, res.locals.user.team_id, true);
+      if (row.status !== 'pending') throw new ApiError(409, 'Dokumentet är redan avslutat.');
+      const recipient = (await client.query('SELECT * FROM recipients WHERE id=$1 AND document_id=$2', [id(req.params.recipientId), row.id])).rows[0];
+      if (!recipient) throw new ApiError(404, 'Mottagaren finns inte.');
+      if (recipient.signed_at) throw new ApiError(409, 'Mottagaren har redan signerat.');
+      const raw = token();
+      await client.query('UPDATE recipients SET token_hash=$1,expires_at=$2 WHERE id=$3', [sha256(raw), now() + 7 * DAY, recipient.id]);
+      await appendEvent(client, row.id, 'link.rotated', at(), { recipientId: recipient.id, actorId: res.locals.user.id, ...requestEvidence(req) });
+      return { url: origin + '/sign#' + raw };
+    });
+    res.json(result);
+  });
+  app.post('/api/documents/:id/cancel', requireUser, async (req, res) => {
+    const document = await transaction(pool, async client => {
+      const row = await ownedDocument(client, req.params.id, res.locals.user.team_id, true);
+      if (row.status !== 'pending') throw new ApiError(409, 'Dokumentet är redan avslutat.');
+      await appendEvent(client, row.id, 'document.cancelled', at(), { actorId: res.locals.user.id, ...requestEvidence(req) });
+      const updated = (await client.query("UPDATE documents SET status='cancelled' WHERE id=$1 RETURNING " + docColumns, [row.id])).rows[0];
+      return documentDto(client, updated);
+    });
+    res.json({ document });
+  });
+  app.get('/api/team', requireUser, async (_req, res) => {
+    const teamId = res.locals.user.team_id;
+    const members = (await pool.query('SELECT id,name,email,role FROM users WHERE team_id=$1 ORDER BY created_at', [teamId])).rows;
+    const invitations = res.locals.user.role === 'owner' ? (await pool.query('SELECT id,email,expires_at FROM invitations WHERE team_id=$1 AND accepted_at IS NULL AND expires_at>$2 ORDER BY created_at DESC', [teamId, now()])).rows.map(row => ({ id: row.id, email: row.email, expiresAt: new Date(Number(row.expires_at)).toISOString() })) : [];
+    res.json({ name: res.locals.user.team_name, members, invitations });
+  });
+  app.patch('/api/team', requireUser, async (req, res) => {
+    owner(res);
+    const { name } = z.object({ name: nameSchema }).strict().parse(req.body);
+    await pool.query('UPDATE teams SET name=$1 WHERE id=$2', [name, res.locals.user.team_id]);
+    res.json({ name });
+  });
+  app.post('/api/team/invitations', requireUser, async (req, res) => {
+    owner(res);
+    const { email } = z.object({ email: emailSchema }).strict().parse(req.body);
+    const raw = token();
+    await transaction(pool, async client => {
+      await client.query('SELECT id FROM teams WHERE id=$1 FOR UPDATE', [res.locals.user.team_id]);
+      if ((await client.query('SELECT 1 FROM users WHERE email=$1', [email])).rowCount) throw new ApiError(409, 'E-postadressen är redan registrerad.');
+      await client.query('UPDATE invitations SET expires_at=$1 WHERE team_id=$2 AND email=$3 AND accepted_at IS NULL', [now(), res.locals.user.team_id, email]);
+      await client.query('INSERT INTO invitations(id,team_id,email,token_hash,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)', [uid(), res.locals.user.team_id, email, sha256(raw), now() + 3 * DAY, at()]);
+    });
+    res.status(201).json({ url: origin + '/join#' + raw });
+  });
+  app.post('/api/invitations/accept', async (req, res) => {
+    const input = z.object({ token: tokenSchema, name: nameSchema, password: passwordSchema }).strict().parse(req.body);
+    const available = (await pool.query('SELECT id FROM invitations WHERE token_hash=$1 AND accepted_at IS NULL AND expires_at>$2', [sha256(input.token), now()])).rowCount;
+    if (!available) throw new ApiError(404, 'Inbjudan är ogiltig eller har upphört att gälla.');
+    const password = await hashPassword(input.password);
+    const result = await transaction(pool, async client => {
+      const invitation = (await client.query('SELECT * FROM invitations WHERE token_hash=$1 FOR UPDATE', [sha256(input.token)])).rows[0];
+      if (!invitation || invitation.accepted_at || Number(invitation.expires_at) <= now()) throw new ApiError(404, 'Inbjudan är ogiltig eller har upphört att gälla.');
+      if ((await client.query('SELECT 1 FROM users WHERE email=$1', [invitation.email])).rowCount) throw new ApiError(409, 'E-postadressen är redan registrerad.');
+      const user = (await client.query("INSERT INTO users(id,team_id,name,email,password_hash,role,created_at) VALUES($1,$2,$3,$4,$5,'member',$6) RETURNING *", [uid(), invitation.team_id, input.name, invitation.email, password, at()])).rows[0];
+      const team = (await client.query('SELECT name FROM teams WHERE id=$1', [invitation.team_id])).rows[0];
+      await client.query('UPDATE invitations SET accepted_at=$1 WHERE id=$2', [at(), invitation.id]);
+      return { user: toUser({ ...user, team_name: team.name }), session: await newSession(client, user.id) };
+    });
+    res.cookie('signhere_session', result.session, cookieOptions).status(201).json({ user: result.user });
+  });
+  app.post('/api/verify', async (req, res) => {
+    const { sha256: digest } = z.object({ sha256: hashSchema }).strict().parse(req.body);
+    const match = !!(await pool.query("SELECT 1 FROM documents WHERE completed_hash=$1 AND status='completed' LIMIT 1", [digest])).rowCount;
+    res.json(match ? { match: true, status: 'completed', version: 'completed' } : { match: false });
+  });
+
+
+  app.post('/api/sign/session', async (req, res) => {
+    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    const result = await transaction(pool, async client => {
+      const { document, recipient } = await bearer(client, raw, true);
+      const method = getSigningMethod(recipient.method_id);
+      if (!method || method.version !== recipient.method_version) throw new ApiError(409, 'Signeringsmetoden är inte tillgänglig.');
+      if (!recipient.viewed_at && !recipient.signed_at) {
+        const viewedAt = at();
+        await client.query('UPDATE recipients SET viewed_at=$1 WHERE id=$2', [viewedAt, recipient.id]);
+        await appendEvent(client, document.id, 'recipient.viewed', viewedAt, { recipientId: recipient.id, originalHash: document.original_hash, ...requestEvidence(req) });
+      }
+      await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent: CONSENT });
+      return { document: await documentDto(client, document, true), recipientId: recipient.id, consent: CONSENT, method: { id: method.id, label: method.label, version: method.version } };
+    });
+    res.json(result);
+  });
+  app.post('/api/sign/pdf', async (req, res) => {
+    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    await transaction(pool, async client => {
+      const { document } = await bearer(client, raw, true);
+      const row = (await client.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0];
+      pdfResponse(res, row.original, document.id);
+    });
+  });
+  app.post('/api/sign/complete', async (req, res) => {
+    const input = z.object({
+      token: tokenSchema, documentHash: hashSchema, consentVersion: z.literal(CONSENT.version),
+      accepted: z.literal(true), name: nameSchema, payload: z.unknown(),
+    }).strict().parse(req.body);
+    const result = await transaction(pool, async client => {
+      // PostgreSQL owns the per-document lock, including across processes. The
+      // reserved client keeps all signature events/artifacts in one transaction.
+      // Cancellation and token rotation acquire the same lock.
+      const { document, recipient } = await bearer(client, input.token, true);
+      if (input.documentHash !== document.original_hash) throw new ApiError(409, 'Dokumentets kontrollsumma stämmer inte. Öppna dokumentet igen.');
+      const method = getSigningMethod(recipient.method_id);
+      if (!method || method.version !== recipient.method_version) throw new ApiError(409, 'Signeringsmetoden är inte tillgänglig.');
+      const verified = await method.complete({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: input.name, consent: CONSENT }, input.payload);
+      if (verified.status !== 'completed') throw new ApiError(409, 'Signeringen är inte slutförd.');
+      if (method.id === 'draw' && !verified.visualSignature) throw new ApiError(400, 'Underskriften saknas.');
+      const providerEvidence = z.record(z.string(), z.json()).parse(verified.providerEvidence);
+      if (Buffer.byteLength(JSON.stringify(providerEvidence)) > 16384) throw new ApiError(400, 'Signeringsbeviset är för stort.');
+      const submissionHash = sha256(canonical({ documentHash: input.documentHash, consent: CONSENT, name: input.name, method: { id: method.id, version: method.version }, visualSignature: verified.visualSignature ?? null, providerEvidence }));
+      if (recipient.signed_at) {
+        if (recipient.submission_hash !== submissionHash) throw new ApiError(409, 'Mottagaren har redan signerat med en annan underskrift.');
+        return { document: await documentDto(client, document, true), recipientId: recipient.id };
+      }
+      if (document.status !== 'pending') throw new ApiError(409, 'Dokumentet är redan avslutat.');
+      const signedAt = at();
+      const evidence = {
+        recipientId: recipient.id, assignedName: recipient.name, email: recipient.email, claimedName: input.name, originalHash: document.original_hash,
+        consent: CONSENT, method: { id: method.id, version: method.version }, signature: verified.visualSignature ?? null,
+        providerEvidence, ...requestEvidence(req),
+      };
+      await client.query('UPDATE recipients SET signed_at=$1,claimed_name=$2,signature=$3,evidence=$4,submission_hash=$5,expires_at=GREATEST(expires_at,$6) WHERE id=$7', [signedAt, input.name, verified.visualSignature ?? null, evidence, submissionHash, now() + 30 * DAY, recipient.id]);
+      const checkpoint = await appendEvent(client, document.id, 'recipient.signed', signedAt, evidence);
+      const signers = (await client.query('SELECT * FROM recipients WHERE document_id=$1 ORDER BY position', [document.id])).rows;
+      let finalDocument = document;
+      if (signers.every(signer => !!signer.signed_at)) {
+        const original = (await client.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0].original;
+        let completed: Buffer;
+        try {
+          completed = await (config.pdfFinalizer ?? finalizePdf)(original, document.title, document.id, document.original_hash, CONSENT,
+            signers.map(signer => ({ name: signer.name, signedName: signer.claimed_name, email: signer.email, signedAt: signer.signed_at, strokes: signer.signature?.strokes ?? [], methodId: signer.method_id, methodVersion: signer.method_version })), checkpoint);
+        } catch { throw new ApiError(503, 'PDF-filen kunde inte färdigställas. Ingen underskrift sparades. Försök igen.'); }
+        const completedHash = sha256(completed);
+        const completedAt = at();
+        finalDocument = (await client.query("UPDATE documents SET status='completed',completed=$1,completed_hash=$2,completed_at=$3,signing_checkpoint=$4 WHERE id=$5 RETURNING " + docColumns, [completed, completedHash, completedAt, checkpoint, document.id])).rows[0];
+        await appendEvent(client, document.id, 'document.completed', completedAt, { originalHash: document.original_hash, completedHash, signingCheckpoint: checkpoint });
+      }
+      return { document: await documentDto(client, finalDocument, true), recipientId: recipient.id };
+    });
+    res.json(result);
+  });
+  app.post('/api/sign/download', async (req, res) => {
+    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    await transaction(pool, async client => {
+      const { document, recipient } = await bearer(client, raw, true);
+      if (!recipient.signed_at || document.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+      const row = (await client.query('SELECT completed FROM documents WHERE id=$1', [document.id])).rows[0];
+      pdfResponse(res, row.completed, document.id, true);
+    });
+  });
+
+  app.use('/api', (_req, _res, next) => next(new ApiError(404, 'API-adressen finns inte.')));
+  const webDir = resolve(config.webDir ?? 'dist/web');
+  try {
+    await access(join(webDir, 'index.html'));
+    app.use(express.static(webDir, { index: false, dotfiles: 'deny', maxAge: 0 }));
+    app.get('/{*path}', (_req, res) => res.sendFile(join(webDir, 'index.html')));
+  } catch { /* The API remains usable while the development frontend runs separately. */ }
+  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+    if (res.headersSent) return;
+    if (error instanceof ZodError) { res.status(400).json({ error: error.issues[0]?.message ?? 'Kontrollera uppgifterna.' }); return; }
+    if (error instanceof ApiError) { res.status(error.status).json({ error: error.message }); return; }
+    if ((error as Row)?.type === 'entity.too.large') { res.status(413).json({ error: 'Filen är för stor. PDF-filen får vara högst 10 MB.' }); return; }
+    if (error instanceof SyntaxError && 'body' in error) { res.status(400).json({ error: 'Ogiltig JSON.' }); return; }
+    if ((error as Row)?.code === '23505') { res.status(409).json({ error: 'Uppgifterna är redan registrerade.' }); return; }
+    // Deliberately omit request data, SQL, bearer tokens and personal details.
+    console.error('signhere: request failed', (error as Row)?.code ?? 'internal');
+    res.status(500).json({ error: 'Ett serverfel uppstod. Försök igen.' });
+  });
+  return { app, db: pool, pool, close: () => pool.end() };
+}
+
+
+
+
+
+
+
