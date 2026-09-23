@@ -50,10 +50,10 @@ This machine cannot run Docker, so the Compose configuration is statically valid
 
 ## Deploy with Coolify (GitHub → Docker Compose)
 
-Coolify builds the image from this repository and runs the app and PostgreSQL from `compose.yaml`. Coolify's proxy terminates TLS; nothing else needs to be exposed.
+Coolify builds the image from this repository and runs the app and PostgreSQL from `docker-compose.yaml`. Coolify's proxy terminates TLS; nothing else needs to be exposed.
 
 1. **DNS:** point a hostname, e.g. `sign.example.com`, at your Coolify server.
-2. **Create the resource:** in Coolify choose *Project → New → Resource → Private Repository (with GitHub App)*, or *Public Repository*, then select this repository and the `main` branch. Set *Build Pack* to **Docker Compose** and *Docker Compose Location* to `/compose.yaml`.
+2. **Create the resource:** in Coolify choose *Project → New → Resource → Private Repository (with GitHub App)*, or *Public Repository*, then select this repository and the `main` branch. Set *Build Pack* to **Docker Compose**; the default *Docker Compose Location* `/docker-compose.yaml` is correct.
 3. **Environment variables** (under *Environment Variables*, before the first deploy):
 
    | Variable | Value |
