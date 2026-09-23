@@ -1,5 +1,7 @@
 # Signhere reviews with Claude Opus 5.5
 
+> Historical review record: earlier sections describe their dated implementation snapshot, including features that were deferred then. For the current local-sealing foundation and remaining gates, see [implementation status](sealing-implementation.md), [architecture](architecture.md) and [SES cross-check](ses-spec-crosscheck.md).
+
 Date: 2026-09-23. The local Claude Code CLI reported canonical model `claude-opus-5-5`. Two consultations informed this foundation: an initial architecture discussion and a later source review explicitly authorized by the user. Neither is an independent security audit, legal opinion or production certification.
 
 ## Initial architecture consultation
@@ -62,3 +64,14 @@ See [Architecture](architecture.md), [Signing methods](signing-methods.md) and [
 ## Final local checks
 
 The final local run passed 14 automated tests (10 real PostgreSQL integration tests and 4 PDF-worker tests), TypeScript checks and a production build. A browser test passed signup, PDF upload and rendering, mobile draw signing, completed-file download, offline evidence verification, public hash verification and team invitation/member permissions. A PostgreSQL `pg_dump`/`pg_restore` roundtrip preserved the completed document and verifiable evidence in a disposable schema. Runtime dependency audit reported no published vulnerabilities at the time of checking. Compose configuration validated; Docker image execution was not available on this machine. These bounded checks do not replace the release gates above.
+
+## 2026-09-24: next-phase PDF sealing plan
+
+At the user's request, a tools-disabled Claude Opus 5.5 consultation reviewed the proposed sealing/finalization architecture and selected current source excerpts. The CLI confirmed `claude-opus-5-5`. Its verdict was to approve the direction and revise before implementation. See the [full critique and review scope](reviews/2026-09-24-claude-sealing-critique.md) and [revised implementation plan with dispositions](sealing-plan.md).
+
+This is planning only. Durable finalization, PDF seals, key provisioning and trusted timestamps described there are proposed future work, superseding the earlier deferral as planning priorities, not claims that these features now exist. No application code was changed by this consultation.
+
+
+## 2026-09-24: implemented local sealing foundation
+
+The A-C foundation is now implemented and underwent actual Opus 5.5 design and source critiques, with a follow-up on fixes. Earlier deferrals and test counts above describe the original foundation, not the current implementation. See [delivered behavior, review dispositions and current release gates](sealing-implementation.md) and [SES spec cross-check](ses-spec-crosscheck.md). Trusted timestamping remains disabled.

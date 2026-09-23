@@ -6,7 +6,7 @@ export const CONSENT = Object.freeze({
 });
 export type Strokes = number[][][];
 export interface SignatureContext {
-  documentId: string; documentHash: string; recipientId: string; name: string; consent: typeof CONSENT;
+  documentId: string; documentHash: string; recipientId: string; name: string; consent: Readonly<{ version: string; text: string }>;
 }
 export type SignatureResult =
   | { status: 'completed'; visualSignature?: { strokes: Strokes }; providerEvidence: Record<string, unknown> }
@@ -27,7 +27,7 @@ const strokesSchema = z.object({
   const points = strokes.flat();
   let length = 0;
   for (const stroke of strokes) for (let i = 1; i < stroke.length; i++) length += Math.hypot(stroke[i][0] - stroke[i - 1][0], stroke[i][1] - stroke[i - 1][1]);
-  if (points.length > 12000 || length < 0.15) ctx.addIssue({ code: 'custom', message: 'Rita en tydlig underskrift med högst 12 000 punkter.' });
+  if (points.length > 12000 || Buffer.byteLength(JSON.stringify(strokes)) > 65536 || length < 0.15) ctx.addIssue({ code: 'custom', message: 'Rita en tydlig underskrift med högst 12 000 punkter och 64 KB.' });
 });
 const draw: SigningMethod = Object.freeze({
   id: 'draw', label: 'Rita din signatur', version: '1.0.0',

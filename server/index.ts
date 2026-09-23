@@ -8,7 +8,10 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT m
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:' + port;
 const runtime = await createApp({
   databaseUrl, baseUrl, dataDir: resolve(process.env.DATA_DIR ?? './data'),
-  setupToken: process.env.SETUP_TOKEN,
+  setupToken: process.env.SETUP_TOKEN, migrationDatabaseUrl: process.env.MIGRATION_DATABASE_URL,
+  keysDir: process.env.SIGNHERE_KEYS_DIR,
+  signingLinkTtlDays: Number(process.env.SIGNHERE_SIGNING_LINK_TTL_DAYS ?? 7),
+  sealP12File: process.env.SIGNHERE_SEAL_P12_FILE, sealPasswordFile: process.env.SIGNHERE_SEAL_PASSWORD_FILE,
   trustProxy: process.env.TRUST_PROXY?.split(',').map(value => value.trim()).filter(Boolean),
 });
 const server = runtime.app.listen(port, process.env.HOST ?? '127.0.0.1', () => console.log('signhere listening on port ' + port));

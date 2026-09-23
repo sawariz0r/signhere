@@ -19,7 +19,9 @@
     "test:browser": "node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-smoke.mjs",
     "db:status": "node scripts/postgres-local.mjs status",
     "db:start": "node scripts/postgres-local.mjs start",
-    "db:stop": "node scripts/postgres-local.mjs stop"
+    "db:stop": "node scripts/postgres-local.mjs stop",
+    "sealing:keys": "node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env scripts/sealing-keys.mjs",
+    "verify:sealed": "node scripts/verify-sealed-evidence.mjs"
   },
   "dependencies": {
     "@fontsource-variable/schibsted-grotesk": "5.3.0",
@@ -37,6 +39,7 @@
     "@tiptap/starter-kit": "3.31.3",
     "express": "5.2.1",
     "express-rate-limit": "^8.0.0",
+    "fflate": "0.8.3",
     "helmet": "^8.0.0",
     "lucide-react": "^0.577.0",
     "mupdf": "1.28.1",

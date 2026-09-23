@@ -10,6 +10,7 @@ import { chromium, expect } from '@playwright/test';
 import { PDFDocument, StandardFonts, PDFName, PDFString } from 'pdf-lib';
 import { createApp } from '../dist/server/app.js';
 import { verifyEvidence } from '../scripts/verify-evidence.mjs';
+import { verifySealedEvidence } from '../scripts/verify-sealed-evidence.mjs';
 const databaseUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('Set TEST_DATABASE_URL or DATABASE_URL for browser tests.');
 const schema = 'browser_' + randomBytes(10).toString('hex');
@@ -21,11 +22,12 @@ await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
 const baseURL = `http://127.0.0.1:${server.address().port}`;
 let runtime, browser;
 try {
-  runtime = await createApp({ databaseUrl, dataDir: output, baseUrl: baseURL, schema, setupToken, rateLimit: false });
+  runtime = await createApp({ databaseUrl, dataDir: output, keysDir: resolve(output, 'keys', schema), baseUrl: baseURL, schema, setupToken, rateLimit: false });
   server.on('request', runtime.app);
   browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) });
   const ownerContext = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const page = await ownerContext.newPage();
+  const waitCompleted = async documentId => expect.poll(async () => (await (await ownerContext.request.get(`${baseURL}/api/documents/${documentId}`)).json()).document?.status, { timeout: 30000 }).toBe('completed');
   const errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(baseURL);
@@ -136,10 +138,12 @@ try {
   await dialog.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
   await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible({ timeout: 15000 });
   await expect(signer.getByText('Åsa Q. Test', { exact: true })).toBeVisible();
+  await expect(signer.getByRole('button', { name: 'Ladda ner signerad PDF' })).toBeVisible({ timeout: 30000 });
   const [download] = await Promise.all([signer.waitForEvent('download'), signer.getByRole('button', { name: 'Ladda ner signerad PDF' }).click()]);
   const completedPath = output + '/completed.pdf'; await download.saveAs(completedPath);
   await page.goto(documentURL);
-  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible({ timeout: 30000 });
+  await expect(page.locator('.pdf-page canvas').first()).toHaveJSProperty('width', 260);
   await page.screenshot({ path: output + '/05-document-completed.png', fullPage: true });
   await page.getByRole('button', { name: 'Verifikat', exact: true }).click();
   await expect(page.getByRole('heading', { name: 'Verifikat', exact: true })).toBeVisible();
@@ -153,7 +157,7 @@ try {
   assert.equal(uploadedResponse.status(), 200);
   assert.deepEqual(await signingPdfResponse.body(), original, 'Signers must see exactly the PDF prepared for signing.');
   assert.deepEqual(await uploadedResponse.body(), uploaded, 'Keep the uploaded source byte for byte.');
-  verifyEvidence(evidence, original, await finalResponse.body(), uploaded);
+  assert.equal((await verifySealedEvidence(evidence, original, await finalResponse.body(), uploaded)).integrity, 'valid');
   await writeFile(output + '/evidence.json', JSON.stringify(evidence, null, 2));
   await writeFile(output + '/original.pdf', original);
   await writeFile(output + '/uploaded.pdf', uploaded);
@@ -176,7 +180,7 @@ try {
   await verifier.goto(baseURL + '/verify');
   await expectPublicVerification(verifier);
   await verifier.locator('input[type=file]').setInputFiles(completedPath);
-  await expect(verifier.getByRole('heading', { name: 'Oförändrad signerad PDF' })).toBeVisible();
+  await expect(verifier.getByRole('heading', { name: 'Filen matchar serverns kopia' })).toBeVisible();
   assert.equal(await verifier.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true, 'Public verification overflows horizontally on mobile.');
   await verifier.screenshot({ path: output + '/07-verification.png', fullPage: true });
   await verifier.goto(baseURL + '/verifiera');
@@ -186,7 +190,7 @@ try {
   const finalPdf = await finalResponse.body();
   const changedPdf = Buffer.concat([finalPdf, Buffer.from('\n% Verification test: modified bytes\n')]);
   await verifier.locator('input[type=file]').setInputFiles({ name: 'andrat-avtal.pdf', mimeType: 'application/pdf', buffer: changedPdf });
-  await expect(verifier.getByRole('heading', { name: 'Kunde inte verifieras' })).toBeVisible();
+  await expect(verifier.getByRole('heading', { name: 'Ingen matchning på denna server' })).toBeVisible();
   assert.equal(publicBootstrapRequests, 0, 'Public verification must not request account bootstrap, including alias reloads.');
   assert.equal(verificationPosts.length, 2, 'Only the two hash checks should send data.');
   for (const [index, bytes] of [finalPdf, changedPdf].entries()) {
@@ -282,6 +286,7 @@ try {
   await signer.getByRole('button', { name: 'Signera', exact: true }).click();
   await signDialog(signer, 'Extern Part');
   await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible();
+  await waitCompleted(senderCreated.document.id);
   const senderEvidence = await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}/evidence`)).json();
   assert.equal(senderEvidence.document.status, 'completed');
   const senderOriginal = await (await ownerContext.request.get(`${baseURL}/api/documents/${senderCreated.document.id}/pdf?version=original`)).body();
@@ -320,6 +325,7 @@ try {
     await signDialog(signer, partyLink.name);
     await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible();
   }
+  await waitCompleted(sharedAddress.document.id);
   const sharedEvidence = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/evidence`)).json();
   const sharedOriginal = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/pdf?version=original`)).body();
   const sharedCompleted = await (await ownerContext.request.get(`${baseURL}/api/documents/${sharedAddress.document.id}/pdf?version=completed`)).body();
@@ -349,7 +355,7 @@ try {
   await expect(page.getByRole('dialog')).toBeVisible({ timeout: 15000 });
   await signDialog(page, 'Test Ägare');
   await expect(page.getByRole('heading', { name: 'Bara min underskrift', exact: true })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Ladda ner PDF', exact: true })).toBeVisible({ timeout: 30000 });
   await expect(page.getByRole('button', { name: 'Signera dokumentet', exact: true })).toHaveCount(0);
   selfDocument = (await (await ownerContext.request.get(`${baseURL}/api/documents/${selfOnly.document.id}`)).json()).document;
   assert.equal(selfDocument.status, 'completed'); assert.ok(selfDocument.recipients[0].signedAt);
@@ -407,6 +413,7 @@ try {
   }
   assert.deepEqual(errors, [], 'Uncaught browser errors.');
   if (process.env.TEST_BACKUP_RESTORE === '1') {
+    await runtime.finalization.stop();
     const exec = promisify(execFile);
     const connection = new URL(databaseUrl);
     const env = { ...process.env, PGHOST: connection.hostname, PGPORT: connection.port || '5432', PGUSER: decodeURIComponent(connection.username), PGPASSWORD: decodeURIComponent(connection.password), PGDATABASE: decodeURIComponent(connection.pathname.slice(1)) };
@@ -428,5 +435,5 @@ try {
   await browser?.close();
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
-  if (runtime) { await runtime.db.query(`DROP SCHEMA "${schema}" CASCADE`); await runtime.close(); }
+  if (runtime) { await runtime.finalization.stop(); await runtime.db.query(`DROP SCHEMA "${schema}" CASCADE`); await runtime.close(); }
 }

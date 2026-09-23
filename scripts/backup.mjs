@@ -1,8 +1,8 @@
 import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
-const url = process.env.DATABASE_URL;
-if (!url) throw new Error('Set DATABASE_URL to the PostgreSQL database to back up.');
+const url = process.env.BACKUP_DATABASE_URL ?? process.env.MIGRATION_DATABASE_URL ?? process.env.DATABASE_URL;
+if (!url) throw new Error('Set BACKUP_DATABASE_URL, MIGRATION_DATABASE_URL, or DATABASE_URL to the PostgreSQL database to back up.');
 const output = resolve(process.argv[2] ?? `backups/signhere-${new Date().toISOString().replaceAll(':', '-')}.dump`);
 if (existsSync(output)) throw new Error('Refusing to overwrite an existing backup.');
 mkdirSync(dirname(output), { recursive: true });
@@ -36,5 +36,5 @@ const child = spawn(command, ['--format=custom', '--no-owner', '--no-acl', '--fi
 child.on('error', error => { console.error(`Could not run pg_dump (${error.code}). Install a client matching the server or set PG_DUMP.`); process.exitCode = 1; });
 child.on('exit', code => {
   if (code !== 0) { console.error('Backup failed; do not use a partial output file.'); process.exitCode = 1; }
-  else console.log(`Consistent database backup written to ${output}. Store it encrypted off-host and test restoring it.`);
+  else console.log(`Consistent database backup written to ${output}. This is the database only: pair it with an encrypted backup of the sealing key volume and deployment settings. See docs/deployment.md. Store the pair off-host and test restoring it.`);
 });

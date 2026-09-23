@@ -1,96 +1,99 @@
-# Signhere initial architecture
+# Signhere architecture
 
-Signhere is an initial foundation for a small, self-hosted document signing service. The supplied prototype defines the product experience; this architecture adds persistence, authorization and evidence boundaries around it. It has not been independently security reviewed or certified for production or legal compliance.
+Signhere keeps the supplied Swedish product flow small while separating participant approval, durable evidence and the installation's PDF seal. The current local-sealing foundation is a development preview. It is not an independently audited signing service, an eID provider or a legal certification.
 
-## Product scope
+## Product and runtime
 
-The supplied `design/prototype/signhere.dc.html` contains these nine screen labels:
+The prototype defines account creation, document list/upload/sharing/details, evidence, public verification, team administration and recipient signing. The first versioned participant method is `draw`; BankID and Freja remain future integrations. Prototype claims and sample state are design input, not backend security guarantees.
 
-1. `01 Skapa konto` — initial account creation.
-2. `02 Dokument` — document list and status filters.
-3. `03 Nytt dokument` — PDF upload, title and recipients.
-4. `04 Dela länk` — recipient link sharing.
-5. `05 Dokument-detalj` — document and recipient progress.
-6. `06 Verifikat` — evidence record.
-7. `07 Verifiera` — document verification.
-8. `08 Team` — team settings and members.
-9. `09 Signera (mottagare)` — read, draw, consent and confirmation.
+| Component | Choice and boundary |
+| --- | --- |
+| UI/API | React/TypeScript and Express, served from one origin in production. |
+| Database | PostgreSQL; transactions, document-row locks and immutable-data guards coordinate acceptance and publication. |
+| PDF preparation | MuPDF WebAssembly flattens supported forms/annotations locally; pdf-lib constructs the evidence appendix. |
+| Cryptographic seal | Bundled Python/pyHanko signs and verifies the installation's PDF/CMS profile. Parser operations are separated from key access. |
+| Deployment | Two services: application and PostgreSQL. No required central account, external signing service, SMTP, Redis or object store. |
+| Persistence | PostgreSQL volume for document bytes/evidence/jobs, existing app setup-state volume, separate private key volume. |
 
-The prototype is design input, not an authority for backend security or a source of legal guarantees. Its sample state, simulated hashes and recipient shortcuts do not establish production behavior. The first real signing method is draw; BankID and Freja are future integrations.
+Public HTTPS terminates at the operator's reverse proxy. Non-localhost application origins require HTTPS. Proxy trust must match deployment routing before forwarded addresses can be relied on as network observations. Compose currently uses PostgreSQL 17; local tests use real PostgreSQL directly.
 
-## Runtime and deployment
+Docker cannot run on the development machine. The repository has Docker lifecycle/isolation CI and static checks, but no local container execution is claimed. See [deployment](deployment.md) for the exact host requirements and recovery procedures.
 
-| Component | Initial choice | Reason |
-| --- | --- | --- |
-| Interface | React, Vite and TypeScript | Reproduce the supplied screens with a maintainable typed interface. |
-| HTTP application | Express 5 on Node.js 24 | Serve the built interface and same-origin API from one service. |
-| Database | PostgreSQL through `pg` | Use explicit transactions and document row locks to coordinate concurrent signatures. |
-| Persistence | PostgreSQL volume with original/final PDF blobs | Keep accounts, document bytes and evidence in one backup and transaction boundary. |
-| Deployment topology | One application service and one database service | Keep the initial self-hosted installation small and understandable. |
+## Immutable signing input
 
-Production HTTPS termination belongs at the host's reverse proxy. A localhost development connection is not evidence that a public deployment has correct TLS, proxy trust or cookie configuration.
+Upload preserves the exact source bytes and SHA-256. The server rejects encrypted files, existing digital signatures and unsupported/active structures. Supported annotations and widgets are flattened with JavaScript disabled. Comment text becomes a static notes appendix; already static PDFs retain their bytes. Preparation is not a universal PDF repair service.
 
-There is no required hosted signing service, Redis or external object store. Compose currently specifies PostgreSQL 17; the local development instance is PostgreSQL 18.6 from the official Windows download route. Docker setup and environment details belong in the root README; this document describes the constraints that setup must preserve.
+Document creation freezes the prepared copy. All recipients see and approve that same hash. The database's `original` and `originalHash`, and an exported `original.pdf`, mean this **prepared signing PDF**. If conversion changed the source, `uploaded.pdf` preserves the original upload, and immutable preparation metadata records its hash, size, engine and conversion counts. Sender preview is optional and is never an extra signing authorization step.
 
-Docker execution is unavailable on the development machine. Local validation uses real PostgreSQL and direct Node.js execution; Compose configuration validation is distinct from building or running a Docker image. No Docker runtime validation is claimed.
+A new signing transaction has its own document UUID, also used as transaction ID and intent revision ID. Correcting bytes or participant assignments requires a new transaction; the current model has no separate multi-revision document entity. `includeSender` appends the authenticated sender as a separate recipient without replacing entered parties, even if email addresses match. The creation event records `senderRecipientId`; each assignment has its own intent, capability and acceptance.
 
-## Data and atomicity
+Each v2 recipient intent is canonical, domain-separated data containing installation ID, document/revision ID, recipient ID, prepared PDF hash, method ID/version, exact consent text/version and a 256-bit random nonce. Exact intent bytes and hash are retained. The server checks that submitted acceptance matches this frozen intent rather than whichever consent happens to be the application default later.
 
-The database holds team-scoped users and documents, recipient records, hashed access tokens, sessions, original PDF bytes, final PDF bytes, signature evidence and audit events. Saving PDF blobs in the database deliberately avoids a transaction that commits evidence while a separate filesystem or object-store write is missing.
+## Approval and durable completion
 
-Each document mutation uses a dedicated PostgreSQL client for its transaction. `SELECT ... FOR UPDATE` locks the document row while signatures and the audit chain are changed. All statements in that transaction use the same client, rather than unrelated pool queries. [PostgreSQL row locks](https://www.postgresql.org/docs/current/explicit-locking.html#LOCKING-ROWS), [node-postgres transactions](https://node-postgres.com/features/transactions).
+A draw approval requires the assigned personal link, a claimed name, validated vector strokes and affirmative consent. The checkbox starts unchecked. The server records intended name/email separately from the claimed name, plus method/version, intent, prepared hash, exact consent, observed IP/user-agent and server UTC acceptance time. `authenticationMethod` is `personal_signing_link`; provider evidence explicitly says identity is not verified. Consent and signature arrive as one submission, so their server acceptance times coincide.
 
-Document upload preserves the source bytes and their SHA-256 digest. Supported annotations and form widgets are flattened before sending using the bundled MuPDF WebAssembly engine, with JavaScript disabled and strict checks before and after conversion. Text comments become a static notes appendix. The authenticated preparation endpoint provides an optional preview. Document creation prepares the uploaded source on the server and freezes the resulting signing copy; no sender preview acknowledgement is required. Older clients may send a preview hash, which is accepted for compatibility but never used as signing authority. Recipients review the frozen PDF and their signatures must bind its digest. The frozen `original`/`originalHash` fields identify this prepared signing PDF. Nullable immutable `uploaded` and `preparation` columns (schema migration 2) retain the pre-conversion source and its hash/engine/counts; the creation audit event includes the same metadata. Documents without conversion retain their exact bytes and need no duplicate blob. Sending freezes the document and recipient scope used for signing. A correction requires a new document or revision rather than replacing the bytes under an existing consent record.
+Within a document-row transaction, the application accepts a recipient at most once, appends its hash-linked `recipient.signed` event and saves the same evidence on the recipient. An identical retry returns the accepted result; a changed submission is rejected. Separate recipient IDs each need acceptance, including the sender's assignment.
 
-Each accepted signing action must bind the recipient, method and version, document digest, consent and submitted evidence in the same transaction as its audit event and recipient-state update. Final completion stores the final PDF and evidence together with the completion state. It must not report a completed document if PDF generation or persistence failed.
+For **v2**, the last approval freezes the canonical evidence core through the last participant event and enqueues finalization in that same transaction. The HTTP request can then report `finalizing`; it does not claim a completed PDF already exists. A durable PostgreSQL job worker claims a lease, builds the candidate PDF, seals it and validates the result. Publication stores final bytes, final SHA-256, seal metadata, completion state and `document.completed` together. Generation fencing prevents an expired/stale worker from publishing. Transient failures retry with bounds/backoff; operator-action failures preserve approvals and remain visible. Cancellation applies only while still pending, not after all parties have accepted.
 
-Sender inclusion is explicit: `includeSender` preserves all entered parties and appends the authenticated sender as a separate recipient, including when email addresses match. The creation event freezes `senderRecipientId` (or explicit `null`) along with the full recipient list. The UI selects the sender by that ID, not by email. Each recipient ID has its own token, explicit consent, signature evidence and hash-linked signing event. Existing records and completed evidence are never rewritten to add a missing signer; corrected assignments require a new document.
+Accepted approvals and the frozen protection policy survive restarts and failed finalization. Retrying may not silently remove required protection or edit evidence. Explicit operator workflows handle lost/rotated keys and a failed job pinned to an obsolete key. See [deployment](deployment.md#lost-keys-rotation-and-optional-external-services).
 
-For the final signer, the bounded PDF worker runs while the document transaction retains its row lock. The transaction commits only after the generated PDF, its digest, the signature evidence and the final audit event are ready. Worker failure rolls back the pending mutation. Retried or concurrent submissions must not create duplicate accepted signatures or overwrite another recipient's evidence. This deliberately serializes work for a document; keep worker deadlines bounded and do not extend this pattern to long provider network calls.
+Legacy v1 documents retain their original synchronous completion path and hash-chain evidence. The final signer transaction generates the appendix and commits only when it succeeds; failures roll back that acceptance. Existing pending v1 documents may finish in v1. They are never silently upgraded or represented as cryptographically sealed. Production document creation always uses v2; the legacy creation option is an internal test fixture.
 
-A separate durable finalization queue is deferred. The current local generation followed by atomic commit avoids publishing a half-completed document. External providers will require persisted attempts and resumable jobs because their work can outlive an HTTP request.
+## Seal, evidence and trust
 
-## Authorization boundaries
+The platform certificate is separate from the participant method and the site's HTTPS certificate. First boot creates a unique installation identity and local private key automatically. The default certificate is self-signed; optional certificate/password file inputs support an operator's external certificate. A certificate purchase is not required to detect tampering against a trusted retained fingerprint.
 
-- **Instance setup:** the first owner is created using a private setup token supplied through environment or a private file. Setup closes once the owner exists; a public first-visitor-wins endpoint is not acceptable.
-- **Accounts:** passwords use scrypt; browser sessions use server-managed cookie authentication. The scrypt parameters require approximately 128 MiB of working memory, with a 256 MiB allocation ceiling and a concurrency semaphore so parallel login requests cannot create unbounded hashing work. Password hashes and session secrets are never returned to the interface.
-- **Team operations:** owners manage membership; members act within their team's authorized document scope. Every server lookup and mutation must enforce this scope, including downloads and evidence exports.
-- **Recipient operations:** signing links carry random 256-bit capabilities. The database stores their hashes, not their raw values. A token grants the recipient's limited document access, not a team account.
+The completed PDF contains document pages and per-signer evidence appendices, then one PDF/CMS seal. The protected manifest binds the prepared PDF hash, exact private evidence-core digest, signing checkpoint, frozen protection policy and actual certificate. The full private audit core is exported separately, rather than embedding IP addresses and user agents into a public manifest. It is blinded with a random nonce before commitment.
 
-Signing links place the capability in the URL fragment. The interface supplies it to the API from memory; responses use a no-referrer policy. Exchanging capabilities for short-lived recipient cookies is deferred. Fragments reduce accidental exposure in ordinary HTTP URL logs and referrers, but the full link is still a secret accessible to the browser and anyone to whom it is forwarded. Never put raw capabilities in audit payloads, analytics or application logs.
+Adding evidence pages reserializes the prepared PDF; the completed file does not contain the exact prepared file as a byte prefix. The seal operation preserves the exact candidate prefix it receives. Independent verification of prepared-byte binding uses the separately retained `original.pdf`; broad source-page rendering-equivalence regression remains a release check.
 
-Cookie security, mutation-origin checks, request limits and server-side input validation remain part of the HTTP boundary. A reverse proxy's forwarded IP headers may be treated as evidence only when that proxy is explicitly trusted. IP addresses and user-agent strings are observations, not identity proof.
+| Assertion | Meaning / limit |
+| --- | --- |
+| PDF integrity and coverage | Cryptographic signature and strict byte-range/profile checks detect covered-byte changes and unsupported unsigned tails. |
+| Evidence binding | Recomputed prepared/core hashes and canonical semantic checks tie exported participant approvals to the protected manifest. |
+| Issuer trust | Unknown by default. Explicit independently obtained certificate fingerprint may establish which installation key sealed it. An included certificate is not its own trust anchor. |
+| Human identity | Draw plus personal-link possession is self-asserted approval, not eID verification. |
+| Time | Server UTC observations. No RFC 3161 trusted timestamp, long-term timestamp preservation or trusted signing-time assertion is implemented. |
+| Certificate status | Reported separately; offline verification does not query revocation services. |
 
-## Signing and evidence
+The maintained pyHanko implementation uses the documented PDF/CAdES profile; see [engine profile and validation limits](pdf-sealing-spike.md). This is not a formal PAdES conformance or qualified-seal claim. Timestamp-required policies must fail closed rather than downgrade to a local clock. The current shipped local policy has timestamping off.
 
-The draw method accepts a stated full name, a signature drawing and affirmative consent after the recipient has an opportunity to review the document. Keep the sender-assigned name distinct from the name claimed by the recipient. The server records the consent wording/version, drawing digest and document binding; a client-side checked box or a successful image upload alone cannot authorize completion.
+The exact completed-file hash is external to that file. Including its own whole-file SHA-256 in the appendix would create a circular dependency. Completion metadata therefore follows the frozen signed evidence core and is checked for consistency separately; the verifier must not imply the final completion event is inside the earlier commitment.
 
-The initial output is a PDF containing the original document and an evidence appendix, plus a JSON evidence export with hash-linked events. These are application-generated records. The first build does **not** implement PAdES, X.509 PDF signing, trusted timestamping, a public certificate trust chain, or qualified electronic signatures.
+The offline v2 verifier needs no Signhere account, database or live server. It validates CMS/PDF coverage and the private evidence bundle, and reports issuer trust separately. Legacy verification checks hash-chain/internal consistency only. Public `/verify` computes a PDF hash in the browser and sends only that digest to this installation for a completed-record lookup; it is not a remote cryptographic validator or an independent trust authority.
 
-A hash comparison can establish whether bytes match a retained digest. The event chain can be checked for consistency and compared with a separately preserved copy; an audit checkpoint in the completed PDF provides another retainable reference. Neither can independently establish the human identity behind a link, the accuracy of the server's clock, or the honesty of the server operator. An operator with database access can rewrite the document and entire chain. Public verification is restricted to completed artifact hashes and does not reveal recipient personal information or pending-document details. Offline verification compares retained PDFs with the exported manifest.
+Neither database guards nor a self-signed seal protects against a hostile host operator who holds the key. Such an operator can issue a replacement signed record. Independently retained originals, evidence, fingerprints and completed PDFs are valuable anchors. External certificates improve issuer trust distribution; trusted timestamps and eID authentication solve separate problems.
 
-The evidence export should retain the original and final document digests separately. The final PDF cannot straightforwardly contain its own full-file SHA-256 digest: changing its appendix changes that digest. The final-byte digest therefore belongs in the separately generated evidence export or database record. The appendix may identify the original digest and the evidence snapshot used to produce it.
+## Access and audit boundaries
 
-Recipient methods and future PDF sealing remain separate extension boundaries. An identity provider can strengthen evidence of who approved specific data. A PDF seal can make later modifications detectable against a signing key. Neither function should silently be substituted for the other. See [Signing methods](signing-methods.md) and [Research](research.md).
+First-owner setup requires a private installation token and closes once initialized. Accounts use scrypt and server-managed cookie sessions. Expensive password hashing has a concurrency limit. Team-scoped authorization protects management and private evidence exports; a creator is not an isolated owner inside their team. Owner-role checks additionally protect selected administrative operations.
 
-## Operations and scaling tradeoffs
+Recipient capabilities contain 256 random bits and are stored as hashes. They are delivered in URL fragments, supplied from memory to the API, omitted from audit/log payloads and protected with no-referrer responses. The unsigned lifetime is configurable with `SIGNHERE_SIGNING_LINK_TTL_DAYS` (1–365 days; default 7), applying when links are created or rotated. Pending cancellation or rotation revokes signing access.
 
-Use PostgreSQL's `pg_dump` for a consistent logical backup while the database is running, and test restoration into a separate database. Pre-conversion uploads, signing originals and final PDF blobs are included with the evidence records. Preserve required private instance configuration separately; a database dump does not back up the application's configuration files. A plain copy of a running PostgreSQL data directory is not a substitute for a supported backup method. [PostgreSQL pg_dump](https://www.postgresql.org/docs/current/app-pgdump.html).
+After acceptance, signing authority is consumed; exact retries remain idempotent. The original capability also remains a read-only receipt for 30 days after acceptance so a lost response does not strand the participant. This is deliberately different from destroying the raw token after a single request. A separate receipt exchange is deferred. The expiry behavior is described in the README and [SES cross-check](ses-spec-crosscheck.md).
 
-Keep the Node.js and PostgreSQL images maintained, and verify supported upgrade/restore paths before changing database major versions. The portable local instance listens only on `127.0.0.1:15432`, uses SCRAM authentication and a private generated application credential, and creates no Windows service. Its application role is not a superuser. This development setup does not establish that a separately deployed database has equivalent permissions or network restrictions.
+Signed bearer receipts and separate completed-copy links provide the completed PDF only. They do not provide the full private JSON/ZIP evidence. Authorized team members can export the complete bundle or create/revoke recipient copy links. Signed PDFs necessarily contain participant names/contact and consent details; a personal link remains a credential whose forwarding grants access.
 
-Database blobs simplify consistency but grow database files, backups and memory pressure during PDF processing. Workers, connection pools and per-document locks still impose throughput limits. The first deployment has no horizontal scaling or high-availability guarantee. Establish measured document-size, concurrency and storage limits before exposing larger workloads.
+Audit events are append-only under the restricted runtime database role and linked by canonical hashes. `document.created` also records initial participant assignments; `recipient.viewed` means the first successful signing-session access, not proof of page reading. `recipient.signed` atomically records consent, submitted signature and signer completion. `document.completed` records final publication. The [SES event mapping](ses-spec-crosscheck.md#audit-event-mapping) distinguishes these combined semantics from separately observed actions.
 
-Add a durable outbox/job queue for asynchronous providers and notification delivery, and revisit finalization scheduling when measured workload requires it. If document bytes move to object storage, use immutable keys, digest checks and explicit recovery for partially completed writes; do not assume a database transaction also commits the object store. Multiple application instances additionally need shared rate-limit and worker coordination; a network database alone does not supply those features.
+## Parser and database isolation
 
-PDF validation, MuPDF WebAssembly preparation and generation use bounded workers with parsed-object checks and rejection of active content, existing signatures and incremental revisions. These workers bound execution time and JavaScript heap use, not total process memory: Node.js worker resource limits exclude ArrayBuffer, WebAssembly and native allocations, and a global out-of-memory failure can still terminate the application. Compressed PDF streams can expand substantially beyond the input-file size. [Node.js worker resource limits](https://nodejs.org/api/worker_threads.html#new-workerfilename-options).
+Production Node PDF work runs as a child process rather than a worker thread. Python PDF parsing and validation also run through the required Linux launcher; the key holder receives bounded signing inputs and does not parse PDF object graphs. The launcher uses Landlock filesystem restrictions and seccomp syscall filters, clears inherited descriptors/environment and restricts public runtime/code plus a private job directory. Key/setup files, other jobs, external sockets and cross-process memory access are denied. Windows development does not provide this Linux boundary.
 
-Total RSS/native-memory and decompression-output caps remain an explicit production release gate. Move hostile parsing into a separate child process with enforced operating-system resource limits, and bound decoded stream sizes before treating per-document memory use as contained. Worker threads are not a complete operating-system security sandbox or malware scanner. Automated certificate management, trusted timestamp preservation and third-party plugin isolation are not implemented. PDFs remain untrusted input even when their extension and basic structure are valid.
+This protects key confidentiality from a confined parser, not from compromise of the parent application or host. Parser output remains untrusted and needs parent-side validation before publication. File/range checks do not establish that a compromised PDF transformer preserved visible contract meaning; the transformation pipeline remains inside the signing-integrity trust boundary. The launcher is not an externally audited general-purpose sandbox. See [deployment isolation details](deployment.md#pdf-parser-boundary-in-the-linux-image).
 
-Formal personal-data retention and erasure tooling remains a release gate. Decide which documents and evidence an operator must retain, how deletion affects verification, and how backups age out before representing the system as production-ready.
+Input, stroke, output, process-deadline and CPU limits bound ordinary work. Node/V8/WASM virtual reservations require a large address-space allowance; Compose limits the whole application container's resident/native memory to 768 MiB. Native allocation exhaustion can still kill that container. Actual maximum-size/concurrency and temporary-storage behavior remain load-test gates.
 
-## Review priorities
+Fresh Compose installs use separate non-superuser migrator/schema-owner and DML runtime roles. Immutable-data guards are meaningful against that restricted runtime role; an owner can disable them. The migration pool closes after startup DDL, but a compromised application container could still read its supplied migration credentials. Stronger separation requires an external migration deployment step. Existing volumes require an explicit role/ownership migration and restore rehearsal; fresh initialization scripts do not rerun automatically.
 
-Before promoting a deployment beyond an initial foundation, verify cross-team access denial, recipient-token scope, setup closure, concurrent submissions, failed finalization recovery, evidence export consistency, backup restoration and tampered-file rejection. Review public verification responses for unintended disclosure of document or recipient details. Reassess key management and evidence validation before adding an external signing provider.
+## Operations and remaining gates
 
-The requested read-only Claude Opus 5.5 consultation completed after renewed OAuth authentication. The CLI reported `claude-opus-5-5`. Its architecture critique informed PDF processing limits, concurrency protection and evidence boundaries; it is not an independent security audit or legal certification. See [Claude review](claude-review.md).
+PostgreSQL holds raw/prepared/completed PDFs, evidence, job state, installation identity and historical public certificates. Private keys live separately. Stop writes/rotation for a simple coherent paired backup; use PostgreSQL's supported dump tooling, encrypt the key archive and configuration, store the pair off-host and rehearse restoration to an isolated installation. A database-only backup can retain historical verification material but cannot restore future signing with the original key. Restore mismatch must fail closed, not create a replacement identity silently.
+
+Database blobs keep publication atomic but grow backups and memory pressure. Document/storage quotas, measured concurrency, retention/erasure and backup-age policies remain operational work. Multiple application instances would additionally need coordinated rate limits and scheduling; PostgreSQL job leases alone do not establish high availability. Future asynchronous eID methods need persisted attempts and authenticated/replay-safe callbacks. The existing finalization queue does not implement those provider workflows.
+
+Before production claims, complete actual Linux Docker lifecycle/isolation/restore tests, maximum-size/concurrency tests, independent PDF-reader validation, malformed-PDF and rendering regressions, and external security/legal review. Test in-flight jobs around key loss/rotation and backups ahead of either database or keys. Keep runtime permission denials and cross-team/capability denial tests in the release checks.
+
+Requested Claude Opus 5.5 architecture and source reviews informed these boundaries and follow-up fixes. They are review input, not independent certification. See [implementation status and review dispositions](sealing-implementation.md), [Claude review](claude-review.md), [approved sealing plan](sealing-plan.md), [SES cross-check](ses-spec-crosscheck.md) and [signing-method boundaries](signing-methods.md).

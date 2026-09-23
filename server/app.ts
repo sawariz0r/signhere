@@ -9,11 +9,23 @@ import { createDatabase, transaction, appendEvent, uid, canonical, type Row } fr
 import { ApiError, token, equalSecret, hashPassword, verifyPassword } from './security.js';
 import { sha256, preparePdf, finalizePdf, MAX_PDF_BYTES } from './pdf.js';
 import { CONSENT, getSigningMethod, listMethods } from './plugins.js';
+import { createFinalizationWorker, enqueueFinalization, retryFinalization, FinalizationActionRequiredError } from './finalization.js';
+import { createKeyStore } from './key-store.js';
+import { signPdf, preflightSealPdf, SealInputError, type SealManifest } from './seal.js';
+import { LOCAL_SEAL_POLICY, signingIntent, intentEvidence, freezeEvidenceCore } from './evidence.js';
+import { verificationPackage } from './verification-package.js';
+import { createPdfReadiness } from './pdf-readiness.js';
+import { createResponseBudget } from './response-budget.js';
 
 export interface AppConfig {
   databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
   setupToken?: string; now?: () => number; rateLimit?: boolean; webDir?: string; trustProxy?: string[];
   pdfFinalizer?: typeof finalizePdf;
+  migrationDatabaseUrl?: string; keysDir?: string; sealP12File?: string; sealPasswordFile?: string;
+  /** Internal compatibility-test switch. The production entrypoint always creates sealed v2 documents. */
+  legacyCreation?: boolean;
+  signingLinkTtlDays?: number;
+  finalization?: { autoStart?: boolean; pollMs?: number };
 }
 const DAY = 86400000;
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
@@ -23,8 +35,9 @@ const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const id = (value: unknown) => z.uuid().parse(value);
 type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
-const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation';
+const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation,evidence_version,protection_policy,seal_metadata';
 const toUser = (row: Row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name });
+const consentFor = (recipient: Row) => recipient.signing_intent ? z.object({ version: z.string().min(1).max(128), text: z.string().min(1).max(10000) }).parse(JSON.parse(recipient.signing_intent.toString('utf8')).consent) : CONSENT;
 const eventDto = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
 function requestEvidence(req: Request) { return { ip: (req.ip ?? '').slice(0, 128), userAgent: (req.get('user-agent') ?? '').slice(0, 512) }; }
 async function documentDto(db: Queryable, row: Row, publicView = false, summary = false): Promise<Row> {
@@ -40,7 +53,8 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
   const result: Row = {
     id: row.id, title: row.title, fileName: row.file_name, size: row.size, pages: row.pages, status: row.status,
     originalHash: row.original_hash, completedHash: row.completed_hash, createdAt: row.created_at, completedAt: row.completed_at,
-    sender: row.sender, senderRecipientId,
+    sender: row.sender, senderRecipientId, evidenceVersion: row.evidence_version,
+    ...(row.seal_metadata ? { seal: { profile: row.seal_metadata.profile, fingerprintSha256: row.seal_metadata.certificateFingerprint, cryptographicPdfSeal: true, trustedTimestamp: false, identityVerified: false } } : {}),
     ...(row.preparation ? { preparation: row.preparation } : {}),
     recipients: recipients.map((recipient: Row) => ({
       id: recipient.id, name: recipient.name, ...(publicView ? {} : { email: recipient.email }),
@@ -50,6 +64,10 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
     })),
     events,
   };
+  if (row.status === 'finalizing') {
+    const job = (await db.query('SELECT status,last_error_code FROM finalization_jobs WHERE document_id=$1', [row.id])).rows[0];
+    result.finalization = { state: job?.status === 'action_required' ? 'action_required' : 'working', ...(!publicView && job?.last_error_code ? { code: job.last_error_code } : {}) };
+  }
   return result;
 }
 
@@ -58,9 +76,33 @@ export async function createApp(config: AppConfig) {
   if (!['http:', 'https:'].includes(base.protocol) || base.pathname !== '/' || base.search || base.hash || base.username || base.password) throw new Error('BASE_URL must be an http(s) origin without a path.');
   if (base.protocol === 'http:' && !['localhost', '127.0.0.1', '[::1]'].includes(base.hostname)) throw new Error('BASE_URL must use HTTPS except on localhost.');
   const origin = base.origin;
+  const linkTtlDays = z.number().int().min(1).max(365).parse(config.signingLinkTtlDays ?? 7);
   const now = config.now ?? Date.now;
   const at = () => new Date(now()).toISOString();
-  const pool = await createDatabase(config.databaseUrl, config.schema);
+  const pool = await createDatabase(config.databaseUrl, config.schema, config.migrationDatabaseUrl);
+  const keys = config.legacyCreation ? null : await createKeyStore(pool, { keysDir: config.keysDir ?? join(config.dataDir, 'keys'), p12File: config.sealP12File, passwordFile: config.sealPasswordFile });
+  const pdfReady = createPdfReadiness();
+  const finalization = createFinalizationWorker(pool, {
+    signingIdentity: async () => { if (!keys) throw new Error('Sealing is unavailable.'); return keys.signingIdentity(); },
+    buildArtifact: async snapshot => {
+      const { document, recipients, checkpoint, evidenceCore, signingIdentity: identity } = snapshot;
+      if (!identity || !keys || document.protection_policy?.timestamp !== 'off') throw new FinalizationActionRequiredError('unsupported_sealing_policy');
+      const core = JSON.parse(evidenceCore.toString('utf8'));
+      if (core.document.id !== document.id || core.document.originalHash !== document.original_hash || core.installationId !== identity.installationId) throw new FinalizationActionRequiredError('frozen_evidence_mismatch');
+      const frozenSigners = core.recipients.map((recipient: Row) => {
+        const event = core.events.find((event: Row) => event.type === 'recipient.signed' && event.data.recipientId === recipient.id);
+        if (!event) throw new FinalizationActionRequiredError('frozen_signature_missing');
+        return { name: recipient.name, signedName: recipient.signedName, email: recipient.email, signedAt: recipient.signedAt,
+          strokes: event.data.signature?.strokes ?? [], methodId: recipient.methodId, methodVersion: recipient.methodVersion, consent: event.data.consent };
+      });
+      const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true);
+      const manifest: SealManifest = { schema: 'signhere-seal-v1', evidenceSchema: 2, installationId: identity.installationId,
+        documentId: document.id, evidenceDigest: sha256(evidenceCore), preparedHash: document.original_hash,
+        checkpoint, certificateFingerprint: identity.fingerprintSha256, policy: { timestamp: 'off' } };
+      const result = await signPdf(candidate, manifest, await keys.keyFor(identity.fingerprintSha256));
+      return { bytes: result.bytes, sealMetadata: { profile: result.metadata.profile, certificateFingerprint: result.metadata.certificateFingerprint, certificatePem: result.metadata.certificatePem, manifest: result.metadata.manifest, pdfHash: result.metadata.pdfHash } };
+    },
+  }, { now, pollMs: config.finalization?.pollMs });
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const setupPath = join(config.dataDir, 'setup-token');
   const setupRequired = () => pool.query('SELECT EXISTS(SELECT 1 FROM users) AS exists').then(result => !result.rows[0].exists);
@@ -159,11 +201,19 @@ export async function createApp(config: AppConfig) {
     if (document.status === 'cancelled') throw new ApiError(410, 'Dokumentet har avbrutits.');
     return { document, recipient };
   }
-  const pdfResponse = (res: Response, bytes: Uint8Array, documentId: string, download = false) => res.type('application/pdf').set('Content-Disposition', (download ? 'attachment' : 'inline') + '; filename="signhere-' + documentId + '.pdf"').send(Buffer.from(bytes));
+  const pdfResponse = (res: Response, bytes: Uint8Array, documentId: string, download = false) => res.type('application/pdf').set('Content-Disposition', (download ? 'attachment' : 'inline') + '; filename="signhere-' + documentId + '.pdf"').send(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
 
   app.get('/api/health', async (_req, res) => {
-    try { await pool.query('SELECT 1'); res.json({ ok: true }); }
+    try { await pool.query('SELECT 1'); const status = await keys?.cachedRefresh(); res.json({ ok: true, sealing: { ready: Boolean(status?.ready) } }); }
     catch { res.status(503).json({ ok: false }); }
+  });
+  app.get('/api/ready', async (_req, res) => {
+    try { await pool.query('SELECT 1'); const sealing = await keys?.cachedRefresh(); const ready = Boolean(sealing?.ready && sealing.fingerprintSha256 && sealing.certificatePem && await pdfReady({fingerprintSha256: sealing.fingerprintSha256, certificatePem: sealing.certificatePem, chainPem: sealing.chainPem})); res.status(ready ? 200 : 503).json({ ready }); }
+    catch { res.status(503).json({ ready: false }); }
+  });
+  app.get('/.well-known/signhere-sealing.json', async (_req, res) => {
+    const status = await keys?.cachedRefresh();
+    res.set('Cache-Control', 'no-store').json({ ready: Boolean(status?.ready), installationId: status?.installationId, fingerprintSha256: status?.fingerprintSha256, certificatePem: status?.certificatePem, profile: 'signhere-seal-v1', trustAnchor: false });
   });
   app.get('/api/bootstrap', async (req, res) => {
     const user = await currentUser(req);
@@ -238,26 +288,44 @@ export async function createApp(config: AppConfig) {
     }
     if (!recipients.length) throw new ApiError(400, 'Lägg till en mottagare eller välj att signera själv.');
     if (recipients.length > 25) throw new ApiError(400, 'Dokumentet får ha högst 25 mottagare, inklusive dig själv.');
+    const creationIdentity = await keys?.refresh();
+    if (!config.legacyCreation && (!creationIdentity?.ready || !z.uuid().safeParse(creationIdentity.installationId).success)) throw new ApiError(503, 'Förseglingen behöver åtgärdas av administratören innan nya dokument kan skickas.');
+    if (creationIdentity?.ready && !await pdfReady({fingerprintSha256: creationIdentity.fingerprintSha256!, certificatePem: creationIdentity.certificatePem!, chainPem: creationIdentity.chainPem})) throw new ApiError(503, 'PDF-tjänsten är tillfälligt otillgänglig. Försök igen senare.');
     const uploaded = decodeUpload(input.pdfBase64);
     const parsed = await prepareUpload(uploaded);
     // Preparation belongs to document creation, not to a separate user approval.
     // The server owns these bytes; recipient signatures bind to this frozen copy.
     const bytes = parsed.bytes;
     const method = getSigningMethod(input.methodId)!;
+    const documentId = uid();
+    if (!config.legacyCreation) {
+      // Validate the final PDF pipeline before anyone is invited or approves.
+      // Only the public certificate is available to this dry run.
+      const identity = creationIdentity!;
+      try {
+        const candidate = await finalizePdf(bytes, input.title, documentId, parsed.hash, CONSENT,
+          recipients.map(recipient => ({ ...recipient, signedAt: at(), strokes: [[[0, 0], [1, 1]]], methodId: method.id, methodVersion: method.version })),
+          { sequence: 1000, hash: '0'.repeat(64) }, true);
+        await preflightSealPdf(candidate, { fingerprintSha256: identity.fingerprintSha256!, certificatePem: identity.certificatePem!, chainPem: identity.chainPem });
+      } catch (error) {
+        if (error instanceof SealInputError) throw new ApiError(400, 'PDF-filen kunde inte förberedas för försegling. Exportera en ny PDF och försök igen.');
+        console.error('signhere: pdf_preflight_unavailable');
+        throw new ApiError(503, 'PDF-tjänsten är tillfälligt otillgänglig. Försök igen senare.');
+      }
+    }
     const result = await transaction(pool, async client => {
-      const documentId = uid();
       const sender = { name: res.locals.user.name, email: res.locals.user.email, teamName: res.locals.user.team_name };
       const createdAt = at();
-      const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15) RETURNING " + docColumns,
-        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, sender, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation])).rows[0];
+      const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation,evidence_version,protection_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15,$16,$17) RETURNING " + docColumns,
+        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, sender, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation, config.legacyCreation ? 1 : 2, config.legacyCreation ? null : LOCAL_SEAL_POLICY])).rows[0];
       const links: Row[] = [];
       for (const [position, recipient] of recipients.entries()) {
         const recipientId = uid(), raw = token();
-        await client.query('INSERT INTO recipients(id,document_id,position,name,email,method_id,method_version,token_hash,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9)', [recipientId, documentId, position, recipient.name, recipient.email, method.id, method.version, sha256(raw), now() + 7 * DAY]);
+        await client.query('INSERT INTO recipients(id,document_id,position,name,email,method_id,method_version,token_hash,expires_at,signing_intent) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [recipientId, documentId, position, recipient.name, recipient.email, method.id, method.version, sha256(raw), now() + linkTtlDays * DAY, config.legacyCreation ? null : signingIntent(creationIdentity!.installationId, row, { id: recipientId, method_id: method.id, method_version: method.version })]);
         links.push({ recipientId, name: recipient.name, url: origin + '/sign#' + raw });
       }
       const senderRecipientId = input.includeSender ? links[links.length - 1].recipientId : null;
-      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
       return { document: await documentDto(client, row), links, senderRecipientId };
     });
     res.status(201).json(result);
@@ -266,25 +334,44 @@ export async function createApp(config: AppConfig) {
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
     res.json({ document: await documentDto(pool, row) });
   });
-  app.get('/api/documents/:id/pdf', requireUser, async (req, res) => {
+  app.get('/api/documents/:id/pdf', requireUser, async (req, res) => withResponse(res, 'download', res.locals.user.id, async () => {
     const version = z.enum(['original', 'completed', 'uploaded']).parse(req.query.version ?? 'original');
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
     if (version === 'completed' && row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
     const bytes = (await pool.query('SELECT ' + (version === 'completed' ? 'completed' : version === 'uploaded' ? 'COALESCE(uploaded,original)' : 'original') + ' AS bytes FROM documents WHERE id=$1', [row.id])).rows[0].bytes;
     pdfResponse(res, bytes, row.id, true);
-  });
-  app.get('/api/documents/:id/evidence', requireUser, async (req, res) => {
-    const manifest = await transaction(pool, async client => {
-      const row = await ownedDocument(client, req.params.id, res.locals.user.team_id, true);
-      const { events, ...document } = await documentDto(client, row);
-      return {
-        schemaVersion: 1, document, events, chainHead: events.at(-1)?.hash ?? '0'.repeat(64),
-        signingCheckpoint: row.signing_checkpoint ?? null,
-        assurance: { identityVerified: false, qualifiedSignature: false, trustedTimestamp: false, cryptographicPdfSeal: false },
-        hashAlgorithm: 'SHA-256', canonicalization: 'JSON with recursively sorted object keys, no whitespace; arrays retain order',
-      };
-    });
-    res.type('application/json').set('Content-Disposition', 'attachment; filename="signhere-' + manifest.document.id + '-evidence.json"').send(JSON.stringify(manifest, null, 2));
+  }));
+  async function evidenceExport(client: Queryable, row: Row) {
+    const { events, ...document } = await documentDto(client, row);
+    const core = row.evidence_version === 2 ? (await client.query('SELECT evidence_core FROM documents WHERE id=$1', [row.id])).rows[0].evidence_core : null;
+    return {
+      schemaVersion: row.evidence_version === 2 ? 2 : 1, document, events, chainHead: events.at(-1)?.hash ?? '0'.repeat(64),
+      signingCheckpoint: row.signing_checkpoint ?? null,
+      ...(core ? { evidenceCoreBase64: core.toString('base64'), evidenceCoreHash: sha256(core), seal: row.seal_metadata } : {}),
+      assurance: { identityVerified: false, qualifiedSignature: false, trustedTimestamp: false, cryptographicPdfSeal: Boolean(row.seal_metadata) },
+      hashAlgorithm: 'SHA-256', canonicalization: 'JSON with recursively sorted object keys, no whitespace; arrays retain order',
+    };
+  }
+  const exportResponse = (res: Response, manifest: Row) => res.type('application/json').set('Content-Disposition', 'attachment; filename="signhere-' + manifest.document.id + '-evidence.json"').send(JSON.stringify(manifest, null, 2));
+  const withResponse = createResponseBudget();
+  app.get('/api/documents/:id/evidence', requireUser, async (req, res) => withResponse(res, 'export', res.locals.user.id, async () => {
+    const manifest = await transaction(pool, async client => evidenceExport(client, await ownedDocument(client, req.params.id, res.locals.user.team_id, true)));
+    exportResponse(res, manifest);
+  }));
+  async function packageResponse(res: Response, row: Row) { return withResponse(res, 'export', res.locals.user.id, async () => {
+    if (row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+    const artifacts = (await pool.query('SELECT original,completed,uploaded,evidence_core FROM documents WHERE id=$1', [row.id])).rows[0];
+    const manifest = await evidenceExport(pool, row);
+    const archive = await verificationPackage(manifest, artifacts);
+    res.type('application/zip').set('Content-Disposition', 'attachment; filename="signhere-' + row.id + '-verification.zip"').send(archive);
+  }); }
+  app.get('/api/documents/:id/verification-package', requireUser, async (req, res) => packageResponse(res, await ownedDocument(pool, req.params.id, res.locals.user.team_id)));
+  app.post('/api/documents/:id/retry-finalization', requireUser, async (req, res) => {
+    owner(res);
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (row.status !== 'finalizing') throw new ApiError(409, 'Dokumentet väntar inte på färdigställning.');
+    await retryFinalization(pool, row.id);
+    res.json({ document: await documentDto(pool, row) });
   });
   app.post('/api/documents/:id/recipients/:recipientId/link', requireUser, async (req, res) => {
     const result = await transaction(pool, async client => {
@@ -293,8 +380,10 @@ export async function createApp(config: AppConfig) {
       const recipient = (await client.query('SELECT * FROM recipients WHERE id=$1 AND document_id=$2', [id(req.params.recipientId), row.id])).rows[0];
       if (!recipient) throw new ApiError(404, 'Mottagaren finns inte.');
       if (recipient.signed_at) throw new ApiError(409, 'Mottagaren har redan signerat.');
+      const history = (await client.query('SELECT count(*) AS count FROM events WHERE document_id=$1', [row.id])).rows[0];
+      if (Number(history.count) >= 1000) throw new ApiError(409, 'Dokumentet har för många länkbyten. Skapa en ny signering.');
       const raw = token();
-      await client.query('UPDATE recipients SET token_hash=$1,expires_at=$2 WHERE id=$3', [sha256(raw), now() + 7 * DAY, recipient.id]);
+      await client.query('UPDATE recipients SET token_hash=$1,expires_at=$2 WHERE id=$3', [sha256(raw), now() + linkTtlDays * DAY, recipient.id]);
       await appendEvent(client, row.id, 'link.rotated', at(), { recipientId: recipient.id, actorId: res.locals.user.id, ...requestEvidence(req) });
       return { url: origin + '/sign#' + raw };
     });
@@ -363,43 +452,47 @@ export async function createApp(config: AppConfig) {
       const { document, recipient } = await bearer(client, raw, true);
       const method = getSigningMethod(recipient.method_id);
       if (!method || method.version !== recipient.method_version) throw new ApiError(409, 'Signeringsmetoden är inte tillgänglig.');
-      if (!recipient.viewed_at && !recipient.signed_at) {
+      if (document.status === 'pending' && !recipient.viewed_at && !recipient.signed_at) {
         const viewedAt = at();
         await client.query('UPDATE recipients SET viewed_at=$1 WHERE id=$2', [viewedAt, recipient.id]);
         await appendEvent(client, document.id, 'recipient.viewed', viewedAt, { recipientId: recipient.id, originalHash: document.original_hash, ...requestEvidence(req) });
       }
-      await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent: CONSENT });
-      return { document: await documentDto(client, document, true), recipientId: recipient.id, consent: CONSENT, method: { id: method.id, label: method.label, version: method.version } };
+      const consent = consentFor(recipient);
+      await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent });
+      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version } };
     });
     res.json(result);
   });
   app.post('/api/sign/pdf', async (req, res) => {
     const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
-    await transaction(pool, async client => {
-      const { document } = await bearer(client, raw, true);
-      const row = (await client.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0];
+    const { document, recipient } = await bearer(pool, raw);
+    await withResponse(res, 'view', recipient.id, async () => {
+      const row = (await pool.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0];
       pdfResponse(res, row.original, document.id);
     });
   });
   app.post('/api/sign/complete', async (req, res) => {
     const input = z.object({
-      token: tokenSchema, documentHash: hashSchema, consentVersion: z.literal(CONSENT.version),
-      accepted: z.literal(true), name: nameSchema, payload: z.unknown(),
+      token: tokenSchema, documentHash: hashSchema, consentVersion: z.string().min(1).max(128),
+      accepted: z.literal(true), name: nameSchema, payload: z.unknown(), signingIntentHash: hashSchema.optional(),
     }).strict().parse(req.body);
     const result = await transaction(pool, async client => {
       // PostgreSQL owns the per-document lock, including across processes. The
       // reserved client keeps all signature events/artifacts in one transaction.
       // Cancellation and token rotation acquire the same lock.
       const { document, recipient } = await bearer(client, input.token, true);
+      const consent = consentFor(recipient);
+      if (input.consentVersion !== consent.version) throw new ApiError(400, 'Samtycket stämmer inte. Öppna dokumentet igen.');
+      if (document.evidence_version === 2 && (!recipient.signing_intent || input.signingIntentHash !== sha256(recipient.signing_intent))) throw new ApiError(409, 'Öppna dokumentet igen för att bekräfta den aktuella signeringen.');
       if (input.documentHash !== document.original_hash) throw new ApiError(409, 'Dokumentets kontrollsumma stämmer inte. Öppna dokumentet igen.');
       const method = getSigningMethod(recipient.method_id);
       if (!method || method.version !== recipient.method_version) throw new ApiError(409, 'Signeringsmetoden är inte tillgänglig.');
-      const verified = await method.complete({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: input.name, consent: CONSENT }, input.payload);
+      const verified = await method.complete({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: input.name, consent }, input.payload);
       if (verified.status !== 'completed') throw new ApiError(409, 'Signeringen är inte slutförd.');
       if (method.id === 'draw' && !verified.visualSignature) throw new ApiError(400, 'Underskriften saknas.');
       const providerEvidence = z.record(z.string(), z.json()).parse(verified.providerEvidence);
       if (Buffer.byteLength(JSON.stringify(providerEvidence)) > 16384) throw new ApiError(400, 'Signeringsbeviset är för stort.');
-      const submissionHash = sha256(canonical({ documentHash: input.documentHash, consent: CONSENT, name: input.name, method: { id: method.id, version: method.version }, visualSignature: verified.visualSignature ?? null, providerEvidence }));
+      const submissionHash = sha256(canonical({ documentHash: input.documentHash, ...(recipient.signing_intent ? { signingIntentHash: input.signingIntentHash } : {}), consent, name: input.name, method: { id: method.id, version: method.version }, visualSignature: verified.visualSignature ?? null, providerEvidence }));
       if (recipient.signed_at) {
         if (recipient.submission_hash !== submissionHash) throw new ApiError(409, 'Mottagaren har redan signerat med en annan underskrift.');
         return { document: await documentDto(client, document, true), recipientId: recipient.id };
@@ -408,14 +501,19 @@ export async function createApp(config: AppConfig) {
       const signedAt = at();
       const evidence = {
         recipientId: recipient.id, assignedName: recipient.name, email: recipient.email, claimedName: input.name, originalHash: document.original_hash,
-        consent: CONSENT, method: { id: method.id, version: method.version }, signature: verified.visualSignature ?? null,
-        providerEvidence, ...requestEvidence(req),
+        ...(document.evidence_version === 2 ? { documentId: document.id, transactionId: document.id, authenticationMethod: 'personal_signing_link', consentAcceptedAt: signedAt, signedAt } : {}),
+        consent, method: { id: method.id, version: method.version }, signature: verified.visualSignature ?? null,
+        providerEvidence, ...(recipient.signing_intent ? { intent: intentEvidence(recipient.signing_intent) } : {}), ...requestEvidence(req),
       };
-      await client.query('UPDATE recipients SET signed_at=$1,claimed_name=$2,signature=$3,evidence=$4,submission_hash=$5,expires_at=GREATEST(expires_at,$6) WHERE id=$7', [signedAt, input.name, verified.visualSignature ?? null, evidence, submissionHash, now() + 30 * DAY, recipient.id]);
+      await client.query('UPDATE recipients SET signed_at=$1,claimed_name=$2,signature=$3,evidence=$4,submission_hash=$5,expires_at=$6 WHERE id=$7', [signedAt, input.name, verified.visualSignature ?? null, evidence, submissionHash, now() + 30 * DAY, recipient.id]);
       const checkpoint = await appendEvent(client, document.id, 'recipient.signed', signedAt, evidence);
       const signers = (await client.query('SELECT * FROM recipients WHERE document_id=$1 ORDER BY position', [document.id])).rows;
       let finalDocument = document;
-      if (signers.every(signer => !!signer.signed_at)) {
+      if (signers.every(signer => !!signer.signed_at) && document.evidence_version === 2) {
+        const events = (await client.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows;
+        const core = freezeEvidenceCore(events[0].data.installationId, document, signers, events, checkpoint);
+        finalDocument = await enqueueFinalization(client, { documentId: document.id, checkpoint, evidenceCore: core });
+      } else if (signers.every(signer => !!signer.signed_at)) {
         const original = (await client.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0].original;
         let completed: Buffer;
         try {
@@ -433,12 +531,38 @@ export async function createApp(config: AppConfig) {
   });
   app.post('/api/sign/download', async (req, res) => {
     const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
-    await transaction(pool, async client => {
-      const { document, recipient } = await bearer(client, raw, true);
-      if (!recipient.signed_at || document.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
-      const row = (await client.query('SELECT completed FROM documents WHERE id=$1', [document.id])).rows[0];
+    const { document, recipient } = await bearer(pool, raw);
+    if (!recipient.signed_at || document.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+    await withResponse(res, 'download', recipient.id, async () => {
+      const row = (await pool.query('SELECT completed FROM documents WHERE id=$1', [document.id])).rows[0];
       pdfResponse(res, row.completed, document.id, true);
     });
+  });
+
+  app.post('/api/documents/:id/recipients/:recipientId/copy-link', requireUser, async (req, res) => {
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+    const recipient = (await pool.query('SELECT id FROM recipients WHERE id=$1 AND document_id=$2 AND signed_at IS NOT NULL', [id(req.params.recipientId), row.id])).rows[0];
+    if (!recipient) throw new ApiError(404, 'Mottagaren finns inte.');
+    const raw = token();
+    await pool.query('DELETE FROM completed_copy_access WHERE expires_at<=$1', [now()]);
+    await pool.query('INSERT INTO completed_copy_access(token_hash,document_id,recipient_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5)', [sha256(raw), row.id, recipient.id, now() + 30 * DAY, at()]);
+    res.json({ url: origin + '/copy#' + raw });
+  });
+  app.post('/api/copy/download', async (req, res) => {
+    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    const found = (await pool.query('SELECT document_id,recipient_id FROM completed_copy_access WHERE token_hash=$1 AND expires_at>$2', [sha256(raw), now()])).rows[0];
+    if (!found) throw new ApiError(404, 'Länken är ogiltig eller har upphört att gälla.');
+    const row = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1', [found.document_id])).rows[0];
+    await withResponse(res, 'download', found.recipient_id, async () => {
+      const pdf = (await pool.query('SELECT completed FROM documents WHERE id=$1', [row.id])).rows[0].completed;
+      pdfResponse(res, pdf, row.id, true);
+    });
+  });
+  app.post('/api/documents/:id/recipients/:recipientId/revoke-copy-links', requireUser, async (req, res) => {
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    await pool.query('DELETE FROM completed_copy_access WHERE document_id=$1 AND recipient_id=$2', [row.id, id(req.params.recipientId)]);
+    res.json({ revoked: true });
   });
 
   app.use('/api', (_req, _res, next) => next(new ApiError(404, 'API-adressen finns inte.')));
@@ -459,7 +583,8 @@ export async function createApp(config: AppConfig) {
     console.error('signhere: request failed', (error as Row)?.code ?? 'internal');
     res.status(500).json({ error: 'Ett serverfel uppstod. Försök igen.' });
   });
-  return { app, db: pool, pool, close: () => pool.end() };
+  if (config.finalization?.autoStart !== false && !config.legacyCreation) finalization.start();
+  return { app, db: pool, pool, finalization, keys, close: async () => { await finalization.stop(); await pool.end(); } };
 }
 
 

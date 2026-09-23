@@ -52,8 +52,8 @@ Completed transitions must be idempotent. A later duplicate result can return th
 | --- | --- | --- |
 | Signing method | Capture intent and evidence linked to the document; optionally authenticate identity. | Draw only. |
 | Provider evidence verifier | Validate a provider's response, identity claims and signed payload. | Future adapters. |
-| PDF finalizer | Produce the readable completed PDF and appendix. | Initial foundation. |
-| PDF sealer | Apply a cryptographic PDF signature using a managed certificate/key. | Not implemented. |
+| PDF finalizer | Produce the readable completed PDF and appendix. | Durable v2 finalization; legacy v1 synchronous path retained. |
+| PDF sealer | Apply a cryptographic PDF signature using a managed certificate/key. | Local installation seal for new v2 documents; self-signed default or imported certificate. See [profile](pdf-sealing-spike.md). |
 | Timestamp provider | Obtain and validate independent timestamp evidence. | Not implemented. |
 
 Keep assurance explicit. Avoid a generic `verified: true` field that conflates link possession, email verification, an identity provider's authentication level and qualified signing. Declared capabilities guide routing; a plugin's self-declared label does not establish its legal classification.

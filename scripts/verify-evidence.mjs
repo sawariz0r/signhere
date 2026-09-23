@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { readFileSync } from 'node:fs';
+import { openSync, readSync, closeSync, fstatSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 const digest = value => createHash('sha256').update(value).digest('hex');
@@ -9,7 +9,48 @@ const canonical = value => {
   return '{' + Object.keys(value).sort().map(key => JSON.stringify(key) + ':' + canonical(value[key])).join(',') + '}';
 };
 const check = (condition, message) => { if (!condition) throw new Error(message); };
+export function normalizeFingerprint(value) {
+  if (typeof value !== 'string') throw new Error('Missing trusted certificate fingerprint.');
+  const normalized = value.trim().replace(/^(?:sha256\s+)?fingerprint=/i, '').replaceAll(':', '').trim().toLowerCase();
+  if (!/^[a-f0-9]{64}$/.test(normalized)) throw new Error('Invalid trusted certificate fingerprint.');
+  return normalized;
+}
+export const MAX_EVIDENCE_JSON_BYTES = 128 * 1024 * 1024;
+export const MAX_PDF_BYTES = 32 * 1024 * 1024;
+export function readBoundedFile(path, limit) {
+  const fd = openSync(path, 'r');
+  try {
+    const info = fstatSync(fd);
+    check(info.isFile() && info.size >= 0 && info.size <= limit, 'Input is not a regular file within verification limits.');
+    const bytes = Buffer.alloc(info.size + 1);
+    let read = 0;
+    while (read < bytes.length) { const count = readSync(fd, bytes, read, bytes.length - read, null); if (!count) break; read += count; }
+    check(read === info.size, 'Input changed while being read.');
+    return bytes.subarray(0, read);
+  } finally { closeSync(fd); }
+}
+export function parseEvidenceJson(bytes) {
+  check(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= MAX_EVIDENCE_JSON_BYTES, 'Evidence JSON is missing or oversized.');
+  const text = new TextDecoder('utf-8', { fatal: true, ignoreBOM: true }).decode(bytes);
+  check(!text.startsWith('\ufeff'), 'Evidence JSON must not contain a BOM.');
+  const value = JSON.parse(text);
+  validateJsonValue(value);
+  return value;
+}
+function validateJsonValue(value, depth = 0) {
+  check(depth <= 64, 'Evidence JSON nesting exceeds the supported limit.');
+  if (typeof value === 'string') {
+    check(value.isWellFormed(), 'Evidence JSON contains invalid Unicode.');
+  } else if (typeof value === 'number') check(Number.isFinite(value), 'Evidence JSON contains non-finite numbers.');
+  else if (value && typeof value === 'object') for (const [key, child] of Object.entries(value)) { validateJsonValue(key, depth + 1); validateJsonValue(child, depth + 1); }
+}
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+const validNonce = value => typeof value === 'string' && /^[A-Za-z0-9_-]{43}$/.test(value) && Buffer.from(value, 'base64url').length === 32 && Buffer.from(value, 'base64url').toString('base64url') === value;
+
 export function verifyEvidence(manifest, original, completed, uploaded) {
+  check(object(manifest), 'Missing evidence manifest.');
+  for (const bytes of [original, completed, ...(uploaded === undefined ? [] : [uploaded])]) check(Buffer.isBuffer(bytes) && bytes.length > 0 && bytes.length <= MAX_PDF_BYTES, 'PDF input is missing or oversized.');
+  if (manifest.schemaVersion === 2) return verifyV2Consistency(manifest, original, completed, uploaded);
   check(manifest.schemaVersion === 1, 'Unsupported evidence schema.');
   const doc = manifest.document;
   check(doc && typeof doc.id === 'string', 'Missing document identity.');
@@ -83,16 +124,73 @@ export function verifyEvidence(manifest, original, completed, uploaded) {
   check(finalEvent.data.originalHash === doc.originalHash, 'Completion event is bound to another original.');
   return { uploadedSourceVerified: uploaded !== undefined ? true : preparation ? false : null, documentId: doc.id, signatures: signedRecipients.size, events: sequence, chainHead: previousHash, manifestSha256: digest(canonical(manifest)) };
 }
-if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) {
-  const [manifestPath, originalPath, completedPath, uploadedPath] = process.argv.slice(2);
-  if (!manifestPath || !originalPath || !completedPath) {
-    console.error('Usage: npm run verify:evidence -- evidence.json original.pdf completed.pdf [uploaded.pdf]'); process.exitCode = 2;
-  } else {
-    try {
-      const result = verifyEvidence(JSON.parse(readFileSync(manifestPath, 'utf8')), readFileSync(originalPath), readFileSync(completedPath), uploadedPath ? readFileSync(uploadedPath) : undefined);
+export function decodeEvidenceCore(manifest) {
+  const encoded = manifest.evidenceCoreBase64;
+  check(typeof encoded === 'string' && encoded.length <= 45 * 1024 * 1024 && /^[A-Za-z0-9+/]*={0,2}$/.test(encoded), 'Missing or oversized exact evidence core.');
+  const bytes = Buffer.from(encoded, 'base64');
+  check(bytes.toString('base64') === encoded && bytes.length <= 32 * 1024 * 1024, 'Invalid evidence encoding.');
+  check(digest(bytes) === manifest.evidenceCoreHash, 'Changed evidence core bytes.');
+  const core = parseEvidenceJson(bytes);
+  // The v2 producer format is deliberately fixed. This comparison rejects duplicate
+  // keys/invalid UTF-8/alternate representations; the commitment is over bytes above.
+  check(Buffer.from(canonical(core), 'utf8').equals(bytes), 'Evidence is not in its declared strict producer format.');
+  check(object(core) && core.schema === 'signhere-evidence-core-v2' && validNonce(core.nonce), 'Invalid evidence core schema or nonce.');
+  check(object(core.document) && typeof core.installationId === 'string' && object(core.signingCheckpoint) && Array.isArray(core.events) && core.events.length > 1 && Array.isArray(core.recipients) && core.recipients.length > 0 && core.recipients.length <= 26, 'Incomplete frozen evidence core.');
+  for (const name of ['id', 'title', 'fileName', 'originalHash', 'size', 'pages', 'createdAt', 'sender', 'senderRecipientId']) check(Object.hasOwn(core.document, name), `Missing frozen document ${name}.`);
+  return { core, bytes };
+}
+function verifyV2Consistency(manifest, original, completed, uploaded) {
+  const { core, bytes } = decodeEvidenceCore(manifest);
+  const result = verifyEvidence({ ...manifest, schemaVersion: 1 }, original, completed, uploaded);
+  const doc = manifest.document;
+  for (const [key, value] of Object.entries(core.document)) check(canonical(value) === canonical(doc[key]), `Frozen document ${key} does not match.`);
+  check(canonical(core.signingCheckpoint) === canonical(manifest.signingCheckpoint), 'Frozen checkpoint changed.');
+  check(canonical(core.events) === canonical(manifest.events.slice(0, core.signingCheckpoint.sequence)), 'Frozen signing events changed.');
+  check(core.events.every(event => object(event.data) && validNonce(event.data.eventNonce)), 'Missing v2 audit nonce.');
+  check(core.events.slice(1).every(event => ['recipient.viewed', 'recipient.signed', 'link.rotated'].includes(event.type)), 'Unexpected frozen signing event.');
+  const created = core.events[0];
+  check(created.data.installationId === core.installationId && created.data.evidenceVersion === 2, 'Installation binding mismatch.');
+  check(created.data.protectionPolicy?.profile === 'signhere-seal-v1' && created.data.protectionPolicy?.timestamp === 'off', 'Unsupported frozen protection policy.');
+  check(core.recipients.length === doc.recipients.length, 'Frozen recipient count changed.');
+  for (const [index, recipient] of core.recipients.entries()) {
+    const exported = doc.recipients[index];
+    for (const key of ['id', 'name', 'email', 'methodId', 'methodVersion', 'signedAt', 'signedName']) check(canonical(recipient[key]) === canonical(exported[key]), `Frozen recipient ${key} changed.`);
+    check(recipient.position === index, 'Frozen recipient order changed.');
+    const signed = core.events.find(event => event.type === 'recipient.signed' && event.data.recipientId === recipient.id);
+    check(signed && canonical(signed.data.intent) === canonical(recipient.intent), 'Intent is not bound to the accepted signature.');
+    const raw = Buffer.from(recipient.intent.bytesBase64, 'base64');
+    check(raw.length <= 16384 && raw.toString('base64') === recipient.intent.bytesBase64 && digest(raw) === recipient.intent.sha256, 'Changed intent bytes.');
+    const intent = parseEvidenceJson(raw);
+    check(Buffer.from(canonical(intent), 'utf8').equals(raw), 'Invalid strict intent encoding.');
+    check(intent.schema === 'signhere-intent-v2' && intent.domain === 'signhere/document-approval', 'Unknown signing intent.');
+    check(intent.installationId === core.installationId && intent.documentId === doc.id && intent.revisionId === doc.id && intent.recipientId === recipient.id && intent.preparedHash === digest(original), 'Intent is bound to another document or recipient.');
+    check(canonical(intent.consent) === canonical(signed.data.consent) && canonical(intent.method) === canonical(signed.data.method) && validNonce(intent.nonce), 'Intent consent/method/nonce mismatch.');
+  }
+  check(manifest.events.at(-1).data.evidenceCoreHash === digest(bytes), 'Completion does not bind exact evidence.');
+  return { ...result, evidenceVersion: 2, evidenceCoreHash: digest(bytes), cryptographicPdfSeal: 'not-checked', issuerTrust: 'not-checked' };
+}
+async function runCli() {
+  const args = process.argv.slice(2);
+  const trustIndex = args.indexOf('--trust-fingerprint');
+  const trustInput = trustIndex >= 0 ? args.splice(trustIndex, 2)[1] : undefined;
+  try {
+    const trustedFingerprint = trustIndex >= 0 ? normalizeFingerprint(trustInput) : undefined;
+    check(args.length >= 3 && args.length <= 4 && (trustIndex < 0 || /^[a-f0-9]{64}$/.test(trustedFingerprint ?? '')), 'Usage: node verify-evidence.mjs evidence.json original.pdf completed.pdf [uploaded.pdf] [--trust-fingerprint HEX]');
+    const [manifestPath, originalPath, completedPath, uploadedPath] = args;
+    const manifest = parseEvidenceJson(readBoundedFile(manifestPath, MAX_EVIDENCE_JSON_BYTES));
+    const original = readBoundedFile(originalPath, MAX_PDF_BYTES), completed = readBoundedFile(completedPath, MAX_PDF_BYTES), uploaded = uploadedPath ? readBoundedFile(uploadedPath, MAX_PDF_BYTES) : undefined;
+    if (manifest.schemaVersion === 2) {
+      const { verifySealedEvidence } = await import('./verify-sealed-evidence.mjs');
+      const result = await verifySealedEvidence(manifest, original, completed, uploaded, trustedFingerprint);
+      console.log(JSON.stringify(result, null, 2)); process.exitCode = result.issuerTrust === 'unknown' ? 3 : 0;
+    } else {
+      check(!trustedFingerprint, 'Legacy evidence has no certificate seal to authenticate with a fingerprint.');
+      const result = verifyEvidence(manifest, original, completed, uploaded);
       console.log(JSON.stringify(result, null, 2));
       if (result.uploadedSourceVerified === false) console.log('The pre-conversion upload was not supplied; its recorded hash has not been independently checked.');
       console.log('PDF hashes and audit links match. This checks consistency, not signer identity, trusted time, or issuer authenticity. Compare the checkpoint with an independently retained copy.');
-    } catch (error) { console.error(`Verification failed: ${error.message}`); process.exitCode = 1; }
-  }
+    }
+  } catch (error) { console.error(`Verification failed: ${error.message}`); process.exitCode = 1; }
 }
+
+if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href) void runCli();

@@ -7,15 +7,20 @@ services:
     environment:
       BASE_URL: ${BASE_URL:-http://localhost:3000}
       DATA_DIR: /data
+      SIGNHERE_KEYS_DIR: /keys
+      SIGNHERE_SEAL_PYTHON: /opt/signhere-seal/bin/python
+      SIGNHERE_SIGNING_LINK_TTL_DAYS: ${SIGNHERE_SIGNING_LINK_TTL_DAYS:-7}
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
-      DATABASE_URL: postgresql://signhere:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/signhere
+      DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD in .env}@postgres:5432/signhere
+      MIGRATION_DATABASE_URL: postgresql://signhere_migrator:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/signhere
     volumes:
       - signhere-data:/data
+      - signhere-keys:/keys
     init: true
     read_only: true
     tmpfs:
-      - /tmp:size=64m,noexec,nosuid
+      - /tmp:size=128m,noexec,nosuid
     cap_drop:
       - ALL
     security_opt:
@@ -31,13 +36,15 @@ services:
     image: postgres:17-bookworm
     restart: unless-stopped
     environment:
-      POSTGRES_USER: signhere
+      POSTGRES_USER: postgres
       POSTGRES_DB: signhere
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD in .env}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./deploy/postgres/10-signhere-roles.sh:/docker-entrypoint-initdb.d/10-signhere-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U signhere -d signhere"]
+      test: ["CMD-SHELL", "pg_isready -U postgres -d signhere"]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -46,4 +53,5 @@ services:
 
 volumes:
   signhere-data:
+  signhere-keys:
   postgres-data:

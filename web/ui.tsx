@@ -11,7 +11,7 @@ export function Field({ label, ...props }: InputHTMLAttributes<HTMLInputElement>
 export function Avatar({ name, dark = false }: { name: string; dark?: boolean }) { return <span className={`avatar${dark ? ' dark' : ''}`}>{initials(name)}</span>; }
 export function PdfIcon() { return <span className="pdf-icon" aria-hidden="true">PDF</span>; }
 export function Status({ doc }: { doc: SigningDocument }) {
-  return <span className="status"><i className={`dot ${doc.status}`} />{doc.status === 'completed' ? 'Signerat' : doc.status === 'cancelled' ? 'Avbrutet' : `Väntar · ${doc.recipients.filter(r => r.signedAt).length}/${doc.recipients.length}`}</span>;
+  return <span className="status"><i className={`dot ${doc.status}`} />{doc.status === 'completed' ? 'Signerat' : doc.status === 'cancelled' ? 'Avbrutet' : doc.status === 'finalizing' ? 'Färdigställs' : `Väntar · ${doc.recipients.filter(r => r.signedAt).length}/${doc.recipients.length}`}</span>;
 }
 export function Signature({ strokes, className = '' }: { strokes?: Strokes; className?: string }) {
   return strokes?.length ? <svg className={`signature ${className}`} viewBox="0 0 500 190" role="img" aria-label="Ritad signatur">{strokes.map((stroke, i) => <polyline key={i} points={stroke.map(([x, y]) => `${x * 500},${y * 190}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />)}</svg> : null;

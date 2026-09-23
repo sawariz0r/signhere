@@ -24,7 +24,7 @@ const owner = { setupToken, name: 'Ägare Öberg', email: 'owner@example.test', 
 async function fixture(t: TestContext, overrides: Partial<AppConfig> = {}, setup = true) {
   const dataDir = await mkdtemp(join(tmpdir(), 'signhere-test-'));
   const schema = 'test_' + uid().replaceAll('-', '');
-  const runtime = await createApp({ databaseUrl: databaseUrl!, baseUrl: origin, dataDir, schema, setupToken, rateLimit: false, ...overrides });
+  const runtime = await createApp({ databaseUrl: databaseUrl!, baseUrl: origin, dataDir, schema, setupToken, rateLimit: false, legacyCreation: true, ...overrides });
   t.after(async () => {
     await runtime.db.query('DROP SCHEMA "' + schema + '" CASCADE');
     await runtime.close();
@@ -342,7 +342,7 @@ test('automatic flattening needs no preview acknowledgement and retains verifiab
 });
 
 
-test('schema 2 upgrades existing signed documents without rewriting artifacts or audit history', async t => {
+test('schema 3 upgrades existing signed documents without rewriting artifacts or audit history', async t => {
   const f = await fixture(t);
   const { document, tokens } = await createDocument(f);
   assert.equal((await f.post('/api/sign/complete', completeBody(document, tokens[0]), request(f.app))).status, 200);
@@ -350,15 +350,24 @@ test('schema 2 upgrades existing signed documents without rewriting artifacts or
   const events = (await f.db.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows;
   const schema = (await f.db.query('SELECT current_schema() AS schema')).rows[0].schema;
   // Reconstruct the prior schema in this disposable test database only.
-  await f.db.query('ALTER TABLE documents DROP COLUMN uploaded, DROP COLUMN preparation');
-  await f.db.query('DELETE FROM migrations WHERE version=2');
+  await f.db.query(`
+    DROP TABLE completed_copy_access,finalization_attempts,finalization_jobs,sealing_key_events,sealing_certificates,sealing_identity;
+    DROP FUNCTION guard_completed_copy_access(),guard_finalization_attempt();
+    ALTER TABLE recipients DROP CONSTRAINT recipients_id_document_unique;
+    ALTER TABLE recipients DROP COLUMN signing_intent;
+    ALTER TABLE documents DROP COLUMN uploaded, DROP COLUMN preparation,
+      DROP COLUMN evidence_version, DROP COLUMN evidence_core, DROP COLUMN protection_policy, DROP COLUMN seal_metadata;
+    ALTER TABLE documents DROP CONSTRAINT documents_status_check;
+    ALTER TABLE documents ADD CONSTRAINT documents_status_check CHECK(status IN ('pending','completed','cancelled'));
+    DELETE FROM migrations WHERE version>=2;
+  `);
   const { createDatabase } = await import('./db.js');
   const upgraded = await createDatabase(databaseUrl!, schema);
   try {
     assert.deepEqual((await upgraded.query('SELECT original,completed,original_hash,completed_hash,status FROM documents WHERE id=$1', [document.id])).rows[0], before);
     assert.deepEqual((await upgraded.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows, events);
     assert.deepEqual((await upgraded.query('SELECT uploaded,preparation FROM documents WHERE id=$1', [document.id])).rows[0], { uploaded: null, preparation: null });
-    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 2);
+    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 3);
     const constraint = (await upgraded.query("SELECT oid FROM pg_constraint WHERE conrelid='documents'::regclass AND conname='documents_preparation_pair'")).rows[0].oid;
     const reopened = await createDatabase(databaseUrl!, schema);
     try {

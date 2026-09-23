@@ -368,13 +368,14 @@ export async function preparePdfBytes(bytes: Buffer) {
   const preparation: PdfPreparation = { kind: 'flatten', engine: 'mupdf', engineVersion, sourceHash: checked.hash, sourceSize: bytes.length, annotationCount, formFieldCount, noteCount: notes.length };
   return { bytes: flattened, pages: result.pages, hash: result.hash, preparation };
 }
-export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint) {
+export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint, sealExpected = false) {
   if (hash(original) !== originalHash) throw new Error('Originalfilens fingeravtryck stämmer inte.');
   const pdf = await PDFDocument.load(original, { updateMetadata: false });
   pdf.registerFontkit(fontkit);
   const font = await pdf.embedFont(readFileSync(new URL('./assets/NotoSans-Regular.ttf', import.meta.url)), { subset: true });
   const color = rgb(0.055, 0.067, 0.086);
   for (const [index, signer] of signers.entries()) {
+    const signerConsent = signer.consent ?? consent;
     let page = pdf.addPage([595.28, 841.89]);
     let y = 789;
     const line = (text: string, size = 10) => {
@@ -399,6 +400,8 @@ export async function createCompletedPdf(original: Uint8Array, title: string, do
     wrap(`Mottagaradress: ${signer.email}`);
     line(`Signeringstid (server, UTC): ${signer.signedAt}`);
     line(`Metod: ${signer.methodId} ${signer.methodVersion}`);
+    line('Autentisering: personal_signing_link');
+    line(`Samtycke accepterat (server, UTC): ${signer.signedAt}`);
     y -= 10;
     const boxY = y - 100;
     page.drawRectangle({ x: 44, y: boxY, width: 505, height: 100, borderWidth: 0.7, borderColor: rgb(0.8, 0.82, 0.84) });
@@ -406,15 +409,15 @@ export async function createCompletedPdf(original: Uint8Array, title: string, do
       page.drawLine({ start: { x: 54 + stroke[i - 1][0] * 485, y: boxY + 10 + (1 - stroke[i - 1][1]) * 80 }, end: { x: 54 + stroke[i][0] * 485, y: boxY + 10 + (1 - stroke[i][1]) * 80 }, thickness: 1.5, color });
     }
     y = boxY - 25;
-    line(`Samtycke: ${consent.version}`, 10);
-    wrap(consent.text, 9); y -= 10;
+    line(`Samtycke: ${signerConsent.version}`, 10);
+    wrap(signerConsent.text, 9); y -= 10;
     line('Originalets SHA-256:', 9); line(originalHash, 8);
     if (checkpoint) {
       line(`Kontrollpunkt i händelsekedjan: ${checkpoint.sequence}`, 9);
       line(checkpoint.hash, 8);
     }
     y -= 8;
-    wrap('Ritad elektronisk underskrift med innehav av personlig länk. Identiteten är inte verifierad med e-legitimation. Detta är inte en kvalificerad underskrift, betrodd tidsstämpel eller kryptografisk PDF-försegling.', 8);
+    wrap(sealExpected ? 'Ritad elektronisk underskrift med innehav av personlig länk. Identiteten är inte verifierad med e-legitimation. PDF-filen förseglas av denna signhere-installation. Ingen kvalificerad underskrift eller betrodd tidsstämpel.' : 'Ritad elektronisk underskrift med innehav av personlig länk. Identiteten är inte verifierad med e-legitimation. Detta är inte en kvalificerad underskrift, betrodd tidsstämpel eller kryptografisk PDF-försegling.', 8);
     wrap('Spara originalfilen, den färdiga PDF-filen och JSON-verifikatet tillsammans. Deras fingeravtryck och händelsekedja kan kontrolleras oberoende av den här installationen.', 8);
   }
   const output = Buffer.from(await pdf.save({ useObjectStreams: true }));
