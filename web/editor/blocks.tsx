@@ -1,61 +1,86 @@
-import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ArrowDown, ArrowUp, Check, ChevronDown, Copy, Ellipsis, GripVertical, ImagePlus, Plus, Settings2, Trash2, UserRound, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import type { Editor } from '@tiptap/react';
+import { ArrowDown, ArrowUp, Check, Plus, X } from 'lucide-react';
 import { useEditorApi } from './context';
-import { FieldToken, RichText } from './rich-text';
+import { FieldToken, insertField, RichText, TokenText } from './rich-text';
 import {
-  backgroundCss, BLOCK_LABELS, chargedPackages, fieldValue, imageDataUrl, lineAmounts, money, newItem, newPackage, PRICE_FORMS, totals, UNITS, VAT_RATES,
-  type Block, type HeaderBlock, type ImageBlock, type LineItem, type PartiesBlock, type PriceForm, type PricePackage, type PricingBlock, type PricingMode, type SignatureBlock, type TermsBlock, type TextBlock,
+  backgroundCss, backgroundIsDark, BLOCK_LABELS, chargedPackages, CHIP_FIELDS, contentIsEmpty, expiryDate, fieldLabel, fieldValue, HEADER_BACKGROUNDS, HEADER_LAYOUTS, imageData, isImageBackground,
+  lineAmounts, money, newItem, newPackage, PRICE_FORMS, PRICING_MODES, shortDate, shownPackages, SIGNATURE_ID, signers, SINGLE_BLOCKS, totals, UNITS, VAT_RATES,
+  type Block, type HeaderBlock, type ImageBlock, type LineItem, type PriceForm, type PricePackage, type PricingBlock, type PricingMode, type TermsBlock, type TextBlock,
 } from './model';
 
-export function InlineText({ value, onChange, placeholder, className = '', multiline = false, label }: { value: string; onChange: (value: string) => void; placeholder: string; className?: string; multiline?: boolean; label: string }) {
-  const { preview } = useEditorApi();
-  const ref = useRef<HTMLDivElement>(null);
-  useLayoutEffect(() => { const element = ref.current; if (element && element.innerText !== value && document.activeElement !== element) element.innerText = value; }, [value, preview]);
-  if (preview) return value ? <div className={className}>{value}</div> : null;
-  return <div ref={ref} role="textbox" aria-label={label} aria-multiline={multiline} tabIndex={0} contentEditable suppressContentEditableWarning className={`ed-inline ${className}`} data-placeholder={placeholder}
-    onInput={event => onChange(event.currentTarget.innerText.replace(/\n$/, ''))}
-    onKeyDown={event => { if (event.key === 'Enter' && !multiline) { event.preventDefault(); event.currentTarget.blur(); } }}
-    onPaste={event => { event.preventDefault(); document.execCommand('insertText', false, event.clipboardData.getData('text/plain')); }} />;
+const MOD = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform) ? '⌘' : 'Ctrl+';
+
+/* ---------- Options row controls ---------- */
+
+export function Segmented<T extends string>({ label, items, value, onChange }: { label?: string; items: [T, string][]; value: T; onChange: (value: T) => void }) {
+  return <div className="ed-opt">{label && <span className="ed-opt-label">{label}</span>}
+    <div className="ed-seg" role="radiogroup" aria-label={label}>{items.map(([key, text]) => <button key={key} type="button" role="radio" aria-checked={value === key} className={value === key ? 'active' : ''} onClick={() => onChange(key)}>{text}</button>)}</div>
+  </div>;
+}
+export function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (checked: boolean) => void }) {
+  return <label className="ed-opt ed-toggle"><input type="checkbox" checked={checked} onChange={event => onChange(event.target.checked)} />{label}</label>;
+}
+function OptSelect<T extends string>({ label, items, value, onChange }: { label: string; items: [T, string][]; value: T; onChange: (value: T) => void }) {
+  return <label className="ed-opt"><span className="ed-opt-label">{label}</span><select className="ed-opt-select" value={value} onChange={event => onChange(event.target.value as T)}>{items.map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select></label>;
+}
+function OptButton({ children, onClick }: { children: ReactNode; onClick: () => void }) {
+  return <button type="button" className="ed-opt ed-opt-button" onClick={onClick}>{children}</button>;
+}
+function Options({ children }: { children: ReactNode }) {
+  return <div className="ed-options">{children}</div>;
 }
 
-function ImagePick({ onPick, children, className }: { onPick: (dataUrl: string) => void; children: ReactNode; className: string }) {
+function useSelected(id: string) {
+  const { preview, selectedId } = useEditorApi();
+  return !preview && selectedId === id;
+}
+
+function NumberInput({ value, onChange, label, className = '', placeholder = '0', readOnly = false }: { value: number; onChange: (value: number) => void; label: string; className?: string; placeholder?: string; readOnly?: boolean }) {
+  const [text, setText] = useState(value ? String(value) : '');
+  useLayoutEffect(() => { if ((Number(text.replace(/\s/g, '').replace(',', '.')) || 0) !== value) setText(value ? String(value) : ''); }, [value]);
+  return <input className={className} inputMode="decimal" aria-label={label} placeholder={placeholder} readOnly={readOnly} value={text}
+    onChange={event => { const next = event.target.value.replace(/[^\d.,\s-]/g, ''); setText(next); onChange(Number(next.replace(/\s/g, '').replace(',', '.')) || 0); }} />;
+}
+
+function useImagePicker(onPick: (image: { url: string; ratio: string }) => void) {
   const input = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
-  return <><button type="button" className={className} disabled={busy} onClick={() => input.current?.click()}>{busy ? 'Laddar bild…' : children}</button>
-    <input ref={input} type="file" accept="image/*" hidden onChange={async event => {
-      const file = event.target.files?.[0]; event.target.value = '';
-      if (!file) return;
-      setBusy(true);
-      try { onPick(await imageDataUrl(file)); } finally { setBusy(false); }
-    }} /></>;
+  const [error, setError] = useState('');
+  const element = <input ref={input} type="file" accept="image/*" hidden onChange={async event => {
+    const file = event.target.files?.[0]; event.target.value = '';
+    if (!file) return;
+    setBusy(true); setError('');
+    try { onPick(await imageData(file)); } catch (reason) { setError(reason instanceof Error ? reason.message : 'Bilden kunde inte läsas.'); } finally { setBusy(false); }
+  }} />;
+  return { open: () => input.current?.click(), busy, error, element };
 }
 
-export function BlockFrame({ block, index, count, children, onDragStart }: { block: Block; index: number; count: number; children: ReactNode; onDragStart: (event: React.DragEvent) => void }) {
+function AutoTextarea({ value, onChange, className, placeholder, label }: { value: string; onChange: (value: string) => void; className: string; placeholder: string; label: string }) {
+  const ref = useRef<HTMLTextAreaElement>(null);
+  const { paperWidth } = useEditorApi();
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element || CSS.supports('field-sizing', 'content')) return;
+    element.style.height = 'auto'; element.style.height = `${element.scrollHeight}px`;
+  }, [value, paperWidth]);
+  return <textarea ref={ref} rows={1} className={className} aria-label={label} placeholder={placeholder} value={value} onChange={event => onChange(event.target.value)} />;
+}
+
+/* ---------- Frame ---------- */
+
+export function BlockFrame({ block, index, count, children }: { block: Block; index: number; count: number; children: ReactNode }) {
   const api = useEditorApi();
-  const selected = api.selectedId === block.id;
-  if (api.preview) return <div className={`ed-block ed-block-${block.type}`}>{children}</div>;
-  const move = (offset: number) => api.update(draft => {
-    const blocks = [...draft.blocks];
-    const [item] = blocks.splice(index, 1);
-    blocks.splice(index + offset, 0, item);
-    return { ...draft, blocks };
-  }, { structural: true });
-  const duplicate = () => api.update(draft => {
-    const copy = { ...structuredClone(block), id: crypto.randomUUID().replace(/-/g, '').slice(0, 12) };
-    const blocks = [...draft.blocks]; blocks.splice(index + 1, 0, copy);
-    return { ...draft, blocks };
-  }, { structural: true });
-  const remove = () => { api.update(draft => ({ ...draft, blocks: draft.blocks.filter(item => item.id !== block.id) }), { structural: true }); api.select(null); };
-  return <div className={`ed-block ed-block-${block.type}${selected ? ' selected' : ''}`} data-block-id={block.id} onMouseDownCapture={() => { if (!selected) api.select(block.id); }}>
-    <button type="button" className="ed-grip" draggable onDragStart={onDragStart} aria-label={`Flytta ${BLOCK_LABELS[block.type]}`} title="Dra för att flytta"><GripVertical size={16} /></button>
-    <div className="ed-block-tag">{BLOCK_LABELS[block.type]}</div>
-    <div className="ed-block-rail" role="toolbar" aria-label={`${BLOCK_LABELS[block.type]}-block`}>
-      {block.type === 'header' && <button type="button" className="ed-rail-wide" onClick={() => api.openSettings(block.id)}><Settings2 size={14} />Redigera</button>}
-      <button type="button" aria-label="Flytta upp" title="Flytta upp" disabled={index === 0} onClick={() => move(-1)}><ArrowUp size={14} /></button>
-      <button type="button" aria-label="Flytta ned" title="Flytta ned" disabled={index === count - 1} onClick={() => move(1)}><ArrowDown size={14} /></button>
-      {block.type !== 'parties' && block.type !== 'signature' && block.type !== 'terms' && <button type="button" aria-label="Duplicera" title="Duplicera" onClick={duplicate}><Copy size={14} /></button>}
-      <button type="button" aria-label="Ta bort block" title="Ta bort" className="danger" onClick={remove}><Trash2 size={14} /></button>
-    </div>
+  const selected = !api.preview && api.selectedId === block.id;
+  const label = BLOCK_LABELS[block.type];
+  return <div className={`ed-block ed-block-${block.type}${selected ? ' selected' : ''}${api.fresh === block.id ? ' fresh' : ''}`} data-block={block.id} onMouseDown={() => api.select(block.id)}>
+    {selected && <div className="ed-toolbar" role="toolbar" aria-label={`${label}-block`}>
+      <span className="ed-toolbar-label">{label}</span>
+      <button type="button" aria-label="Flytta upp" title="Flytta upp (Alt+↑)" disabled={index === 0} onClick={() => api.moveBlock(block.id, -1)}><ArrowUp size={14} /></button>
+      <button type="button" aria-label="Flytta ner" title="Flytta ner (Alt+↓)" disabled={index === count - 1} onClick={() => api.moveBlock(block.id, 1)}><ArrowDown size={14} /></button>
+      {!SINGLE_BLOCKS.has(block.type) && <button type="button" className="text" title={`Kopiera (${MOD}D)`} onClick={() => api.copyBlock(block.id)}>Kopiera</button>}
+      <button type="button" className="text danger" title="Ta bort (Delete)" onClick={() => api.removeBlock(block.id)}>Ta bort</button>
+    </div>}
     {children}
   </div>;
 }
@@ -63,218 +88,250 @@ export function BlockFrame({ block, index, count, children, onDragStart }: { blo
 export function BlockView({ block }: { block: Block }) {
   switch (block.type) {
     case 'header': return <HeaderView block={block} />;
-    case 'parties': return <PartiesView block={block} />;
+    case 'parties': return <PartiesView />;
     case 'pricing': return <PricingView block={block} />;
-    case 'text': return <TextView block={block} />;
+    case 'text': return <RichBlock block={block} />;
+    case 'terms': return <RichBlock block={block} />;
     case 'image': return <ImageView block={block} />;
-    case 'terms': return <TermsView block={block} />;
-    case 'signature': return <SignatureView block={block} />;
-    case 'break': return <div className="ed-break"><span>Sidbrytning</span></div>;
+    case 'break': return <div className="ed-break"><span>Ny sida</span></div>;
   }
 }
 
+/* ---------- Omslag ---------- */
+
 function HeaderView({ block }: { block: HeaderBlock }) {
-  const { updateBlock, preview } = useEditorApi();
-  const set = (patch: Partial<HeaderBlock>) => updateBlock<HeaderBlock>(block.id, patch);
-  const style = { '--hdr-bg': block.backgroundColor, '--hdr-fg': block.textColor, '--hdr-overlay': block.overlay, '--hdr-art': backgroundCss(block.background), textAlign: block.align } as CSSProperties;
-  return <div className={`ed-hdr ed-hdr-${block.layout} align-${block.align}`} style={style}>
-    {block.layout !== 'plain' && <div className="ed-hdr-art" aria-hidden="true" />}
-    <div className="ed-hdr-panel">
-      <div className="ed-hdr-logo">{block.logo ? <span className="ed-hdr-logo-img"><img src={block.logo} alt="Logotyp" />{!preview && <button type="button" aria-label="Ta bort logotyp" onClick={() => set({ logo: '' })}><X size={12} /></button>}</span> : !preview && <ImagePick className="ed-logo-slot" onPick={logo => set({ logo })}>Logotyp</ImagePick>}</div>
-      <div className="ed-hdr-main">
-        <InlineText className="ed-hdr-eyebrow" label="Överrubrik" placeholder="Överrubrik (valfri)" value={block.eyebrow} onChange={eyebrow => set({ eyebrow })} />
-        <InlineText className="ed-hdr-title" label="Titel" placeholder="Titel" value={block.title} onChange={title => set({ title })} multiline />
-      </div>
-      {block.showMeta && <div className="ed-hdr-meta"><div>Avsedd för <FieldToken fieldKey="customer.name" /></div><div>Av <FieldToken fieldKey="sender.name" /></div></div>}
-    </div>
-  </div>;
-}
-
-const CUSTOMER_FIELDS: [string, string, string?][] = [['customer.name', 'Namn'], ['customer.email', 'E-post', 'email'], ['customer.phone', 'Telefon', 'tel'], ['customer.company', 'Företag'], ['customer.orgNumber', 'Org-nr'], ['customer.personalNumber', 'Personnummer'], ['customer.address', 'Adress'], ['customer.zip', 'Postnummer'], ['customer.city', 'Stad']];
-const SENDER_FIELDS: [string, string, string?][] = [['sender.company', 'Företag'], ['sender.orgNumber', 'Org-nr'], ['sender.name', 'Referens'], ['sender.email', 'E-post', 'email'], ['sender.phone', 'Telefon', 'tel'], ['sender.address', 'Adress'], ['sender.zip', 'Postnummer'], ['sender.city', 'Stad']];
-
-function PartyCard({ number, title, fields, emptyTitle, emptyText }: { number: string; title: string; fields: [string, string, string?][]; emptyTitle: string; emptyText: string }) {
-  const { draft, setField, preview } = useEditorApi();
-  const [editing, setEditing] = useState(false);
-  const filled = fields.filter(([key]) => fieldValue(draft, key));
-  const empty = !fieldValue(draft, fields[0][0]) && filled.length < 2;
-  return <div className="ed-party">
-    <div className="ed-party-head"><span className="ed-party-no">{number}</span><i /><strong>{title}</strong>{!preview && !empty && <button type="button" className="ed-chip-button" onClick={() => setEditing(value => !value)}>{editing ? <><Check size={13} />Klar</> : 'Redigera'}</button>}</div>
-    {editing ? <div className="ed-party-form">{fields.map(([key, label, type]) => <label key={key}><span>{label}</span><input type={type ?? 'text'} value={draft.fields[key] ?? ''} onChange={event => setField(key, event.target.value)} /></label>)}</div>
-      : empty ? (preview ? <div className="ed-party-empty muted">Uppgifterna fylls i innan utskick.</div> : <div className="ed-party-empty"><span className="ed-party-avatar"><UserRound size={18} /></span><div><strong>{emptyTitle}</strong><span>{emptyText}</span></div><button type="button" className="button small" onClick={() => setEditing(true)}><Plus size={14} />Lägg till</button></div>)
-      : <dl className="ed-party-grid">{filled.map(([key, label]) => <div key={key}><dt>{label}</dt><dd>{fieldValue(draft, key)}</dd></div>)}</dl>}
-  </div>;
-}
-
-function PartiesView({ block }: { block: PartiesBlock }) {
-  const { updateBlock } = useEditorApi();
-  return <section className="ed-section">
-    <InlineText className="ed-h2" label="Rubrik" placeholder="Parter" value={block.title} onChange={title => updateBlock<PartiesBlock>(block.id, { title })} />
-    <div className="ed-parties">
-      <PartyCard number="01" title="Beställare" fields={CUSTOMER_FIELDS} emptyTitle="Vem är din kund?" emptyText="Kunden blir mottagare och signerar dokumentet." />
-      <PartyCard number="02" title="Utställare" fields={SENDER_FIELDS} emptyTitle="Dina uppgifter" emptyText="Lägg till företagsuppgifter för avsändaren." />
-    </div>
-  </section>;
-}
-
-const MODES: { mode: PricingMode; title: string; text: string }[] = [
-  { mode: 'single', title: 'Ett alternativ', text: 'Erbjud ett paket med fast innehåll.' },
-  { mode: 'choice', title: 'Paket', text: 'Erbjud flera paket – kunden väljer ett.' },
-  { mode: 'multi', title: 'Flera val', text: 'Erbjud tillval – kunden väljer flera.' },
-];
-
-function ModeChooser({ onPick }: { onPick: (mode: PricingMode) => void }) {
-  return <div className="ed-modes"><p className="ed-modes-q">Hur vill du presentera priset?</p><div className="ed-modes-grid">{MODES.map(({ mode, title, text }) => <button key={mode} type="button" className={`ed-mode ed-mode-${mode}`} onClick={() => onPick(mode)}>
-    <span className="ed-mode-art" aria-hidden="true">{(mode === 'single' ? [0] : [0, 1, 2]).map(i => <span key={i} className={mode === 'choice' && i === 1 ? 'on' : mode === 'multi' && i < 2 ? 'on' : ''}><i /><b /><b /></span>)}</span>
-    <strong>{title}</strong><span>{text}</span>
-  </button>)}</div></div>;
-}
-
-function NumberInput({ value, onChange, label, step = 1, className = '' }: { value: number; onChange: (value: number) => void; label: string; step?: number; className?: string }) {
-  const [text, setText] = useState(String(value || ''));
-  useLayoutEffect(() => { if (Number(text.replace(',', '.')) !== value) setText(value ? String(value) : ''); }, [value]);
-  return <input className={`ed-num ${className}`} inputMode="decimal" aria-label={label} placeholder="0" step={step} value={text} onChange={event => { const next = event.target.value.replace(/[^\d.,-]/g, ''); setText(next); onChange(Number(next.replace(',', '.')) || 0); }} />;
-}
-
-function ItemRow({ item, onChange, onRemove, currency, includeVat, canRemove }: { item: LineItem; onChange: (patch: Partial<LineItem>) => void; onRemove: () => void; currency: string; includeVat: boolean; canRemove: boolean }) {
-  const { preview } = useEditorApi();
-  const [open, setOpen] = useState(false);
-  const amount = lineAmounts(item, includeVat);
-  const sum = includeVat ? amount.net + amount.vat : amount.net;
-  if (preview) return <div className="ed-item-view"><span className="ed-item-name">{item.name || '—'}{item.discount > 0 && <em>−{item.discount} %</em>}</span><span className="muted">{item.quantity} {item.unit} × {money(item.price, currency)}</span><strong>{money(sum, currency)}</strong></div>;
-  return <div className={`ed-item${open ? ' open' : ''}`}>
-    <input className="ed-item-name-input" aria-label="Vara eller tjänst" placeholder="T.ex. arbete & material" value={item.name} onChange={event => onChange({ name: event.target.value })} />
-    <NumberInput label="Antal" value={item.quantity} onChange={quantity => onChange({ quantity })} className="qty" />
-    <select aria-label="Enhet" value={item.unit} onChange={event => onChange({ unit: event.target.value })}>{UNITS.map(unit => <option key={unit}>{unit}</option>)}</select>
-    <NumberInput label="À-pris" value={item.price} onChange={price => onChange({ price })} className="price" />
-    <select aria-label="Moms" value={item.vat} onChange={event => onChange({ vat: Number(event.target.value) })}>{VAT_RATES.map(rate => <option key={rate} value={rate}>{rate} %</option>)}</select>
-    <span className="ed-item-sum">{money(sum, currency)}</span>
-    <span className="ed-item-actions">
-      <button type="button" aria-label="Fler inställningar" title="Rabatt" aria-expanded={open} className={item.discount ? 'on' : ''} onClick={() => setOpen(value => !value)}><Ellipsis size={15} /></button>
-      <button type="button" aria-label="Ta bort rad" title="Ta bort rad" disabled={!canRemove} onClick={onRemove}><X size={15} /></button>
-    </span>
-    {open && <div className="ed-item-more"><label>Rabatt<NumberInput label="Rabatt i procent" value={item.discount} onChange={discount => onChange({ discount: Math.min(100, Math.max(0, discount)) })} /><span>%</span></label></div>}
-  </div>;
-}
-
-function PackageCard({ block, pkg, index }: { block: PricingBlock; pkg: PricePackage; index: number }) {
   const { draft, updateBlock, preview } = useEditorApi();
-  const { currency, pricesIncludeVat } = draft.settings;
-  const setPackages = (packages: PricePackage[]) => updateBlock<PricingBlock>(block.id, { packages });
-  const set = (patch: Partial<PricePackage>) => setPackages(block.packages.map(item => item.id === pkg.id ? { ...item, ...patch } : item));
-  const setItem = (id: string, patch: Partial<LineItem>) => set({ items: pkg.items.map(item => item.id === id ? { ...item, ...patch } : item) });
-  const choose = () => setPackages(block.packages.map(item => block.mode === 'choice' ? { ...item, selected: item.id === pkg.id } : item.id === pkg.id ? { ...item, selected: !item.selected } : item));
-  const sum = totals([pkg], draft.settings);
-  const selectable = block.mode !== 'single';
-  return <div className={`ed-package${selectable && pkg.selected ? ' chosen' : ''}${selectable ? ' selectable' : ''}`}>
-    <div className="ed-package-head">
-      {selectable && <button type="button" role={block.mode === 'choice' ? 'radio' : 'checkbox'} aria-checked={pkg.selected} aria-label={`Välj ${pkg.name || `paket ${index + 1}`}`} className={`ed-pick ${block.mode}`} onClick={choose}>{pkg.selected && <Check size={12} strokeWidth={3} />}</button>}
-      <div className="grow">
-        <InlineText className="ed-package-name" label="Paketets namn" placeholder="Paketets namn" value={pkg.name} onChange={name => set({ name })} />
-        <InlineText className="ed-package-desc" label="Beskrivning" placeholder="Beskrivning av paketet" value={pkg.description} onChange={description => set({ description })} multiline />
+  const selected = useSelected(block.id);
+  const set = (patch: Partial<HeaderBlock>) => updateBlock<HeaderBlock>(block.id, patch);
+  const picker = useImagePicker(({ url }) => set({ background: url }));
+  const panel = block.layout === 'boxed' || block.layout === 'cover';
+  const dark = panel && backgroundIsDark(block.background);
+  const uploaded = isImageBackground(block.background);
+  const meta: [string, string][] = [['Till', draft.company?.name || '—'], ['Från', fieldValue(draft, 'sender.company')], ['Datum', shortDate(new Date())], ['Giltig till', shortDate(expiryDate(draft))]];
+  return <>
+    {selected && <Options>
+      <Segmented label="Layout" items={HEADER_LAYOUTS} value={block.layout} onChange={layout => set({ layout })} />
+      {block.layout !== 'plain' && <div className="ed-opt"><span className="ed-opt-label">Bakgrund</span><div className="ed-bg-swatches">
+        {HEADER_BACKGROUNDS.map(background => <button key={background.key} type="button" title={background.label} aria-label={background.label} aria-pressed={block.background === background.key} className={block.background === background.key ? 'active' : ''} style={{ background: background.css }} onClick={() => set({ background: background.key })} />)}
+        <button type="button" title="Ladda upp bild" aria-label="Ladda upp bild" aria-pressed={uploaded} className={`upload${uploaded ? ' active' : ''}`} style={uploaded ? { background: backgroundCss(block.background) } : undefined} disabled={picker.busy} onClick={picker.open}>{!uploaded && <Plus size={12} />}</button>
+        {picker.element}
+      </div></div>}
+      <Segmented label="Justering" items={[['left', 'Vänster'], ['center', 'Mitten']]} value={block.align} onChange={align => set({ align })} />
+      <Toggle label="Visa uppgifter" checked={block.showMeta} onChange={showMeta => set({ showMeta })} />
+      {picker.error && <span className="ed-opt-error">{picker.error}</span>}
+    </Options>}
+    <div className={`ed-cover ed-cover-${block.layout}${panel ? ' panel' : ''}${dark ? ' dark' : ''}`} style={{ textAlign: block.align }}>
+      {block.layout === 'split-left' && <div className="ed-cover-art" style={{ background: backgroundCss(block.background) }} />}
+      <div className="ed-cover-body" style={panel ? { background: backgroundCss(block.background, true) } : undefined}>
+        {preview ? block.eyebrow && <div className="ed-cover-eyebrow"><TokenText value={block.eyebrow} /></div>
+          : <input className="ed-bare ed-cover-eyebrow" aria-label="Typ av dokument" placeholder="Typ av dokument" value={block.eyebrow} onChange={event => set({ eyebrow: event.target.value })} />}
+        {preview ? <h1 className="ed-cover-title"><TokenText value={block.title} /></h1>
+          : <AutoTextarea className="ed-bare ed-cover-title" label="Titel" placeholder="Titel" value={block.title} onChange={title => set({ title })} />}
+        {block.showMeta && <dl className="ed-cover-meta">{meta.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl>}
       </div>
-      {selectable && <strong className="ed-package-total">{money(sum.total, currency)}</strong>}
-      {!preview && selectable && block.packages.length > (block.mode === 'multi' ? 1 : 2) && <button type="button" className="ed-icon-ghost" aria-label="Ta bort paket" title="Ta bort paket" onClick={() => setPackages(block.packages.filter(item => item.id !== pkg.id))}><Trash2 size={15} /></button>}
     </div>
-    <div className="ed-price-form">
-      {preview ? <span className="ed-pill">{PRICE_FORMS[pkg.priceForm]}{pkg.priceForm === 'hourly-cap' && pkg.cap > 0 && ` · max ${money(pkg.cap, currency)}`}</span> : <>
-        <label className="ed-pill-select"><span>Prisform</span><select value={pkg.priceForm} onChange={event => set({ priceForm: event.target.value as PriceForm })}>{Object.entries(PRICE_FORMS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select><ChevronDown size={13} /></label>
-        {pkg.priceForm === 'hourly-cap' && <label className="ed-pill-select"><span>Maxpris</span><NumberInput label="Maxpris" value={pkg.cap} onChange={cap => set({ cap })} /><span>{currency}</span></label>}
-        <span className="ed-vat-note">Priser anges <strong>{pricesIncludeVat ? 'inkl.' : 'exkl.'} moms</strong></span>
-      </>}
-    </div>
-    <div className="ed-items">
-      {!preview && <div className="ed-item ed-item-head" aria-hidden="true"><span>Vara / tjänst</span><span>Antal</span><span>Enhet</span><span>À-pris</span><span>Moms</span><span className="right">Summa</span><span /></div>}
-      {pkg.items.map(item => <ItemRow key={item.id} item={item} currency={currency} includeVat={pricesIncludeVat} canRemove={pkg.items.length > 1} onChange={patch => setItem(item.id, patch)} onRemove={() => set({ items: pkg.items.filter(row => row.id !== item.id) })} />)}
-      {!preview && <button type="button" className="ed-add-row" onClick={() => set({ items: [...pkg.items, newItem()] })}><Plus size={14} />Vara / tjänst</button>}
-    </div>
-  </div>;
+  </>;
 }
 
-function Summary({ block }: { block: PricingBlock }) {
+/* ---------- Parter ---------- */
+
+function PartiesView() {
   const { draft } = useEditorApi();
-  const charged = chargedPackages(block);
-  const sum = totals(charged, draft.settings);
-  const { currency } = draft.settings;
-  const estimate = charged.some(pkg => pkg.priceForm === 'estimate');
-  const hourly = charged.some(pkg => pkg.priceForm === 'hourly' || pkg.priceForm === 'hourly-cap');
-  const cap = charged.reduce((total, pkg) => total + (pkg.priceForm === 'hourly-cap' ? pkg.cap : 0), 0);
-  return <div className="ed-summary">
-    {block.mode !== 'single' && <div className="ed-summary-note">{charged.length ? `Valt: ${charged.map(pkg => pkg.name || 'Namnlöst').join(', ')}` : 'Inget valt ännu'}</div>}
-    <dl>
-      <div><dt>Netto</dt><dd>{money(sum.net, currency)}</dd></div>
-      <div><dt>Moms</dt><dd>{money(sum.vat, currency)}</dd></div>
-      {draft.settings.rounding && <div><dt>Öresavrundning</dt><dd>{money(sum.rounding, currency)}</dd></div>}
-      <div className="total"><dt>{estimate ? 'Uppskattat totalt' : 'Totalt'} <span>inkl. moms</span></dt><dd>{estimate && 'ca '}{money(sum.total, currency)}</dd></div>
-    </dl>
-    {hourly && <p className="ed-summary-foot">{cap ? `Debiteras löpande, högst ${money(cap, currency)} exkl. moms.` : 'Debiteras löpande efter faktisk åtgång.'}</p>}
+  const company = draft.company;
+  const address = company ? [company.address, [company.zip, company.city].filter(Boolean).join(' ')].filter(Boolean).join(', ') : '';
+  return <div className="ed-parties">
+    <div className="ed-party">
+      <div className="ed-mono">Från</div>
+      <strong>{fieldValue(draft, 'sender.company')}</strong>
+      <span className="secondary">{fieldValue(draft, 'sender.name')}</span>
+      <span>{fieldValue(draft, 'sender.email')}</span>
+    </div>
+    <div className="ed-party">
+      <div className="ed-mono">Till</div>
+      {company ? <>
+        <strong>{company.name}</strong>
+        {company.orgNr && <span className="small">Org.nr {company.orgNr}</span>}
+        {address && <span className="small">{address}</span>}
+        {company.contacts.filter(contact => contact.signs).map(contact => <div key={contact.id} className="ed-party-contact"><span className="secondary">{contact.name}{contact.role && `, ${contact.role}`}</span><span>{contact.email}</span></div>)}
+      </> : <div className="ed-party-empty">Fylls i från mottagarlistan</div>}
+    </div>
   </div>;
 }
 
-function PricingView({ block }: { block: PricingBlock }) {
-  const { updateBlock, update, preview, draft } = useEditorApi();
-  const [menu, setMenu] = useState(false);
-  const set = (patch: Partial<PricingBlock>) => updateBlock<PricingBlock>(block.id, patch);
-  if (!block.mode) return preview ? null : <section className="ed-section"><InlineText className="ed-h2" label="Rubrik" placeholder="Omfattning" value={block.title} onChange={title => set({ title })} /><ModeChooser onPick={mode => set({ mode, packages: mode === 'single' ? [{ ...block.packages[0], selected: true }] : block.packages.length > 1 ? block.packages : [block.packages[0], newPackage(1)] })} /></section>;
-  return <section className="ed-section ed-pricing">
-    <div className="ed-section-head">
-      <InlineText className="ed-h2" label="Rubrik" placeholder="Omfattning" value={block.title} onChange={title => set({ title })} />
-      {!preview && <div className="ed-menu-wrap"><button type="button" className="ed-icon-ghost" aria-label="Prisinställningar" aria-expanded={menu} onClick={() => setMenu(value => !value)}><Ellipsis size={16} /></button>
-        {menu && <div className="ed-popover ed-menu" onMouseLeave={() => setMenu(false)}>
-          <button type="button" onClick={() => { set({ mode: null }); setMenu(false); }}>Ändra prisupplägg</button>
-          <label><span>Dölj summering</span><input type="checkbox" checked={block.hideSummary} onChange={event => set({ hideSummary: event.target.checked })} /></label>
-          <label><span>Priser inkl. moms</span><input type="checkbox" checked={draft.settings.pricesIncludeVat} onChange={event => update(value => ({ ...value, settings: { ...value.settings, pricesIncludeVat: event.target.checked } }))} /></label>
-          <label><span>Öresavrundning</span><input type="checkbox" checked={draft.settings.rounding} onChange={event => update(value => ({ ...value, settings: { ...value.settings, rounding: event.target.checked } }))} /></label>
-        </div>}</div>}
-    </div>
-    {block.mode !== 'single' && <p className="ed-pricing-lead">{block.mode === 'choice' ? 'Välj det paket som passar dig bäst.' : 'Välj de alternativ du vill ha.'}</p>}
-    <div className="ed-packages">{(block.mode === 'single' ? block.packages.slice(0, 1) : block.packages).map((pkg, index) => <PackageCard key={pkg.id} block={block} pkg={pkg} index={index} />)}</div>
-    {!preview && block.mode !== 'single' && <button type="button" className="ed-add-package" onClick={() => set({ packages: [...block.packages, { ...newPackage(block.packages.length), selected: block.mode === 'multi' }] })}><Plus size={15} />Lägg till {block.mode === 'choice' ? 'paket' : 'alternativ'}</button>}
-    {!block.hideSummary && <Summary block={block} />}
-  </section>;
+/* ---------- Text & Villkor ---------- */
+
+function RichBlock({ block }: { block: TextBlock | TermsBlock }) {
+  const { draft, updateBlock, preview } = useEditorApi();
+  const selected = useSelected(block.id);
+  const editor = useRef<Editor | null>(null);
+  const heading = useRef<HTMLInputElement>(null);
+  const set = (patch: Partial<TextBlock | TermsBlock>) => updateBlock<TextBlock | TermsBlock>(block.id, patch);
+  const empty = contentIsEmpty(block.content) && !block.title.trim();
+  const placeholder = !preview && !selected && empty;
+  useEffect(() => { if (selected && empty) requestAnimationFrame(() => editor.current?.commands.focus('end')); }, [selected]);
+  const insert = (key: string) => {
+    const input = heading.current;
+    if (input && document.activeElement === input) {
+      const start = input.selectionStart ?? input.value.length, end = input.selectionEnd ?? start, token = `{{${key}}}`;
+      set({ title: block.title.slice(0, start) + token + block.title.slice(end) });
+      requestAnimationFrame(() => { input.focus(); input.setSelectionRange(start + token.length, start + token.length); });
+    } else if (editor.current && !editor.current.isDestroyed) insertField(editor.current, key);
+  };
+  return <>
+    {selected ? <input ref={heading} className="ed-bare ed-heading" aria-label="Rubrik" placeholder="Rubrik (valfri)" value={block.title} onChange={event => set({ title: event.target.value })} />
+      : block.title.trim() && <h2 className="ed-heading"><TokenText value={block.title} /></h2>}
+    {placeholder && <p className="ed-text-empty">Tom text – klicka för att skriva.</p>}
+    <div className="ed-body" hidden={placeholder}><RichText editorRef={editor} content={block.content} onChange={content => set({ content })} /></div>
+    {selected && <div className="ed-chips"><span>Infoga fält</span>{CHIP_FIELDS.map(key => <button key={key} type="button" onMouseDown={event => { event.preventDefault(); insert(key); }}>{fieldLabel(draft, key)}</button>)}</div>}
+    {block.type === 'terms' && <div className="ed-terms-note"><span aria-hidden="true" />Mottagaren godkänner villkoren när dokumentet signeras.</div>}
+  </>;
 }
 
-function TextView({ block }: { block: TextBlock }) {
-  const { updateBlock } = useEditorApi();
-  return <section className="ed-section"><RichText content={block.content} onChange={content => updateBlock<TextBlock>(block.id, { content })} /></section>;
-}
+/* ---------- Bild ---------- */
 
 function ImageView({ block }: { block: ImageBlock }) {
   const { updateBlock, preview } = useEditorApi();
+  const selected = useSelected(block.id);
   const set = (patch: Partial<ImageBlock>) => updateBlock<ImageBlock>(block.id, patch);
-  if (!block.src) return preview ? null : <section className="ed-section"><ImagePick className="ed-image-drop" onPick={src => set({ src })}><ImagePlus size={22} /><strong>Ladda upp en bild</strong><span>PNG eller JPG. Stora bilder skalas ned automatiskt.</span></ImagePick></section>;
-  return <section className={`ed-section ed-figure ${block.width}`}>
-    <figure><img src={block.src} alt={block.caption || 'Bild'} />
-      {!preview && <div className="ed-figure-tools">{(['narrow', 'wide', 'full'] as const).map(width => <button key={width} type="button" className={block.width === width ? 'active' : ''} onClick={() => set({ width })}>{width === 'narrow' ? 'Smal' : width === 'wide' ? 'Bred' : 'Hel'}</button>)}<button type="button" aria-label="Byt bild" onClick={() => set({ src: '' })}><X size={13} /></button></div>}
-      <figcaption><InlineText label="Bildtext" placeholder="Bildtext (valfri)" value={block.caption} onChange={caption => set({ caption })} /></figcaption>
+  const picker = useImagePicker(({ url, ratio }) => set({ src: url, ratio }));
+  return <>
+    {selected && <Options>
+      <Segmented label="Bredd" items={[['narrow', 'Smal'], ['wide', 'Bred'], ['full', 'Full']]} value={block.width} onChange={width => set({ width })} />
+      {block.src && <><OptButton onClick={picker.open}>Byt bild</OptButton><OptButton onClick={() => set({ src: '', ratio: '' })}>Ta bort bild</OptButton></>}
+      {picker.error && <span className="ed-opt-error">{picker.error}</span>}
+    </Options>}
+    {picker.element}
+    <figure className={`ed-figure ${block.width}`}>
+      {block.src ? <img src={block.src} alt={block.caption || 'Bild'} style={{ aspectRatio: block.ratio || undefined }} />
+        : !preview && <button type="button" className="ed-image-empty" disabled={picker.busy} onClick={picker.open}>{picker.busy ? 'laddar bild…' : 'bild · klicka för att välja fil'}</button>}
+      {selected && block.src ? <input className="ed-bare ed-caption" aria-label="Bildtext" placeholder="Bildtext (valfri)" value={block.caption} onChange={event => set({ caption: event.target.value })} />
+        : block.src && block.caption.trim() && <figcaption className="ed-caption">{block.caption}</figcaption>}
     </figure>
-  </section>;
+  </>;
 }
 
-function TermsView({ block }: { block: TermsBlock }) {
-  const { updateBlock, preview } = useEditorApi();
-  const body = <RichText content={block.content} onChange={content => updateBlock<TermsBlock>(block.id, { content })} placeholder="Skriv villkoren här…" className="ed-terms-prose" />;
-  if (preview) return <section className="ed-section ed-terms"><details><summary><span>{block.title || 'Villkor'}</span><ChevronDown size={16} /></summary>{body}</details></section>;
-  return <section className="ed-section ed-terms"><InlineText className="ed-h3" label="Rubrik" placeholder="Allmänna villkor" value={block.title} onChange={title => updateBlock<TermsBlock>(block.id, { title })} />{body}</section>;
-}
+/* ---------- Priser ---------- */
 
-function SignatureView({ block }: { block: SignatureBlock }) {
-  const { draft, updateBlock, preview } = useEditorApi();
-  const set = (patch: Partial<SignatureBlock>) => updateBlock<SignatureBlock>(block.id, patch);
-  const signers = [{ role: 'Beställare', key: 'customer.name' }, ...(block.senderSigns ? [{ role: 'Utställare', key: 'sender.name' }] : [])];
-  const terms = draft.blocks.find(item => item.type === 'terms') as TermsBlock | undefined;
-  return <section className="ed-section ed-signature">
-    <InlineText className="ed-h2" label="Rubrik" placeholder="Signering" value={block.title} onChange={title => set({ title })} />
-    <div className="ed-signers">{signers.map(signer => <div className="ed-signer" key={signer.key}><div className="ed-sign-line"><span>Signeras digitalt</span></div><div className="ed-signer-meta"><FieldToken fieldKey={signer.key} /><span>{signer.role} · Datum</span></div></div>)}</div>
-    {!preview && <div className="ed-toggles">
-      <label className="ed-switch"><input type="checkbox" checked={block.allowDecline} onChange={event => set({ allowDecline: event.target.checked })} /><i />Mottagaren kan neka</label>
-      <label className="ed-switch"><input type="checkbox" checked={block.senderSigns} onChange={event => set({ senderSigns: event.target.checked })} /><i />Avsändaren signerar också</label>
-    </div>}
-    <div className="ed-sign-actions" aria-hidden={!preview}>
-      {block.allowDecline && <button type="button" className="ed-decline" tabIndex={preview ? 0 : -1}>Neka</button>}
-      <button type="button" className="ed-sign" tabIndex={preview ? 0 : -1}><Check size={17} strokeWidth={2.5} />Signera</button>
+function PricingView({ block }: { block: PricingBlock }) {
+  const { draft, updateBlock, preview, paperWidth } = useEditorApi();
+  const selected = useSelected(block.id);
+  const { currency, pricesIncludeVat } = draft.settings;
+  const set = (patch: Partial<PricingBlock> | ((block: PricingBlock) => Partial<PricingBlock>)) => updateBlock<PricingBlock>(block.id, patch);
+  const setPackage = (id: string, patch: Partial<PricePackage> | ((pkg: PricePackage) => Partial<PricePackage>)) => set(current => ({ packages: current.packages.map(pkg => pkg.id === id ? { ...pkg, ...(typeof patch === 'function' ? patch(pkg) : patch) } : pkg) }));
+  const setMode = (mode: PricingMode) => set(current => {
+    let packages = current.packages.map((pkg, index) => ({ ...pkg, name: pkg.name || (mode === 'single' ? '' : `Paket ${index + 1}`) }));
+    if (mode !== 'single' && packages.length < 2) packages = [...packages, newPackage('Paket 2', mode === 'multi')];
+    if (mode === 'choice') { const chosen = Math.max(0, packages.findIndex(pkg => pkg.selected)); packages = packages.map((pkg, index) => ({ ...pkg, selected: index === chosen })); }
+    return { mode, packages };
+  });
+  const toggle = (id: string) => set(current => ({ packages: current.packages.map(pkg => current.mode === 'choice' ? { ...pkg, selected: pkg.id === id } : pkg.id === id ? { ...pkg, selected: !pkg.selected } : pkg) }));
+
+  const multi = block.mode !== 'single';
+  const first = block.packages[0];
+  const charged = chargedPackages(block);
+  const sum = totals(block, charged, draft.settings);
+  const extra = (block.showDiscount ? 1 : 0) + (block.vatPerRow ? 1 : 0);
+  const compact = paperWidth < 600 + extra * 76 + (multi ? 34 : 0);
+  const middle = compact ? `${block.showDiscount ? ' 44px' : ''}${block.vatPerRow ? ' 58px' : ''}` : `${block.showDiscount ? ' 60px' : ''}${block.vatPerRow ? ' 64px' : ''}`;
+  const columns = compact ? `${extra ? '40px 40px' : '52px 52px'} minmax(48px,1fr)${middle} minmax(max-content,1fr)` : `minmax(0,1fr) 52px 52px 92px${middle} 100px 28px`;
+  const table = { columns, compact, edit: !preview, showDiscount: block.showDiscount, vatPerRow: block.vatPerRow, currency, pricesIncludeVat };
+  const allFixed = charged.every(pkg => pkg.priceForm === 'fixed');
+  const formLabel = (form: PriceForm) => PRICE_FORMS.find(([key]) => key === form)![1];
+  const note = multi ? (block.mode === 'choice' ? 'Kunden väljer ett paket när dokumentet signeras.' : 'Kunden kan välja flera paket när dokumentet signeras.')
+    : first?.priceForm === 'estimate' ? 'Ungefärligt pris. Slutligt belopp kan avvika.'
+    : first?.priceForm === 'hourly' ? 'Löpande räkning. Faktureras efter nedlagd tid.'
+    : first?.priceForm === 'hourly-cap' ? (first.cap ? `Löpande räkning, maxpris ${money(first.cap, currency)} exkl. moms.` : 'Löpande räkning med maxpris.') : '';
+
+  return <>
+    {selected && <Options>
+      <Segmented label="Upplägg" items={PRICING_MODES} value={block.mode} onChange={setMode} />
+      {!multi && first && <OptSelect label="Prisform" items={PRICE_FORMS} value={first.priceForm} onChange={priceForm => setPackage(first.id, { priceForm })} />}
+      {!multi && first?.priceForm === 'hourly-cap' && <label className="ed-opt"><span className="ed-opt-label">Maxpris</span><NumberInput className="ed-opt-number" label="Maxpris" value={first.cap} onChange={cap => setPackage(first.id, { cap })} /></label>}
+      <Toggle label="Rabatt" checked={block.showDiscount} onChange={showDiscount => set({ showDiscount })} />
+      <Toggle label="Moms per rad" checked={block.vatPerRow} onChange={vatPerRow => set({ vatPerRow })} />
+    </Options>}
+    {preview ? block.title && <h2 className="ed-heading spaced">{block.title}</h2>
+      : <input className="ed-bare ed-heading spaced" aria-label="Rubrik" placeholder="Rubrik" value={block.title} onChange={event => set({ title: event.target.value })} />}
+    {shownPackages(block).map(pkg => {
+      const subtotal = totals(block, [pkg], draft.settings).net;
+      return <div key={pkg.id} className={`ed-package${multi ? ' card' : ''}${multi && pkg.selected ? ' chosen' : ''}`}>
+        {multi && <div className="ed-package-head">
+          <button type="button" role={block.mode === 'choice' ? 'radio' : 'checkbox'} aria-checked={pkg.selected} aria-label={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} title={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} className={`ed-pick ${block.mode}${pkg.selected ? ' on' : ''}`} onClick={() => toggle(pkg.id)}>{pkg.selected && <Check size={13} strokeWidth={3} />}</button>
+          <div className="ed-package-text">
+            {preview ? <><div className="ed-package-name">{pkg.name}</div>{pkg.description && <div className="ed-package-desc">{pkg.description}</div>}</>
+              : <><input className="ed-bare ed-package-name" aria-label="Paketets namn" placeholder="Paketets namn" value={pkg.name} onChange={event => setPackage(pkg.id, { name: event.target.value })} />
+                <input className="ed-bare ed-package-desc" aria-label="Beskrivning" placeholder="Kort beskrivning" value={pkg.description} onChange={event => setPackage(pkg.id, { description: event.target.value })} /></>}
+          </div>
+          {preview ? pkg.priceForm !== 'fixed' && <span className="ed-form-chip">{formLabel(pkg.priceForm)}{pkg.priceForm === 'hourly-cap' && pkg.cap > 0 && ` · max ${money(pkg.cap, currency)}`}</span>
+            : <div className="ed-package-tools">
+              <select className="ed-opt-select" aria-label="Prisform" value={pkg.priceForm} onChange={event => setPackage(pkg.id, { priceForm: event.target.value as PriceForm })}>{PRICE_FORMS.map(([key, text]) => <option key={key} value={key}>{text}</option>)}</select>
+              {pkg.priceForm === 'hourly-cap' && <NumberInput className="ed-opt-number narrow" label="Maxpris" placeholder="Maxpris" value={pkg.cap} onChange={cap => setPackage(pkg.id, { cap })} />}
+              {block.packages.length > 1 && <button type="button" className="ed-x" aria-label="Ta bort paket" title="Ta bort paket" onClick={() => set(current => ({ packages: current.packages.filter(item => item.id !== pkg.id) }))}><X size={16} /></button>}
+            </div>}
+        </div>}
+        <PriceTable {...table} items={pkg.items}
+          onChange={(id, patch) => setPackage(pkg.id, current => ({ items: current.items.map(item => item.id === id ? { ...item, ...patch } : item) }))}
+          onRemove={id => setPackage(pkg.id, current => ({ items: current.items.filter(item => item.id !== id) }))} />
+        {!preview && <button type="button" className="ed-add-row" onClick={() => setPackage(pkg.id, current => ({ items: [...current.items, newItem()] }))}>+ Rad</button>}
+        {multi && <div className="ed-subtotal"><span>Paketpris exkl. moms</span><strong>{money(subtotal, currency)}</strong></div>}
+      </div>;
+    })}
+    {!preview && multi && <button type="button" className="ed-add-package" onClick={() => set(current => ({ packages: [...current.packages, newPackage(`Paket ${current.packages.length + 1}`, false)] }))}>+ Paket</button>}
+    <div className="ed-totals">
+      <div><span>Netto</span><span>{money(sum.net, currency)}</span></div>
+      <div><span>{block.vatPerRow ? 'Moms' : 'Moms 25 %'}</span><span>{money(sum.vat, currency)}</span></div>
+      <div className="total"><span>{allFixed ? 'Totalt' : 'Uppskattat totalt'}</span><strong>{money(sum.total, currency)}</strong></div>
+      {note && <p>{note}</p>}
     </div>
-    {terms && <p className="ed-sign-terms">Genom att signera godkänner du dokumentet och {terms.title ? terms.title.toLowerCase() : 'villkoren'}.</p>}
-    {!fieldValue(draft, 'customer.name') && !preview && <p className="ed-hint">Lägg till kundens namn under Parter eller Fält så visas det här.</p>}
+  </>;
+}
+
+type TableProps = { items: LineItem[]; columns: string; compact: boolean; edit: boolean; showDiscount: boolean; vatPerRow: boolean; currency: string; pricesIncludeVat: boolean; onChange: (id: string, patch: Partial<LineItem>) => void; onRemove: (id: string) => void };
+
+function PriceTable({ items, columns, compact, edit, showDiscount, vatPerRow, currency, pricesIncludeVat, onChange, onRemove }: TableProps) {
+  const grid = { gridTemplateColumns: columns } as CSSProperties;
+  return <div className={`ed-table${compact ? ' compact' : ''}`}>
+    <div className="ed-row ed-row-head" style={grid} aria-hidden="true">
+      {!compact && <span>Beskrivning</span>}<span className="num">Antal</span><span>Enhet</span><span className="num">À-pris</span>
+      {showDiscount && <span className="num">Rabatt %</span>}{vatPerRow && <span className="num">Moms</span>}<span className="num">Summa</span>{!compact && <span />}
+    </div>
+    {items.map(item => {
+      const sum = lineAmounts(item, pricesIncludeVat, vatPerRow).gross;
+      const set = (patch: Partial<LineItem>) => onChange(item.id, patch);
+      const nameStyle = compact ? { gridColumn: edit ? '1 / -2' : '1 / -1', gridRow: 1 } : undefined;
+      return <div key={item.id} className="ed-row" style={grid}>
+        {edit ? <input className="ed-cell ed-cell-name" style={nameStyle} aria-label="Beskrivning" placeholder="Vad ingår?" value={item.name} onChange={event => set({ name: event.target.value })} />
+          : <span className="ed-cell ed-cell-name" style={nameStyle}>{item.name || '—'}</span>}
+        {edit ? <NumberInput className="ed-cell num" label="Antal" value={item.quantity} onChange={quantity => set({ quantity })} /> : <span className="ed-cell num">{item.quantity}</span>}
+        {edit ? <input className="ed-cell muted" aria-label="Enhet" list="ed-units" value={item.unit} onChange={event => set({ unit: event.target.value })} /> : <span className="ed-cell muted">{item.unit}</span>}
+        {edit ? <NumberInput className="ed-cell num" label="À-pris" value={item.price} onChange={price => set({ price })} /> : <span className="ed-cell num">{item.price.toLocaleString('sv-SE')}</span>}
+        {showDiscount && (edit ? <NumberInput className="ed-cell num" label="Rabatt i procent" value={item.discount} onChange={discount => set({ discount: Math.min(100, Math.max(0, discount)) })} /> : <span className="ed-cell num">{item.discount}</span>)}
+        {vatPerRow && (edit ? <select className="ed-cell num" aria-label="Moms" value={item.vat} onChange={event => set({ vat: Number(event.target.value) })}>{VAT_RATES.map(rate => <option key={rate} value={rate}>{rate} %</option>)}</select> : <span className="ed-cell num">{item.vat} %</span>)}
+        <span className="ed-cell num ed-sum">{money(sum, currency)}</span>
+        {edit && <button type="button" className="ed-x small" style={compact ? { gridColumn: '-2 / -1', gridRow: 1 } : undefined} aria-label="Ta bort rad" title="Ta bort rad" onClick={() => onRemove(item.id)}><X size={15} /></button>}
+      </div>;
+    })}
+  </div>;
+}
+
+export const UnitList = () => <datalist id="ed-units">{UNITS.map(unit => <option key={unit} value={unit} />)}</datalist>;
+
+/* ---------- Signaturer (always last) ---------- */
+
+export function SignatureSection() {
+  const { draft, user, preview, select, update } = useEditorApi();
+  const selected = useSelected(SIGNATURE_ID);
+  const list = signers(draft, user);
+  const { allowDecline, senderSigns } = draft.settings;
+  const setSettings = (patch: Partial<typeof draft.settings>) => update(current => ({ ...current, settings: { ...current.settings, ...patch } }));
+  return <section className={`ed-block ed-signatures${selected ? ' selected' : ''}`} data-block={SIGNATURE_ID} onMouseDown={() => select(SIGNATURE_ID)} aria-label="Signaturer">
+    {selected && <Options>
+      <Toggle label="Mottagaren kan neka" checked={allowDecline} onChange={value => setSettings({ allowDecline: value })} />
+      <Toggle label="Jag signerar också" checked={senderSigns} onChange={value => setSettings({ senderSigns: value })} />
+    </Options>}
+    <div className="ed-sig-head"><span className="ed-mono">Signaturer</span>{!preview && <span>Läggs alltid sist · följer mottagarlistan{allowDecline && ' · kan nekas'}</span>}</div>
+    {list.length ? <div className="ed-signers">{list.map(signer => <div key={signer.id} className="ed-signer"><div className="ed-sign-line" /><strong>{signer.name || <FieldToken fieldKey="customer.name" />}</strong><span>{signer.company}</span></div>)}</div>
+      : <p className="ed-muted">Inga signerare ännu.</p>}
+    {preview && <div className="ed-sign-actions" aria-hidden="true"><span className="primary">Signera</span>{allowDecline && <span>Neka</span>}</div>}
   </section>;
 }

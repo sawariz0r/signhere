@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { EditorContent, Node, NodeViewWrapper, ReactNodeViewRenderer, mergeAttributes, useEditor, useEditorState, type Editor, type JSONContent, type NodeViewProps } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
@@ -9,7 +9,7 @@ import { Color, TextStyle } from '@tiptap/extension-text-style';
 import Highlight from '@tiptap/extension-highlight';
 import { TableKit } from '@tiptap/extension-table';
 import Image from '@tiptap/extension-image';
-import { AlignCenter, AlignLeft, AlignRight, AtSign, Bold, CircleAlert, Columns3, Heading1, Heading2, Heading3, ImagePlus, Italic, Link2, List, ListOrdered, Minus, Palette, Pilcrow, Quote, Rows3, Search, Table2, Trash2, Underline, X } from 'lucide-react';
+import { AlignCenter, AlignLeft, AlignRight, AtSign, Bold, Columns3, Heading1, Heading2, Heading3, ImagePlus, Italic, Link2, List, ListOrdered, Minus, Palette, Pilcrow, Quote, Rows3, Search, Table2, Trash2, Underline, X } from 'lucide-react';
 import { useEditorApi } from './context';
 import { allFields, fieldLabel, fieldValue, imageDataUrl, type FieldDef } from './model';
 
@@ -17,8 +17,13 @@ export function FieldToken({ fieldKey, selected = false }: { fieldKey: string; s
   const { draft, preview } = useEditorApi();
   const value = fieldValue(draft, fieldKey);
   const label = fieldLabel(draft, fieldKey);
-  if (preview && value) return <span className="ed-field-value">{value}</span>;
-  return <span className={`ed-chip${value ? '' : ' missing'}${selected ? ' selected' : ''}`} title={value ? `${label}: ${value}` : `${label} saknar värde`} contentEditable={false}>{!value && <CircleAlert size={12} aria-hidden="true" />}{label}</span>;
+  if (preview && value) return <span>{value}</span>;
+  return <span className={`ed-field ${value ? 'filled' : 'empty'}${selected ? ' selected' : ''}`} title={value ? label : `${label} saknar värde`} contentEditable={false}>{value || label}</span>;
+}
+
+/** Plain text with {{field}} tokens, as used by headings and cover titles. */
+export function TokenText({ value }: { value: string }) {
+  return <>{value.split(/\{\{([\w.-]+)\}\}/).map((part, index) => index % 2 ? <FieldToken key={index} fieldKey={part} /> : part)}</>;
 }
 
 function FieldView({ node, selected }: NodeViewProps) {
@@ -145,7 +150,7 @@ function BlockToolbar({ editor, onField }: { editor: Editor; onField: () => void
   </div>;
 }
 
-export function RichText({ content, onChange, placeholder = 'Skriv något, eller tryck @ för att infoga ett fält…', toolbar = true, className = '' }: { content: JSONContent; onChange: (content: JSONContent) => void; placeholder?: string; toolbar?: boolean; className?: string }) {
+export function RichText({ content, onChange, placeholder = 'Skriv här, eller tryck @ för att infoga ett fält…', toolbar = true, className = '', editorRef }: { content: JSONContent; onChange: (content: JSONContent) => void; placeholder?: string; toolbar?: boolean; className?: string; editorRef?: RefObject<Editor | null> }) {
   const api = useEditorApi();
   const [focused, setFocused] = useState(false);
   const [picker, setPicker] = useState<{ left: number; top: number } | null>(null);
@@ -184,6 +189,11 @@ export function RichText({ content, onChange, placeholder = 'Skriv något, eller
     setPicker({ left: coords.left, top: coords.bottom });
   };
   useEffect(() => { editor?.setEditable(!api.preview); }, [editor, api.preview]);
+  useEffect(() => {
+    if (!editorRef) return;
+    editorRef.current = editor;
+    return () => { editorRef.current = null; };
+  }, [editor, editorRef]);
   if (!editor) return null;
   return <div className="ed-rich">
     <EditorContent editor={editor} />
