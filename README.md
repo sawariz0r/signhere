@@ -54,15 +54,14 @@ Coolify builds the image from this repository and runs the app and PostgreSQL fr
 
 1. **DNS:** point a hostname, e.g. `sign.example.com`, at your Coolify server.
 2. **Create the resource:** in Coolify choose *Project → New → Resource → Private Repository (with GitHub App)*, or *Public Repository*, then select this repository and the `main` branch. Set *Build Pack* to **Docker Compose**; the default *Docker Compose Location* `/docker-compose.yaml` is correct.
-3. **Environment variables** (under *Environment Variables*, before the first deploy):
+3. **Environment variables:** set two under *Environment Variables*, before the first deploy:
 
    | Variable | Value |
    |---|---|
    | `POSTGRES_PASSWORD` | A long random URL-safe value, e.g. from `openssl rand -hex 32`. Don't change it after the first deploy; the database keeps the original. |
    | `BASE_URL` | The exact public origin, e.g. `https://sign.example.com`, with no trailing slash. Requests from any other origin are rejected. |
-   | `TRUST_PROXY` | `uniquelocal`. This trusts Coolify's proxy on the private Docker network, so rate limiting and the audit trail record the visitor's real IP instead of the proxy's. |
 
-   Leave `PORT` and `BIND_ADDRESS` at their defaults. They only publish a loopback port on the host. Change `PORT` only if host port 3000 is already taken.
+   That's all. PostgreSQL runs inside the same stack, so there is no connection string to set. `TRUST_PROXY` defaults to `uniquelocal`, which trusts Coolify's proxy on the private Docker network so the audit trail records visitors' real IPs. Leave `PORT` and `BIND_ADDRESS` at their defaults; change `PORT` only if host port 3000 is already taken.
 4. **Domain:** on the `signhere` service, set *Domains* to `https://sign.example.com:3000`. The `:3000` tells the proxy which container port to route to; it is not part of the public URL. Leave the `postgres` service without a domain.
 5. **Deploy**, and wait for the health check to turn green.
 6. **Create the owner account:** open the `signhere` container's *Terminal* in Coolify (or run `docker exec <container> cat /data/setup-token` on the server) and run:
