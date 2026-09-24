@@ -449,3 +449,5 @@ body>.ed-field-picker{position:fixed;width:280px;display:flex;flex-direction:col
   .ed-block.selected{box-shadow:none}
   .ed-block-break{break-after:page}.ed-break{display:none}
 }
+
+.ed-attachment-note{margin:28px 0 0;padding-top:18px;border-top:1px dashed var(--line, #e3e6ea);font-size:13px;color:var(--faint);font-family:var(--ui)}

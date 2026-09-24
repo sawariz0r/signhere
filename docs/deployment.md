@@ -15,9 +15,12 @@ docker compose exec signhere cat /data/setup-token
 
 Unsigned recipient links default to 7 days. Set `SIGNHERE_SIGNING_LINK_TTL_DAYS` to an integer from 1 to 365 to change the lifetime of new or rotated links. Acceptance changes the original capability to a read-only receipt, usable while the document is pending or finalizing, and until at least 30 days after completion, with exact idempotent retries; it cannot accept a changed signature. Separate completed-copy links also expire after 30 days and can be revoked by the team.
 
-## Email delivery of completed copies
+## Email delivery
 
-Email is optional. When configured, completing a document queues one email per distinct address (every party plus the sender) with the sealed PDF attached. PDFs over 10 MB are sent as a 30-day copy link instead. The queue is stored in PostgreSQL and committed in the same transaction as the completed PDF, so a crash or mail outage never loses a delivery: transient failures retry with backoff (up to 8 attempts), and permanent rejections (bad address, refused credentials) stop and show on the document page, where the team can resend. Delivery is at-least-once; a crash mid-send can occasionally produce a duplicate email. Deliveries are operational records, not signing evidence, and are not part of the audit chain.
+Email is optional. Without it, the platform behaves as before and links are shared manually. When configured:
+
+- **Signing links.** New signing links for a document or bilaga go to each party (not to a sender who signs in the app). This is best effort after the database commit and never changes signing state; failures are logged without addresses or content.
+- **Completed copies.** Completing a document or bilaga queues one email per distinct address (every party plus the sender) with the sealed PDF attached. Each party's email also carries a fresh personal 30-day link to the completed PDF, the main document, its bilagor and the event log; the sender's links to the document page. PDFs over 10 MB are not attached and are reached through that link. The queue is stored in PostgreSQL and committed in the same transaction as the completed PDF, so a crash or mail outage never loses a delivery: transient failures retry with backoff (up to 8 attempts), and permanent rejections (bad address, refused credentials) stop and show on the document page, where the team can resend. Delivery is at-least-once; a crash mid-send can occasionally produce a duplicate email. Deliveries are operational records, not signing evidence, and are not part of the audit chain.
 
 SMTP is the default provider and activates when `SMTP_HOST` is set:
 
@@ -27,9 +30,13 @@ SMTP is the default provider and activates when `SMTP_HOST` is set:
 | `SMTP_HOST`, `SMTP_PORT` | Server and port (default 587). Port 465 uses implicit TLS; other ports must upgrade with STARTTLS or the send fails. Override with `SMTP_SECURE=true/false`. |
 | `SMTP_USER`, `SMTP_PASSWORD` or `SMTP_PASSWORD_FILE` | Optional credentials. Prefer the file form for mounted secrets. |
 
+`SMTP_URL` (`smtp://` or `smtps://`, credentials in the URL) and `SMTP_FROM` are accepted as shorthand for the settings above; `SMTP_HOST` and `SIGNHERE_MAIL_FROM` win when both are set. `smtps://` defaults to port 465 and `smtp://` to 587, and plain `smtp://` must also upgrade with STARTTLS.
+
 To use Resend instead, set `SIGNHERE_MAIL_PROVIDER=resend`, `RESEND_API_KEY` (or `RESEND_API_KEY_FILE`) and a `SIGNHERE_MAIL_FROM` on a domain verified in Resend. Resend requests carry an idempotency key per delivery, so retries within Resend's window do not duplicate mail.
 
 Invalid mail settings stop the application at startup rather than failing silently later. The startup log states which provider is active. Enabling email later does not backfill older documents automatically; use *Skicka signerade kopior via e-post* on a completed document's page.
+
+A bilaga is a separate signing document with its own recipients, audit chain, seal and evidence export. Its creation event, every signing intent and its frozen evidence core record `attachmentOf` (main document ID, title, completed SHA-256 and bilaga number), so the offline verifier rejects evidence moved to another main document. A party's signing or receipt link also reaches the main document and the bilagor that the same party signs; a signature made that way records the link used in `accessRecipientId` and `accessDocumentId`.
 
 The setup token is an administrator credential; enter it only into the first-owner setup form. It is not written to application logs.
 
@@ -47,13 +54,33 @@ On a **fresh** PostgreSQL volume, `deploy/postgres/10-signhere-roles.sh` creates
 - `signhere`: non-superuser runtime role with table SELECT/INSERT/UPDATE/DELETE, sequence access, and schema USAGE. It cannot create tables, change triggers, or grant itself privileges.
 - `postgres`: bootstrap superuser whose network password is disabled after provisioning. Local container administration remains available for backups/restoration.
 
+Both role scripts are built into the stack's PostgreSQL image (`deploy/postgres/Dockerfile`) instead of being bind-mounted from the checkout. Coolify runs Compose from a directory that does not contain the repository, so a bind mount there becomes an empty directory and the scripts would silently never run.
+
 The default grants cover future tables created by the migrator. Migrations run through a separate pool and close it before ordinary application queries use the runtime pool. This separates SQL permissions; it is not protection from full application/container compromise when the deployment supplies migration credentials to that container. An operator requiring a stronger boundary must run migrations as a separate privileged deployment step and start the application without those credentials, once supported by the deployment workflow.
 
 PostgreSQL initialization scripts do not rerun on an existing volume. Never delete a volume to make an upgrade appear to work. For an older installation, take a tested backup, inventory pending legacy documents, and perform the explicit schema/role upgrade on a restored copy first. Existing pending v1 documents retain the tested legacy completion path and remain unsealed; new documents use v2. Do not silently cancel, reassign, rewrite or retrospectively upgrade existing evidence. The old `signhere` database-owner role cannot be made a restricted runtime role merely by changing its password or setting a new connection URL. Ownership transfer, separate credentials, grants, and successful runtime DDL-denial checks are required. The fresh-install bootstrap script must not be run blindly against that database.
 
+### Upgrading a database created before separate roles
+
+Installations created with `POSTGRES_USER: signhere` have `signhere` as the PostgreSQL bootstrap superuser, and no `postgres` or `signhere_migrator` role. Symptoms: PostgreSQL logs `role "postgres" does not exist`, and Signhere refuses to start with "PostgreSQL rejected the migration or runtime login". PostgreSQL 16+ cannot demote a bootstrap superuser, so `deploy/postgres/upgrade-legacy-roles.sh` renames it to `postgres` (local socket only, network password removed), creates `signhere_migrator` with `POSTGRES_PASSWORD` and a new restricted `signhere` with `APP_DATABASE_PASSWORD`, moves ownership of the database and every application object to `signhere_migrator`, and applies the fresh-install grants. It verifies runtime DDL denial before committing; any failure rolls the whole transaction back. It refuses extensions or object kinds it does not move, and rerunning it after success changes nothing.
+
+The one-shot `postgres-upgrade` Compose service runs this script on every deployment, and Signhere starts only after it exits successfully. On current installations it logs "nothing to upgrade". On a legacy database it logs in as the legacy superuser with `POSTGRES_PASSWORD` (the password the old compose file gave it). It first writes a `pg_dump` to the `postgres-upgrade-backups` volume, then upgrades. `.env` must set both passwords, and they must differ. Rehearse on a restored copy when the database holds real documents. To rerun it manually: `docker compose run --rm postgres-upgrade`.
+
+If the legacy superuser's password no longer matches `POSTGRES_PASSWORD`, the service fails and the application stays stopped. Run the script inside the PostgreSQL container instead; the local socket needs no password:
+
+```sh
+docker compose stop signhere
+docker compose exec -T postgres sh /usr/local/share/signhere/upgrade-legacy-roles.sh --confirm
+docker compose up -d
+```
+
+On startup with `MIGRATION_DATABASE_URL`, Signhere refuses a runtime role that can create or own database objects.
+
 ## PDF parser boundary in the Linux image
 
-The image builds `deploy/pdf-sandbox/launcher.c` with compiler warnings treated as errors. `SIGNHERE_PDF_SANDBOX_LAUNCHER` points at that executable; `SIGNHERE_REQUIRE_PDF_SANDBOX=true` requires it for parser operations. Linux Landlock ABI 3 or newer and seccomp filters must be available. Unsupported kernels/policies fail closed; do not disable the requirement to declare a production deployment ready.
+The image builds `deploy/pdf-sandbox/launcher.c` with compiler warnings treated as errors. `SIGNHERE_PDF_SANDBOX_LAUNCHER` points at that executable; `SIGNHERE_REQUIRE_PDF_SANDBOX=true` requires it for parser operations. Linux Landlock (kernel 5.13+ with `landlock` in `/sys/kernel/security/lsm`) and seccomp filters must be available, and the container seccomp profile must allow the `landlock_*` syscalls (Docker Engine 23+ does by default). Unsupported kernels/policies fail closed with the errno, kernel release and a hint; do not disable the requirement to declare a production deployment ready. The startup probe logs the detected Landlock ABI.
+
+Landlock ABI 1 (Linux 5.13-5.18) cannot grant cross-directory rename/link, so the kernel denies them all. ABI 1-2 (before Linux 6.2) do not control truncation, so the syscall filter denies `truncate(2)`, read-only `O_TRUNC` opens and `openat2` on every kernel; write opens and `ftruncate` remain governed by Landlock write access. Image code is root-owned so no permitted read path is writable by the parser, even without the read-only root filesystem.
 
 The unprivileged launcher clears inherited application environment variables and file descriptors, applies no-new-privileges, and confines file access to image-owned public runtime/code plus one private job directory below `/tmp`. It denies reads/writes to `/keys`, `/data`, `/proc`, other jobs, and arbitrary host paths. Its syscall filter denies external network and Unix-service sockets/connections, ptrace/process-memory access, queued signals and resource-limit changes targeting other processes, new processes, namespace operations and io_uring. Filesystem metadata mutation syscalls (permissions, ownership, timestamps and extended attributes) are separately denied because Landlock alone does not cover all of them. An anonymous Unix socket pair is permitted because Python asyncio uses it internally; it does not provide a connection to external services. Runtime threads remain available.
 

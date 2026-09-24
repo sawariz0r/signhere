@@ -52,5 +52,7 @@ jobs:
           cache: npm
       - run: npm ci
       - run: docker compose version
+      - name: Host kernel and Landlock support
+        run: uname -r && cat /sys/kernel/security/lsm && echo
       - name: Fresh setup, sealing, restart, restricted SQL role, and paired restore
         run: node scripts/test-docker.mjs

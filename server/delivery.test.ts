@@ -12,6 +12,7 @@ import { sha256 } from './pdf.js';
 import { CONSENT } from './plugins.js';
 import { attachmentName } from './delivery.js';
 import { MailPermanentError, MailTransientError, mailerFromEnv, resendMailer, type Mailer, type MailMessage } from './mail.js';
+import { createNotifier } from './notify.js';
 
 try { loadEnvFile('.local/postgres.env'); } catch {}
 const databaseUrl = process.env.TEST_DATABASE_URL ?? process.env.DATABASE_URL;
@@ -71,8 +72,12 @@ test('completion emails the sealed copy once per distinct address, including the
     assert.equal(sha256(message.attachments![0].content), sha256(completed));
     assert.match(message.text, new RegExp(doc.id));
     assert.match(message.text, /http:\/\/localhost:3000\/verify/);
-    assert.doesNotMatch(message.html, /<script/);
+    assert.doesNotMatch(message.html!, /<script/);
   }
+  // A party's copy carries a personal link to the completed document, bilagor and event log.
+  const copyLink = mail.sent.find(m => m.to === 'kund@example.test')!.text.match(/http:\/\/localhost:3000\/copy#([A-Za-z0-9_-]{43})/);
+  assert.ok(copyLink);
+  assert.equal((await f.post('/api/sign/dossier', { token: copyLink[1] }, request(f.app))).status, 200);
   const sent = (await f.agent.get('/api/documents/' + doc.id)).body.document.deliveries;
   assert.ok(sent.every((d: any) => d.status === 'sent' && d.sentAt));
   // Re-queuing is idempotent at the queue level and never duplicates rows.
@@ -87,6 +92,26 @@ test('completion emails the sealed copy once per distinct address, including the
   assert.notEqual(mail.sent[2].idempotencyKey, mail.sent.find(m => m.to === 'kund@example.test')!.idempotencyKey);
   // Other teams cannot see or trigger deliveries.
   assert.equal((await f.post('/api/documents/' + uid() + '/deliveries/' + target.id + '/resend', {})).status, 404);
+});
+
+test('with a mailer, signing links go through it and completion sends one message per address', async t => {
+  const mail = capture();
+  const f = await fixture(t, { mailer: mail.mailer, notifier: createNotifier({ mailer: mail.mailer }) });
+  const settle = async (count: number) => { for (let i = 0; i < 50 && mail.sent.length < count; i++) await new Promise(resolve => setTimeout(resolve, 10)); };
+  const created = await f.create([{ name: 'Kund', email: 'kund@example.test' }]);
+  assert.equal(created.notified, true);
+  await settle(1);
+  assert.equal(mail.sent.length, 1);
+  assert.equal(mail.sent[0].to, 'kund@example.test');
+  assert.match(mail.sent[0].text, /väntar|signera/i);
+  assert.ok(mail.sent[0].idempotencyKey);
+  assert.equal((await f.sign(created.document, created.tokens[0])).status, 200);
+  await settle(2);
+  // The best-effort receipt notification is replaced by the durable completed copy.
+  assert.equal(mail.sent.length, 1);
+  while ((await f.delivery!.runOnce()).status !== 'idle');
+  assert.deepEqual(mail.sent.slice(1).map(m => [m.to, m.attachments?.length]).sort(), [['kund@example.test', 1], ['owner@example.test', 1]]);
+  assert.match(mail.sent.find(m => m.to === 'owner@example.test')!.text, new RegExp('/documents/' + created.document.id));
 });
 
 test('transient failures retry, permanent failures stop, and deliveries only exist for completed documents', async t => {
@@ -158,6 +183,10 @@ test('mail configuration: SMTP is the default, Resend is explicit, and misconfig
   assert.equal(mailerFromEnv({ SIGNHERE_MAIL_FROM: 'a@example.test' }), null);
   assert.equal(mailerFromEnv({ SMTP_HOST: 'smtp.example.test', SIGNHERE_MAIL_FROM: 'Signhere <a@example.test>' })?.provider, 'smtp');
   assert.throws(() => mailerFromEnv({ SMTP_HOST: 'smtp.example.test' }), /SIGNHERE_MAIL_FROM/);
+  // SMTP_URL and SMTP_FROM are shorthand for the SMTP_* settings.
+  assert.equal(mailerFromEnv({ SMTP_URL: 'smtps://user%40example.test:secret@smtp.example.test', SMTP_FROM: 'a@example.test' })?.provider, 'smtp');
+  assert.throws(() => mailerFromEnv({ SMTP_URL: 'http://smtp.example.test', SMTP_FROM: 'a@example.test' }), /smtp:\/\/ or smtps:\/\//);
+  assert.throws(() => mailerFromEnv({ SMTP_URL: 'smtp://smtp.example.test' }), /SIGNHERE_MAIL_FROM/);
   assert.throws(() => mailerFromEnv({ SMTP_HOST: 'smtp.example.test', SMTP_PORT: '0', SIGNHERE_MAIL_FROM: 'a@example.test' }), /SMTP_PORT/);
   assert.throws(() => mailerFromEnv({ SMTP_HOST: 'smtp.example.test', SIGNHERE_MAIL_FROM: 'a@example.test\r\nBcc: x@example.test' }), /single line/);
   assert.equal(mailerFromEnv({ SIGNHERE_MAIL_PROVIDER: 'resend', RESEND_API_KEY: 're_test', SIGNHERE_MAIL_FROM: 'a@example.test' })?.provider, 'resend');

@@ -3,7 +3,7 @@ import nodemailer from 'nodemailer';
 
 export interface MailAttachment { filename: string; content: Buffer; contentType: string }
 export interface MailMessage {
-  to: string; subject: string; text: string; html: string; attachments?: MailAttachment[];
+  to: string; subject: string; text: string; html?: string; attachments?: MailAttachment[];
   /** Stable per logical delivery. Providers that support it use it to suppress duplicates. */
   idempotencyKey: string;
 }
@@ -28,20 +28,22 @@ function secret(env: Env, name: string) {
   return env[name] || undefined;
 }
 function sender(env: Env) {
-  const from = env.SIGNHERE_MAIL_FROM?.trim();
-  if (!from) throw new Error('SIGNHERE_MAIL_FROM is required when email delivery is configured.');
+  const from = (env.SIGNHERE_MAIL_FROM || env.SMTP_FROM)?.trim();
+  if (!from) throw new Error('SIGNHERE_MAIL_FROM (or SMTP_FROM) is required when email delivery is configured.');
   if (/[\r\n]/.test(from)) throw new Error('SIGNHERE_MAIL_FROM must be a single line.');
   return from;
 }
 
 /**
  * Email delivery is optional. SMTP is the default provider and becomes active when
- * SMTP_HOST is set; SIGNHERE_MAIL_PROVIDER=resend selects the Resend HTTP API instead.
+ * SMTP_HOST (or the SMTP_URL shorthand) is set; SIGNHERE_MAIL_PROVIDER=resend selects the Resend HTTP API instead.
  * Returns null when nothing is configured, so installations without mail keep working.
  */
 export function mailerFromEnv(env: Env = process.env): Mailer | null {
   const provider = (env.SIGNHERE_MAIL_PROVIDER?.trim() || 'smtp').toLowerCase();
   if (provider === 'smtp') {
+    const url = env.SMTP_URL?.trim();
+    if (url && !env.SMTP_HOST?.trim()) return smtpMailer({ ...smtpUrl(url), from: sender(env) });
     const host = env.SMTP_HOST?.trim();
     if (!host) return null;
     const port = Number(env.SMTP_PORT ?? 587);
@@ -57,6 +59,16 @@ export function mailerFromEnv(env: Env = process.env): Mailer | null {
     return resendMailer({ apiKey, from: sender(env) });
   }
   throw new Error('SIGNHERE_MAIL_PROVIDER must be smtp or resend.');
+}
+
+/** SMTP_URL (smtp:// or smtps://, credentials in the URL) is shorthand for the SMTP_* settings. */
+function smtpUrl(value: string) {
+  let url: URL;
+  try { url = new URL(value); } catch { throw new Error('SMTP_URL must be a valid smtp:// or smtps:// URL.'); }
+  if (!['smtp:', 'smtps:'].includes(url.protocol) || !url.hostname) throw new Error('SMTP_URL must use smtp:// or smtps://.');
+  const secure = url.protocol === 'smtps:';
+  const port = url.port ? Number(url.port) : secure ? 465 : 587;
+  return { host: url.hostname, port, secure, user: decodeURIComponent(url.username) || undefined, pass: decodeURIComponent(url.password) || undefined };
 }
 
 export function smtpMailer(options: { host: string; port: number; secure: boolean; user?: string; pass?: string; from: string }): Mailer {

@@ -12,7 +12,7 @@ services:
       SIGNHERE_SIGNING_LINK_TTL_DAYS: ${SIGNHERE_SIGNING_LINK_TTL_DAYS:-7}
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
-      # Optional completed-copy email. SMTP is the default provider; leave SMTP_HOST empty to disable.
+      # Optional e-mail. SMTP is the default provider; leave SMTP_HOST and SMTP_URL empty to disable.
       SIGNHERE_MAIL_PROVIDER: ${SIGNHERE_MAIL_PROVIDER:-smtp}
       SIGNHERE_MAIL_FROM: ${SIGNHERE_MAIL_FROM:-}
       SMTP_HOST: ${SMTP_HOST:-}
@@ -21,8 +21,11 @@ services:
       SMTP_USER: ${SMTP_USER:-}
       SMTP_PASSWORD: ${SMTP_PASSWORD:-}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
-      DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD in .env}@postgres:5432/signhere
-      MIGRATION_DATABASE_URL: postgresql://signhere_migrator:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/signhere
+      # Shorthand accepted for SMTP_HOST/PORT/USER/PASSWORD and SIGNHERE_MAIL_FROM.
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?}@postgres:5432/signhere
+      MIGRATION_DATABASE_URL: postgresql://signhere_migrator:${POSTGRES_PASSWORD:?}@postgres:5432/signhere
     volumes:
       - signhere-data:/data
       - signhere-keys:/keys
@@ -40,23 +43,45 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      postgres-upgrade:
+        condition: service_completed_successfully
 
   postgres:
-    image: postgres:17-bookworm
+    # postgres:17-bookworm with the role scripts built in (deploy/postgres/Dockerfile).
+    build: ./deploy/postgres
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
       POSTGRES_DB: signhere
-      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?Set APP_DATABASE_PASSWORD in .env}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./deploy/postgres/10-signhere-roles.sh:/docker-entrypoint-initdb.d/10-signhere-roles.sh:ro
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres -d signhere"]
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
       interval: 5s
       timeout: 5s
       retries: 10
+    security_opt:
+      - no-new-privileges:true
+
+  # One-shot: upgrades databases created before separate roles, then exits. It changes
+  # nothing on current installations. The application starts only after it succeeds.
+  postgres-upgrade:
+    build: ./deploy/postgres
+    restart: "no"
+    entrypoint: ["sh", "/usr/local/share/signhere/upgrade-legacy-roles.sh", "--confirm"]
+    environment:
+      PGHOST: postgres
+      POSTGRES_DB: signhere
+      APP_DATABASE_PASSWORD: ${APP_DATABASE_PASSWORD:?}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?}
+      SIGNHERE_UPGRADE_BACKUP_DIR: /backups
+    volumes:
+      - postgres-upgrade-backups:/backups
+    depends_on:
+      postgres:
+        condition: service_healthy
     security_opt:
       - no-new-privileges:true
 
@@ -64,3 +89,4 @@ volumes:
   signhere-data:
   signhere-keys:
   postgres-data:
+  postgres-upgrade-backups:

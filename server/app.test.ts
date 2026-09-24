@@ -352,6 +352,10 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
   // Reconstruct the prior schema in this disposable test database only.
   await f.db.query(`
     DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
+    DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
+    DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();
+    ALTER TABLE recipients DROP COLUMN parent_recipient_id;
+    ALTER TABLE documents DROP COLUMN parent_id, DROP COLUMN attachment_number;
     DROP TABLE completed_copy_access,finalization_attempts,finalization_jobs,sealing_key_events,sealing_certificates,sealing_identity;
     DROP FUNCTION guard_completed_copy_access(),guard_finalization_attempt();
     ALTER TABLE recipients DROP CONSTRAINT recipients_id_document_unique;
@@ -368,7 +372,7 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
     assert.deepEqual((await upgraded.query('SELECT original,completed,original_hash,completed_hash,status FROM documents WHERE id=$1', [document.id])).rows[0], before);
     assert.deepEqual((await upgraded.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows, events);
     assert.deepEqual((await upgraded.query('SELECT uploaded,preparation FROM documents WHERE id=$1', [document.id])).rows[0], { uploaded: null, preparation: null });
-    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 4);
+    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 5);
     const constraint = (await upgraded.query("SELECT oid FROM pg_constraint WHERE conrelid='documents'::regclass AND conname='documents_preparation_pair'")).rows[0].oid;
     const reopened = await createDatabase(databaseUrl!, schema);
     try {

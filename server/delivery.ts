@@ -4,7 +4,7 @@ import { sha256 } from './pdf.js';
 import { token } from './security.js';
 import { MailPermanentError, MailTransientError, type Mailer, type MailMessage } from './mail.js';
 
-/** Larger completed PDFs are sent as a 30-day copy link instead of an attachment. */
+/** Larger completed PDFs are not attached; the message's link reaches them instead. */
 export const MAX_ATTACHMENT_BYTES = 10 * 1024 * 1024;
 const DAY = 86400000;
 
@@ -51,19 +51,24 @@ const escapeHtml = (value: string) => value.replace(/[&<>"']/g, char => ({ '&': 
 export const attachmentName = (title: string) => (title.replace(/[^\p{L}\p{N} ._-]+/gu, '_').replace(/\s+/g, ' ').trim().slice(0, 100) || 'dokument') + '_signerat.pdf';
 
 export function completedCopyMessage(input: {
-  delivery: Row; document: Row; origin: string; pdf: Buffer; copyUrl?: string;
+  delivery: Row; document: Row; origin: string; pdf: Buffer;
+  /** Personal 30-day copy link for a party, or the document page for the sender. */
+  link: string; party: boolean; attachmentOf?: { title: string; number: number } | null;
 }): MailMessage {
-  const { delivery, document, origin, pdf, copyUrl } = input;
-  const attach = !copyUrl;
+  const { delivery, document, origin, pdf, link, party, attachmentOf } = input;
+  const attach = pdf.length <= MAX_ATTACHMENT_BYTES;
   const sealed = Boolean(document.seal_metadata);
+  const label = attachmentOf ? `Bilaga ${attachmentOf.number} till ${attachmentOf.title}` : document.title;
   const lines = [
     `Hej ${delivery.name},`,
     '',
-    `Alla parter har signerat ”${document.title}”.`,
-    attach ? 'Den signerade PDF-filen är bifogad. Spara den som ditt exemplar.' : `Den signerade PDF-filen är för stor för att bifogas. Hämta den här inom 30 dagar och spara den som ditt exemplar:\n${copyUrl}`,
+    attachmentOf ? `Alla parter har signerat bilaga ${attachmentOf.number} till ”${attachmentOf.title}”: ”${document.title}”.` : `Alla parter har signerat ”${document.title}”.`,
+    attach ? 'Den signerade PDF-filen är bifogad. Spara den som ditt exemplar.' : 'Den signerade PDF-filen är för stor för att bifogas. Hämta den via länken nedan och spara den som ditt exemplar.',
     '',
     sealed ? 'Filen innehåller underskrifterna, en bevissida för varje part och ett elektroniskt sigill som visar om filen har ändrats.' : 'Filen innehåller underskrifterna och en bevissida för varje part.',
     `Kontrollera att din kopia är oförändrad på ${origin}/verify`,
+    '',
+    party ? `Hämta PDF-filen${document.parent_id ? ', huvuddokumentet och övriga bilagor' : ''} och se händelseloggen här. Länken är personlig och gäller i 30 dagar:\n${link}` : `Dokumentsidan:\n${link}`,
     '',
     `Dokument-ID: ${document.id}`,
     `Skickat av ${document.sender.name}, ${document.sender.teamName}`,
@@ -73,7 +78,7 @@ export function completedCopyMessage(input: {
     + lines.map(line => line ? '<p style="margin:0 0 4px">' + escapeHtml(line).replace(/\n/g, '<br>').replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1">$1</a>') + '</p>' : '<br>').join('')
     + '</body></html>';
   return {
-    to: delivery.email, subject: `Signerat: ${document.title}`, text, html, idempotencyKey: `${delivery.id}.${delivery.generation}`,
+    to: delivery.email, subject: `Signerat: ${label}`, text, html, idempotencyKey: `${delivery.id}.${delivery.generation}`,
     ...(attach ? { attachments: [{ filename: attachmentName(document.title), content: pdf, contentType: 'application/pdf' }] } : {}),
   };
 }
@@ -105,18 +110,18 @@ export function createDeliveryWorker(pool: Pool, mailer: Mailer, options: Delive
     // Fence every outcome on the claimed attempt: an expired lease may have been reclaimed.
     const fence = [delivery.id, delivery.attempts, delivery.generation];
     try {
-      const document = (await pool.query("SELECT id,title,sender,status,completed,seal_metadata FROM documents WHERE id=$1", [delivery.document_id])).rows[0];
+      const document = (await pool.query("SELECT id,title,sender,status,completed,seal_metadata,parent_id FROM documents WHERE id=$1", [delivery.document_id])).rows[0];
       if (document?.status !== 'completed') throw new MailPermanentError('document_not_completed');
-      let copyUrl: string | undefined;
-      if (document.completed.length > MAX_ATTACHMENT_BYTES) {
-        if (!delivery.recipient_id) copyUrl = options.origin + '/documents/' + document.id;
-        else {
-          const raw = token();
-          await pool.query('INSERT INTO completed_copy_access(token_hash,document_id,recipient_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5)', [sha256(raw), document.id, delivery.recipient_id, now() + 30 * DAY, new Date(now()).toISOString()]);
-          copyUrl = options.origin + '/copy#' + raw;
-        }
+      const created = (await pool.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [document.id])).rows[0]?.data ?? {};
+      // Parties get a personal link to their documents, bilagor and event log; the sender gets the document page.
+      const party = Boolean(delivery.recipient_id) && delivery.recipient_id !== created.senderRecipientId;
+      let link = options.origin + '/documents/' + document.id;
+      if (party) {
+        const raw = token();
+        await pool.query('INSERT INTO completed_copy_access(token_hash,document_id,recipient_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5)', [sha256(raw), document.id, delivery.recipient_id, now() + 30 * DAY, new Date(now()).toISOString()]);
+        link = options.origin + '/copy#' + raw;
       }
-      const sent = await mailer.send(completedCopyMessage({ delivery, document, origin: options.origin, pdf: document.completed, copyUrl }));
+      const sent = await mailer.send(completedCopyMessage({ delivery, document, origin: options.origin, pdf: document.completed, link, party, attachmentOf: created.attachmentOf }));
       const updated = await pool.query(`UPDATE email_deliveries SET status='sent',lease_until=NULL,sent_at=clock_timestamp(),provider=$4,provider_message_id=$5,last_error_code=NULL,updated_at=clock_timestamp()
         WHERE id=$1 AND attempts=$2 AND generation=$3 AND status='sending'`, [...fence, mailer.provider, sent.messageId?.slice(0, 256) ?? null]);
       return { status: updated.rowCount ? 'sent' : 'superseded', deliveryId: delivery.id };

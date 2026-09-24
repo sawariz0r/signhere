@@ -11,12 +11,14 @@ Simple, self-hosted document signing. Swedish interface based on the supplied Si
 - Read the actual PDF, draw a signature, and explicitly agree to the recorded consent. Selecting “Jag ska också signera” adds the sender separately from every entered party, even when they share an email address, and opens the sender’s signing step after creation. Each assignment needs its own signature and audit event; the document stays pending until all have signed.
 - Track recipient progress and audit events; revoke a pending document or rotate a recipient link.
 - Download the signing document, sealed completed PDF, preserved pre-conversion upload, and portable verification bundle. Full evidence is restricted to authenticated team members; recipient receipt/copy links provide the completed PDF. A signer can download the exact PDF they signed straight away, before the other parties finish.
-- Optional email delivery of the completed sealed PDF to every party and the sender, via SMTP (default) or Resend. Delivery status and resending are on the document page. Signing links are still shared manually.
+- Bilagor (attachments) on a completed document: upload a PDF or create one in the editor. By default the main document's parties sign it; parties can be deselected or added. Each bilaga is its own sealed signing document, bound to the exact signed main document by ID and hash, with its own audit chain and evidence. The main document's closed audit trail is never modified.
+- Parties who return through any of their links (signing link or receipt) see the main document, every bilaga they sign and one combined event log with who opened and signed what and when, without other parties' addresses, IPs or devices. They can download completed PDFs and sign pending bilagor from there.
+- Optional e-mail via SMTP (default) or Resend: personal signing links are sent when a document or bilaga is created, and when it is fully signed every party and the sender get the sealed PDF by e-mail, with a link back to their documents and event log. Completed-copy delivery status and resending are on the document page. Without e-mail, links are shared manually as before.
 - Public `/verify` page: anyone can check a completed PDF without an account, uploading its contents, or revealing recipient details.
 - A versioned internal draw signing adapter, with provider integration boundaries documented for later work.
 - Block-based document editor (preview) at `/editor/…`. It has a cover, parties, pricing packages with VAT, rich text with dynamic `@` fields, image, terms and signature blocks, plus theming and a desktop/mobile preview. Drafts are saved in the browser for now. Sending from the editor will be enabled once the server renders blocks to PDF.
 
-The implementation uses React, TypeScript, Express, PostgreSQL and a bundled Python/pyHanko PDF sealer. PDF bytes and evidence live in PostgreSQL; private sealing keys have a separate persistent volume. The last approval queues durable finalization, and completion publishes the verified PDF and evidence atomically. Fonts are served locally. No hosted service, paid certificate, Redis or object store is required; an SMTP server or Resend account is optional and only used to email completed copies (see [email delivery](docs/deployment.md#email-delivery-of-completed-copies)). Link sharing is manual. Unsigned links default to 7 days (`SIGNHERE_SIGNING_LINK_TTL_DAYS`, 1–365); after acceptance the same link provides a read-only receipt while the document is pending or finalizing, and until at least 30 days after completion, and permits exact idempotent retries.
+The implementation uses React, TypeScript, Express, PostgreSQL and a bundled Python/pyHanko PDF sealer. PDF bytes and evidence live in PostgreSQL; private sealing keys have a separate persistent volume. The last approval queues durable finalization, and completion publishes the verified PDF and evidence atomically. Fonts are served locally. No hosted service, paid certificate, Redis or object store is required; an SMTP server or Resend account is optional (see [email delivery](docs/deployment.md#email-delivery)). Link sharing is manual unless e-mail is configured. Unsigned links default to 7 days (`SIGNHERE_SIGNING_LINK_TTL_DAYS`, 1–365); after acceptance the same link provides a read-only receipt while the document is pending or finalizing, and until at least 30 days after completion, and permits exact idempotent retries.
 
 ## Public verification
 
@@ -62,6 +64,10 @@ Coolify builds the image from this repository and runs the app and PostgreSQL fr
    | `POSTGRES_PASSWORD` | A long random URL-safe value, e.g. from `openssl rand -hex 32`. Don't change it after the first deploy; the database keeps the original. |
    | `APP_DATABASE_PASSWORD` | A different long URL-safe random value for the restricted runtime role. Keep it stable after first deployment. |
    | `BASE_URL` | The exact public origin, e.g. `https://sign.example.com`, with no trailing slash. Requests from any other origin are rejected. |
+
+   Enter real values for both passwords; if Coolify pre-fills one with placeholder text, replace it. Leave *Available at Buildtime* off for both, because the image build doesn't need them and Coolify prints build-time variables in the deployment log.
+
+   Optional: set `SMTP_URL` (for example `smtps://user:password@smtp.example.com:465`) and `SMTP_FROM` (for example `signhere <sign@example.com>`) to e-mail signing links and completed copies. Mark `SMTP_URL` as a secret. Separate `SMTP_*` variables and Resend are also supported; see [email delivery](docs/deployment.md#email-delivery).
 
    That's all. PostgreSQL runs inside the same stack, so there is no connection string to set. `TRUST_PROXY` defaults to `uniquelocal`, which trusts Coolify's proxy on the private Docker network so the audit trail records visitors' real IPs. Leave `PORT` and `BIND_ADDRESS` at their defaults; change `PORT` only if host port 3000 is already taken.
 4. **Domain:** on the `signhere` service, set *Domains* to `https://sign.example.com:3000`. The `:3000` tells the proxy which container port to route to; it is not part of the public URL. Leave the `postgres` service without a domain.
@@ -130,7 +136,7 @@ The script does not overwrite existing backups or put credentials in command-lin
 For Docker, create a dump inside the database container, then copy it out (this avoids binary-output corruption in older Windows PowerShell):
 
 ```sh
-docker compose exec postgres pg_dump -U signhere -d signhere -Fc -f /tmp/signhere.dump
+docker compose exec postgres pg_dump -U postgres -d signhere -Fc -f /tmp/signhere.dump
 docker compose cp postgres:/tmp/signhere.dump ./backups/signhere.dump
 ```
 
