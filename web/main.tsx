@@ -12,6 +12,7 @@ import { Sign, CompletedCopy } from './sign';
 import { Avatar, Brand, ErrorBox, Loading } from './ui';
 import { message, request } from './api';
 import type { Bootstrap, SigningDocument, User } from './types';
+import { signingContacts, type Draft } from './editor/model';
 
 const DocumentEditor = lazy(() => import('./editor/editor').then(module => ({ default: module.DocumentEditor })));
 const draftId = () => crypto.randomUUID().replace(/-/g, '').slice(0, 16);
@@ -41,10 +42,15 @@ function App() {
   if (!user) return <Auth key={bootstrap.setupRequired ? 'setup' : 'login'} setup={bootstrap.setupRequired} onLogin={loggedIn} onVerify={() => navigate('/verify')} />;
   if (current.path.startsWith('/editor/')) {
     const id = current.path.split('/')[2];
-    // A bilaga drafted in the editor returns to the bilaga flow of its main document as a PDF.
-    const parentId = current.query.get('bilaga');
-    const attachment = parentId && /^[0-9a-f-]{36}$/.test(parentId) ? { onUse: (file: File) => { handOff(parentId, file); navigate(`/documents/${parentId}/bilaga`); } } : undefined;
-    return <Suspense fallback={<main className="main"><Loading>Öppnar editorn…</Loading></main>}><DocumentEditor key={id} draftId={id} user={user} attachment={attachment} onClose={() => navigate(parentId ? `/documents/${parentId}/bilaga` : '/')} /></Suspense>;
+    // The draft continues as a PDF in the upload flow: a new document, or a bilaga of its main document.
+    const query = current.query.get('bilaga');
+    const parentId = query && /^[0-9a-f-]{36}$/.test(query) ? query : null;
+    const onUse = (file: File, draft: Draft) => {
+      if (parentId) { handOff(parentId, { file, draftId: id }); navigate(`/documents/${parentId}/bilaga`); return; }
+      handOff('new', { file, draftId: id, title: draft.title.trim(), recipients: signingContacts(draft).map(({ name, email }) => ({ name, email })), includeSender: draft.settings.senderSigns });
+      navigate('/new');
+    };
+    return <Suspense fallback={<main className="main"><Loading>Öppnar editorn…</Loading></main>}><DocumentEditor key={id} draftId={id} user={user} attachment={Boolean(parentId)} onUse={onUse} onClose={() => navigate(parentId ? `/documents/${parentId}/bilaga` : '/')} /></Suspense>;
   }
   const activeNav = current.path === '/team' ? 'team' : 'docs';
   const documentId = current.path.startsWith('/documents/') ? current.path.split('/')[2] : null;

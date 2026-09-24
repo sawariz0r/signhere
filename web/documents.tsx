@@ -95,7 +95,17 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
     } catch (error) { if (selection.current === currentSelection) setError(message(error)); }
     finally { if (selection.current === currentSelection) setPreparing(false); }
   };
-  useEffect(() => { if (!parent) return; const rendered = takeHandOff(parent.id); if (rendered) void handleFile(rendered); }, []);
+  // A draft rendered in the editor arrives as a PDF, with its title and signers prefilled.
+  const editorDraft = useRef<string | null>(null);
+  useEffect(() => {
+    const rendered = takeHandOff(parent ? parent.id : 'new');
+    if (!rendered) return;
+    editorDraft.current = rendered.draftId;
+    void handleFile(rendered.file);
+    if (rendered.title) setTitle(rendered.title);
+    if (rendered.recipients?.length) setRecipients(rendered.recipients);
+    if (rendered.includeSender) setIncludeMe(true);
+  }, []);
   const send = async (event: FormEvent) => {
     event.preventDefault(); setError('');
     const selected = recipients.filter(r => r.name.trim() || r.email.trim()).map(r => ({ name: r.name.trim(), email: r.email.trim() }));
@@ -110,6 +120,8 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
         ? await request<CreatedDocument>(`/api/documents/${encodeURIComponent(parent.id)}/attachments`, { ...fields, parentRecipientIds: inherited })
         : await request<CreatedDocument>('/api/documents', fields);
       setCreated(result); setStep(2); clearFile();
+      // The draft has become a document; keep it out of the drafts list.
+      if (editorDraft.current) { deleteDraft(editorDraft.current); editorDraft.current = null; }
       const senderExpected = parent ? includeMe || coversMe : includeMe;
       const senderAssignmentValid = !senderExpected || (parent ? Boolean(result.senderRecipientId && result.links.some(link => link.recipientId === result.senderRecipientId)) : hasExpectedSenderAssignment(result, user, selected));
       setCreationError(senderAssignmentValid ? '' : 'Det gick inte att bekräfta dig som separat undertecknare. Dokumentet är skapat, men ingen signering har öppnats. Öppna dokumentet för att kontrollera parterna.');
