@@ -39,14 +39,17 @@ PostgreSQL initialization scripts do not rerun on an existing volume. Never dele
 
 Installations created with `POSTGRES_USER: signhere` have `signhere` as the PostgreSQL bootstrap superuser, and no `postgres` or `signhere_migrator` role. Symptoms: PostgreSQL logs `role "postgres" does not exist`, and Signhere refuses to start with "PostgreSQL rejected the migration or runtime login". PostgreSQL 16+ cannot demote a bootstrap superuser, so `deploy/postgres/upgrade-legacy-roles.sh` renames it to `postgres` (local socket only, network password removed), creates `signhere_migrator` with `POSTGRES_PASSWORD` and a new restricted `signhere` with `APP_DATABASE_PASSWORD`, moves ownership of the database and every application object to `signhere_migrator`, and applies the fresh-install grants. It verifies runtime DDL denial before committing; any failure rolls the whole transaction back. It refuses extensions or object kinds it does not move, and rerunning it after success changes nothing.
 
+The one-shot `postgres-upgrade` Compose service runs this script on every deployment, and Signhere starts only after it exits successfully. On current installations it logs "nothing to upgrade". On a legacy database it logs in as the legacy superuser with `POSTGRES_PASSWORD` (the password the old compose file gave it). It first writes a `pg_dump` to the `postgres-upgrade-backups` volume, then upgrades. `.env` must set both passwords, and they must differ. Rehearse on a restored copy when the database holds real documents. To rerun it manually: `docker compose run --rm postgres-upgrade`.
+
+If the legacy superuser's password no longer matches `POSTGRES_PASSWORD`, the service fails and the application stays stopped. Run the script inside the PostgreSQL container instead; the local socket needs no password:
+
 ```sh
-docker compose exec -T postgres pg_dump -U signhere -d signhere -Fc > pre-upgrade.dump   # then test-restore it
 docker compose stop signhere
 docker compose exec -T postgres sh /usr/local/share/signhere/upgrade-legacy-roles.sh --confirm
-docker compose start signhere
+docker compose up -d
 ```
 
-Make sure `.env` sets both passwords first; they must differ. Rehearse on a restored copy when the database holds real documents. On startup with `MIGRATION_DATABASE_URL`, Signhere refuses a runtime role that can create or own database objects.
+On startup with `MIGRATION_DATABASE_URL`, Signhere refuses a runtime role that can create or own database objects.
 
 ## PDF parser boundary in the Linux image
 
