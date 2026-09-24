@@ -167,7 +167,7 @@ try {
   await signFixture(restored, 'After paired restore');
 
   // Installations created before separate roles use signhere as the bootstrap superuser and
-  // never ran the role bootstrap. Compose merges mounts by target, so /dev/null replaces it.
+  // never ran the role bootstrap. A /dev/null mount hides the script built into the image.
   const legacy = await newProject('legacy', [
     'services:', '  postgres:', '    environment:', '      POSTGRES_USER: signhere', '    volumes:',
     '      - /dev/null:/docker-entrypoint-initdb.d/10-signhere-roles.sh:ro', '',
