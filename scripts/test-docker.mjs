@@ -124,6 +124,7 @@ async function checkRuntimePermissions(project) {
 try {
   const source = await newProject('source');
   await source.run(['up', '--build', '-d', '--wait', '--wait-timeout', '180']);
+  assert.match(await source.run(['logs', '--no-color', 'postgres-upgrade']), /nothing to upgrade/);
   const firstIdentity = await identity(source);
   const setupToken = (await source.run(['exec', '-T', 'signhere', 'cat', '/data/setup-token'])).trim();
   await api(source, '/api/setup', { ...owner, setupToken });
@@ -179,9 +180,11 @@ try {
     await pool.query("INSERT INTO teams(id,name) VALUES('00000000-0000-4000-8000-000000000001','Legacy team')");
     await pool.end();
   `]);
-  await legacy.run(['exec', '-T', 'postgres', 'sh', '/usr/local/share/signhere/upgrade-legacy-roles.sh', '--confirm']);
-  assert.match(await legacy.run(['exec', '-T', 'postgres', 'sh', '/usr/local/share/signhere/upgrade-legacy-roles.sh', '--confirm']), /nothing to upgrade/);
+  // A plain deployment upgrades automatically before the application starts.
   await legacy.run(['up', '-d', '--wait', '--wait-timeout', '180']);
+  assert.match(await legacy.run(['logs', '--no-color', 'postgres-upgrade']), /Upgraded:/);
+  assert.match(await legacy.run(['run', '--rm', '-T', '--no-deps', '--entrypoint', 'ls', 'postgres-upgrade', '/backups']), /pre-role-upgrade-\d{8}T\d{6}Z\.dump/);
+  assert.match(await legacy.run(['run', '--rm', '-T', 'postgres-upgrade']), /nothing to upgrade/);
   await identity(legacy);
   await checkRuntimePermissions(legacy);
   assert.match(await legacy.run(['exec', '-T', 'signhere', 'node', '--input-type=module', '-e', `

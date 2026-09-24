@@ -1,59 +1,81 @@
 #!/bin/sh
 set -eu
-# Operator-run upgrade for a database initialized before separate migration and runtime
-# roles existed (POSTGRES_USER=signhere). Never runs automatically; see docs/deployment.md.
-#   docker compose stop signhere
-#   docker compose exec -T postgres sh /usr/local/share/signhere/upgrade-legacy-roles.sh --confirm
-# One transaction renames the legacy bootstrap superuser to postgres (PostgreSQL 16+ cannot
+# Upgrades a database initialized before separate migration and runtime roles existed
+# (POSTGRES_USER=signhere). The postgres-upgrade Compose service runs it before every
+# application start and it is a no-op on current installations; see docs/deployment.md.
+# It works over the network with passwords (PGHOST=postgres) or over the postgres
+# container's trusted local socket.
+# The legacy path optionally dumps the database to $SIGNHERE_UPGRADE_BACKUP_DIR, then one
+# transaction renames the legacy bootstrap superuser to postgres (PostgreSQL 16+ cannot
 # demote it), creates signhere_migrator and a restricted signhere role, moves ownership and
-# verifies the result. Rerunning after success is a no-op. Passwords come from the
-# environment, as in 10-signhere-roles.sh; neither arguments nor output contain them.
+# verifies the result. Passwords come from the environment, as in 10-signhere-roles.sh;
+# neither arguments nor output contain them.
 
 if [ "${1:-}" != --confirm ]; then
   echo 'Take a tested backup and stop the signhere service, then rerun with --confirm.' >&2
   exit 2
 fi
 : "${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}" "${APP_DATABASE_PASSWORD:?APP_DATABASE_PASSWORD is required}"
-database="${POSTGRES_DB:-signhere}"
-run() { user=$1; shift; psql -X -q -v ON_ERROR_STOP=1 --username "$user" --dbname "$database" "$@"; }
-# A temporary superuser performs the rename, because a session cannot rename its own role.
-cleanup() {
-  for user in postgres signhere; do
-    run "$user" -c 'DROP ROLE IF EXISTS signhere_upgrade' >/dev/null 2>&1 && return 0
-  done
-  echo 'Warning: could not drop the temporary signhere_upgrade role; drop it manually.' >&2
-}
-
-# The image trusts local socket connections; use whichever administrator role exists.
-admin=
-for candidate in postgres signhere; do
-  if run "$candidate" -Atc 'SELECT 1' >/dev/null 2>&1; then admin=$candidate; break; fi
-done
-if [ -z "$admin" ]; then
-  echo "Cannot connect to database $database over the local socket as postgres or signhere." >&2
+if [ "$POSTGRES_PASSWORD" = "$APP_DATABASE_PASSWORD" ]; then
+  echo 'POSTGRES_PASSWORD and APP_DATABASE_PASSWORD must be different.' >&2
   exit 1
 fi
-IFS='|' read -r bootstrap superuser migrator <<EOF
-$(run "$admin" -Atc "SELECT (SELECT rolname FROM pg_roles WHERE oid = 10), rolsuper, EXISTS(SELECT 1 FROM pg_roles WHERE rolname = 'signhere_migrator') FROM pg_roles WHERE rolname = current_user")
-EOF
-if [ "$bootstrap" = postgres ] && [ "$migrator" = t ]; then
-  cleanup
+database="${POSTGRES_DB:-signhere}"
+run() { user=$1; password=$2; shift 2; PGPASSWORD=$password psql -X -q -v ON_ERROR_STOP=1 --username "$user" --dbname "$database" "$@"; }
+can_login() { run "$1" "$2" -Atc 'SELECT 1' >/dev/null 2>&1; }
+# The renamed bootstrap superuser keeps POSTGRES_PASSWORD only until the temporary role is gone.
+finish() { run postgres "$POSTGRES_PASSWORD" -c 'SET client_min_messages = warning' -c 'DROP ROLE IF EXISTS signhere_upgrade' -c 'ALTER ROLE postgres PASSWORD NULL'; }
+cleanup() {
+  finish >/dev/null 2>&1 ||
+    run signhere "$POSTGRES_PASSWORD" -c 'SET client_min_messages = warning' -c 'DROP ROLE IF EXISTS signhere_upgrade' >/dev/null 2>&1 ||
+    echo 'Warning: could not drop the temporary signhere_upgrade role; drop it manually.' >&2
+}
+
+attempt=0
+until pg_isready -q --dbname "$database"; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 30 ]; then echo 'PostgreSQL is not accepting connections.' >&2; exit 1; fi
+  sleep 2
+done
+if can_login signhere_migrator "$POSTGRES_PASSWORD"; then
+  # Completes an upgrade interrupted after its transaction committed.
+  if can_login postgres "$POSTGRES_PASSWORD"; then finish >/dev/null; fi
   echo 'Database roles already use the separated layout; nothing to upgrade.'
   exit 0
 fi
-if [ "$bootstrap" != signhere ] || [ "$superuser" != t ]; then
-  echo "Unrecognized role layout (bootstrap superuser: $bootstrap). This script only upgrades the legacy signhere layout." >&2
+if ! can_login signhere "$POSTGRES_PASSWORD"; then
+  echo 'Cannot log in as signhere_migrator, or as the legacy signhere superuser, with POSTGRES_PASSWORD.' >&2
+  echo 'If the legacy superuser password differs, run this script inside the postgres container instead.' >&2
   exit 1
 fi
-others=$(run signhere -Atc "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND pid <> pg_backend_pid()")
-if [ "$others" != 0 ]; then
-  echo "Stop the signhere service first: $others other database session(s) are open." >&2
+if [ "$(run signhere "$POSTGRES_PASSWORD" -Atc 'SELECT oid = 10 AND rolsuper FROM pg_roles WHERE rolname = current_user')" != t ]; then
+  echo 'signhere is not the legacy bootstrap superuser; this script only upgrades the legacy layout.' >&2
   exit 1
+fi
+echo 'Legacy database roles found; upgrading.'
+attempt=0
+while [ "$(run signhere "$POSTGRES_PASSWORD" -Atc "SELECT count(*) FROM pg_stat_activity WHERE backend_type = 'client backend' AND usename IS NOT NULL AND pid <> pg_backend_pid()")" != 0 ]; do
+  attempt=$((attempt + 1))
+  if [ "$attempt" -ge 12 ]; then echo 'Stop the signhere service first: other database sessions are still open.' >&2; exit 1; fi
+  sleep 5
+done
+if [ -n "${SIGNHERE_UPGRADE_BACKUP_DIR:-}" ]; then
+  backup="$SIGNHERE_UPGRADE_BACKUP_DIR/pre-role-upgrade-$(date -u +%Y%m%dT%H%M%SZ).dump"
+  (umask 077 && PGPASSWORD=$POSTGRES_PASSWORD pg_dump --username signhere --dbname "$database" -Fc -f "$backup")
+  echo "Backed up the legacy database to $backup."
 fi
 
+# A temporary superuser performs the rename, because a session cannot rename its own role.
+UPGRADE_PASSWORD=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
+export UPGRADE_PASSWORD
 trap cleanup EXIT
-run signhere -c 'SET client_min_messages = warning' -c 'DROP ROLE IF EXISTS signhere_upgrade' -c 'CREATE ROLE signhere_upgrade SUPERUSER LOGIN'
-run signhere_upgrade <<'SQL'
+run signhere "$POSTGRES_PASSWORD" <<'SQL'
+SET client_min_messages = warning;
+DROP ROLE IF EXISTS signhere_upgrade;
+\getenv upgrade_password UPGRADE_PASSWORD
+SELECT format('CREATE ROLE signhere_upgrade SUPERUSER LOGIN PASSWORD %L', :'upgrade_password') \gexec
+SQL
+run signhere_upgrade "$UPGRADE_PASSWORD" <<'SQL'
 \getenv migration_password POSTGRES_PASSWORD
 \getenv runtime_password APP_DATABASE_PASSWORD
 SELECT :'migration_password' = :'runtime_password' AS passwords_match \gset
@@ -66,8 +88,8 @@ BEGIN;
 SET LOCAL lock_timeout = '10s';
 -- The bootstrap role keeps OID 10 and everything it owns; only its name changes.
 ALTER ROLE signhere RENAME TO postgres;
--- The bootstrap superuser is available only through local container administration.
-ALTER ROLE postgres PASSWORD NULL;
+-- Temporary: finish() logs in with it to drop signhere_upgrade, then removes it.
+SELECT format('ALTER ROLE postgres PASSWORD %L', :'migration_password') \gexec
 CREATE ROLE signhere_migrator LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
 CREATE ROLE signhere LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION;
 SELECT format('ALTER ROLE signhere_migrator PASSWORD %L', :'migration_password') \gexec
@@ -161,6 +183,6 @@ END $$;
 RESET ROLE;
 COMMIT;
 SQL
-run postgres -c 'DROP ROLE signhere_upgrade'
+finish
 trap - EXIT
 echo 'Upgraded: postgres is the local-only superuser, signhere_migrator owns the schema, and signhere is the restricted runtime role.'
