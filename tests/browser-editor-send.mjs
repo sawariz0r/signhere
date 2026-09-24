@@ -49,7 +49,8 @@ try {
     await page.getByRole('button', { name: /Tomt dokument/ }).click();
     await page.locator('.ProseMirror').first().click();
     await page.keyboard.type('Leverantören sköter service av anläggningen under 2027.');
-    await page.waitForFunction(key => JSON.parse(localStorage.getItem(key) ?? 'null')?.blocks?.length > 0, draftKey(id));
+    // The typed text reaches the saved draft.
+    await page.waitForFunction(key => (localStorage.getItem(key) ?? '').includes('under 2027.'), draftKey(id));
     await page.evaluate(({ key, company, title, senderSigns }) => {
       const stored = JSON.parse(localStorage.getItem(key));
       localStorage.setItem(key, JSON.stringify({ ...stored, title, company, settings: { ...stored.settings, senderSigns } }));

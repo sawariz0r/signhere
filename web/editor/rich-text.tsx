@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
+import { startTransition, useEffect, useMemo, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 import { EditorContent, Node, NodeViewWrapper, ReactNodeViewRenderer, mergeAttributes, useEditor, useEditorState, type Editor, type JSONContent, type NodeViewProps } from '@tiptap/react';
 import { BubbleMenu } from '@tiptap/react/menus';
@@ -163,22 +163,30 @@ export function RichText({ content, onChange, placeholder = 'Skriv här, eller t
     TextAlign.configure({ types: ['heading', 'paragraph'] }), TextStyle, Color, Highlight.configure({ multicolor: true }),
     TableKit.configure({ table: { resizable: false } }), Image.configure({ allowBase64: true }), FieldNode,
   ], [placeholder]);
-  const editor = useEditor({
-    extensions, content, editable: !api.preview, immediatelyRender: true, shouldRerenderOnTransaction: false,
-    editorProps: {
-      attributes: { class: `ed-prose ${className}` },
-      handleKeyDown: (view, event) => {
-        if (event.key !== '@') return false;
-        const { $from } = view.state.selection;
-        const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 1), $from.parentOffset, undefined, '￼');
-        if (before && !/\s/.test(before)) return false;
-        event.preventDefault(); openPicker.current(); return true;
-      },
+  // The editor owns its content after mount (undo remounts blocks), so `content` is only the starting value.
+  // Stable options matter: useEditor re-applies changed options after every render, which re-renders the
+  // ProseMirror view, and its DOM observer can then dispatch again while React is still committing.
+  const [initialContent] = useState(content);
+  const editorProps = useMemo(() => ({
+    attributes: { class: `ed-prose ${className}` },
+    handleKeyDown: (view: Editor['view'], event: KeyboardEvent) => {
+      if (event.key !== '@') return false;
+      const { $from } = view.state.selection;
+      const before = $from.parent.textBetween(Math.max(0, $from.parentOffset - 1), $from.parentOffset, undefined, '￼');
+      if (before && !/\s/.test(before)) return false;
+      event.preventDefault(); openPicker.current(); return true;
     },
+  }), [className]);
+  const editor = useEditor({
+    extensions, content: initialContent, editable: !api.preview, immediatelyRender: true, shouldRerenderOnTransaction: false,
+    editorProps,
     onUpdate: ({ editor, transaction }) => {
       // Skip normalisation transactions (e.g. trailing nodes) that run on mount, so they don't count as edits.
       if (!editor.isFocused && !transaction.getMeta('uiEvent') && !transaction.getMeta('external')) return;
-      change.current(editor.getJSON());
+      // ProseMirror already shows the edit; the draft follows as a transition, never as a synchronous
+      // update nested inside ProseMirror's DOM observer (which React stops after 50 levels, error #185).
+      const json = editor.getJSON();
+      startTransition(() => change.current(json));
     },
     onFocus: ({ editor }) => { setFocused(true); api.activeEditor.current = editor; },
     onBlur: () => setFocused(false),
