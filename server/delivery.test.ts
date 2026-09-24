@@ -11,7 +11,7 @@ import { uid } from './db.js';
 import { sha256 } from './pdf.js';
 import { CONSENT } from './plugins.js';
 import { attachmentName } from './delivery.js';
-import { MailPermanentError, MailTransientError, mailerFromEnv, resendMailer, type Mailer, type MailMessage } from './mail.js';
+import { MailPermanentError, MailTransientError, loadMailer, mailerFromEnv, resendMailer, type Mailer, type MailMessage } from './mail.js';
 import { createNotifier } from './notify.js';
 
 try { loadEnvFile('.local/postgres.env'); } catch {}
@@ -178,11 +178,19 @@ test('an unsigned link still expires on schedule', async t => {
   assert.equal((await f.post('/api/sign/session', { token: created.tokens[0] }, request(f.app))).status, 404);
 });
 
-test('mail configuration: SMTP is the default, Resend is explicit, and misconfiguration fails at startup', () => {
+test('mail configuration: SMTP is the default, Resend is explicit, and misconfiguration disables e-mail without stopping startup', () => {
   assert.equal(mailerFromEnv({}), null);
   assert.equal(mailerFromEnv({ SIGNHERE_MAIL_FROM: 'a@example.test' }), null);
   assert.equal(mailerFromEnv({ SMTP_HOST: 'smtp.example.test', SIGNHERE_MAIL_FROM: 'Signhere <a@example.test>' })?.provider, 'smtp');
   assert.throws(() => mailerFromEnv({ SMTP_HOST: 'smtp.example.test' }), /SIGNHERE_MAIL_FROM/);
+  // Blank values from deployment tools count as unset, and an invalid setting disables e-mail instead of stopping startup.
+  assert.equal(mailerFromEnv({ SIGNHERE_MAIL_PROVIDER: '', SMTP_HOST: ' ', SMTP_PORT: '', SMTP_URL: '', SMTP_FROM: '', RESEND_API_KEY: '' }), null);
+  assert.equal(mailerFromEnv({ SMTP_HOST: 'smtp.example.test', SMTP_PORT: '', SMTP_SECURE: '', SIGNHERE_MAIL_FROM: 'a@example.test' })?.provider, 'smtp');
+  const logged: string[] = [];
+  assert.equal(loadMailer({ SMTP_HOST: 'smtp.example.test' }, message => logged.push(message)), null);
+  assert.match(logged[0], /e-mail is disabled.*SIGNHERE_MAIL_FROM/);
+  assert.equal(loadMailer({ SIGNHERE_MAIL_PROVIDER: 'resend' }, message => logged.push(message)), null);
+  assert.equal(logged.length, 2);
   // SMTP_URL and SMTP_FROM are shorthand for the SMTP_* settings.
   assert.equal(mailerFromEnv({ SMTP_URL: 'smtps://user%40example.test:secret@smtp.example.test', SMTP_FROM: 'a@example.test' })?.provider, 'smtp');
   assert.throws(() => mailerFromEnv({ SMTP_URL: 'http://smtp.example.test', SMTP_FROM: 'a@example.test' }), /smtp:\/\/ or smtps:\/\//);

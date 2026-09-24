@@ -1,6 +1,6 @@
 import { resolve } from 'node:path';
 import { createApp } from './app.js';
-import { mailerFromEnv } from './mail.js';
+import { loadMailer } from './mail.js';
 import { createNotifier } from './notify.js';
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -8,7 +8,7 @@ if (!databaseUrl) throw new Error('DATABASE_URL is required. Configure PostgreSQ
 const port = Number(process.env.PORT ?? 3000);
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT must be between 1 and 65535.');
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:' + port;
-const mailer = mailerFromEnv();
+const mailer = loadMailer();
 console.log(mailer ? 'signhere: e-mail is sent via ' + mailer.provider : 'signhere: email delivery is not configured');
 const runtime = await createApp({
   databaseUrl, baseUrl, dataDir: resolve(process.env.DATA_DIR ?? './data'),

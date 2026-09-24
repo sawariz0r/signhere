@@ -39,7 +39,9 @@ function sender(env: Env) {
  * SMTP_HOST (or the SMTP_URL shorthand) is set; SIGNHERE_MAIL_PROVIDER=resend selects the Resend HTTP API instead.
  * Returns null when nothing is configured, so installations without mail keep working.
  */
-export function mailerFromEnv(env: Env = process.env): Mailer | null {
+export function mailerFromEnv(input: Env = process.env): Mailer | null {
+  // Deployment tools often pass unset variables as empty strings; treat those as unset.
+  const env: Env = Object.fromEntries(Object.entries(input).map(([key, value]) => [key, value?.trim() ? value : undefined]));
   const provider = (env.SIGNHERE_MAIL_PROVIDER?.trim() || 'smtp').toLowerCase();
   if (provider === 'smtp') {
     const url = env.SMTP_URL?.trim();
@@ -59,6 +61,18 @@ export function mailerFromEnv(env: Env = process.env): Mailer | null {
     return resendMailer({ apiKey, from: sender(env) });
   }
   throw new Error('SIGNHERE_MAIL_PROVIDER must be smtp or resend.');
+}
+
+/**
+ * Startup wrapper: e-mail is optional, so a missing or invalid mail setting disables e-mail
+ * with a logged reason instead of stopping the application.
+ */
+export function loadMailer(env: Env = process.env, log: (message: string) => void = console.error): Mailer | null {
+  try { return mailerFromEnv(env); }
+  catch (error) {
+    log('signhere: e-mail is disabled because its configuration is invalid: ' + (error instanceof Error ? error.message : 'unknown error') + ' Everything else keeps working; share links manually or fix the setting and restart.');
+    return null;
+  }
 }
 
 /** SMTP_URL (smtp:// or smtps://, credentials in the URL) is shorthand for the SMTP_* settings. */
