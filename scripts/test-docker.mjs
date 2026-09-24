@@ -29,7 +29,7 @@ function docker(args, input, binary = false) {
     child.stdin.end(input);
   });
 }
-async function newProject(label) {
+async function newProject(label, override) {
   const socket = createServer();
   await new Promise(resolveListen => socket.listen(0, '127.0.0.1', resolveListen));
   const port = socket.address().port;
@@ -38,7 +38,13 @@ async function newProject(label) {
   const origin = `http://127.0.0.1:${port}`;
   await writeFile(envPath, `POSTGRES_PASSWORD=${passwords[0]}\nAPP_DATABASE_PASSWORD=${passwords[1]}\nBASE_URL=${origin}\nPORT=${port}\nBIND_ADDRESS=127.0.0.1\n`, { mode: 0o600 });
   const project = { name: `signhere-ci-${suffix}-${label}`, origin, cookie: '' };
-  project.run = (args, input, binary) => docker(['compose', '--project-name', project.name, '--env-file', envPath, '--file', resolve(root, 'docker-compose.yaml'), ...args], input, binary);
+  const files = ['--file', resolve(root, 'docker-compose.yaml')];
+  if (override) {
+    const overridePath = resolve(output, label + '.override.yaml');
+    await writeFile(overridePath, override, { mode: 0o600 });
+    files.push('--file', overridePath);
+  }
+  project.run = (args, input, binary) => docker(['compose', '--project-name', project.name, '--env-file', envPath, ...files, ...args], input, binary);
   projects.push(project);
   return project;
 }
@@ -158,7 +164,32 @@ try {
   assert.equal((await api(restored, '/api/documents/' + first.id)).document.completedHash, first.hash);
   await checkRuntimePermissions(restored);
   await signFixture(restored, 'After paired restore');
-  console.log('Docker fresh setup, signing, restricted runtime role, restart, identity persistence, and paired key/database restore passed.');
+
+  // Installations created before separate roles use signhere as the bootstrap superuser and
+  // never ran the role bootstrap. Compose merges mounts by target, so /dev/null replaces it.
+  const legacy = await newProject('legacy', [
+    'services:', '  postgres:', '    environment:', '      POSTGRES_USER: signhere', '    volumes:',
+    '      - /dev/null:/docker-entrypoint-initdb.d/10-signhere-roles.sh:ro', '',
+  ].join('\n'));
+  await legacy.run(['up', '-d', '--wait', '--wait-timeout', '90', 'postgres']);
+  await legacy.run(['run', '--rm', '-T', '--no-deps', '--entrypoint', 'node', 'signhere', '--input-type=module', '-e', `
+    import { createDatabase } from '/app/dist/server/db.js';
+    const url = new URL(process.env.MIGRATION_DATABASE_URL); url.username = 'signhere';
+    const pool = await createDatabase(url.href);
+    await pool.query("INSERT INTO teams(id,name) VALUES('00000000-0000-4000-8000-000000000001','Legacy team')");
+    await pool.end();
+  `]);
+  await legacy.run(['exec', '-T', 'postgres', 'sh', '/usr/local/share/signhere/upgrade-legacy-roles.sh', '--confirm']);
+  assert.match(await legacy.run(['exec', '-T', 'postgres', 'sh', '/usr/local/share/signhere/upgrade-legacy-roles.sh', '--confirm']), /nothing to upgrade/);
+  await legacy.run(['up', '-d', '--wait', '--wait-timeout', '180']);
+  await identity(legacy);
+  await checkRuntimePermissions(legacy);
+  assert.match(await legacy.run(['exec', '-T', 'signhere', 'node', '--input-type=module', '-e', `
+    import pg from 'pg'; const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+    const { rows } = await pool.query("SELECT name FROM teams WHERE id='00000000-0000-4000-8000-000000000001'");
+    console.log(rows[0]?.name); await pool.end();
+  `]), /Legacy team/);
+  console.log('Docker fresh setup, signing, restricted runtime role, restart, identity persistence, paired key/database restore, and legacy role upgrade passed.');
 } catch (error) {
   // Surface container output before teardown; compose only reports "unhealthy".
   for (const project of projects) {

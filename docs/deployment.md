@@ -35,9 +35,24 @@ The default grants cover future tables created by the migrator. Migrations run t
 
 PostgreSQL initialization scripts do not rerun on an existing volume. Never delete a volume to make an upgrade appear to work. For an older installation, take a tested backup, inventory pending legacy documents, and perform the explicit schema/role upgrade on a restored copy first. Existing pending v1 documents retain the tested legacy completion path and remain unsealed; new documents use v2. Do not silently cancel, reassign, rewrite or retrospectively upgrade existing evidence. The old `signhere` database-owner role cannot be made a restricted runtime role merely by changing its password or setting a new connection URL. Ownership transfer, separate credentials, grants, and successful runtime DDL-denial checks are required. The fresh-install bootstrap script must not be run blindly against that database.
 
+### Upgrading a database created before separate roles
+
+Installations created with `POSTGRES_USER: signhere` have `signhere` as the PostgreSQL bootstrap superuser, and no `postgres` or `signhere_migrator` role. Symptoms: PostgreSQL logs `role "postgres" does not exist`, and Signhere refuses to start with "PostgreSQL rejected the migration or runtime login". PostgreSQL 16+ cannot demote a bootstrap superuser, so `deploy/postgres/upgrade-legacy-roles.sh` renames it to `postgres` (local socket only, network password removed), creates `signhere_migrator` with `POSTGRES_PASSWORD` and a new restricted `signhere` with `APP_DATABASE_PASSWORD`, moves ownership of the database and every application object to `signhere_migrator`, and applies the fresh-install grants. It verifies runtime DDL denial before committing; any failure rolls the whole transaction back. It refuses extensions or object kinds it does not move, and rerunning it after success changes nothing.
+
+```sh
+docker compose exec -T postgres pg_dump -U signhere -d signhere -Fc > pre-upgrade.dump   # then test-restore it
+docker compose stop signhere
+docker compose exec -T postgres sh /usr/local/share/signhere/upgrade-legacy-roles.sh --confirm
+docker compose start signhere
+```
+
+Make sure `.env` sets both passwords first; they must differ. Rehearse on a restored copy when the database holds real documents. On startup with `MIGRATION_DATABASE_URL`, Signhere refuses a runtime role that can create or own database objects.
+
 ## PDF parser boundary in the Linux image
 
-The image builds `deploy/pdf-sandbox/launcher.c` with compiler warnings treated as errors. `SIGNHERE_PDF_SANDBOX_LAUNCHER` points at that executable; `SIGNHERE_REQUIRE_PDF_SANDBOX=true` requires it for parser operations. Linux Landlock ABI 3 or newer and seccomp filters must be available. Unsupported kernels/policies fail closed; do not disable the requirement to declare a production deployment ready.
+The image builds `deploy/pdf-sandbox/launcher.c` with compiler warnings treated as errors. `SIGNHERE_PDF_SANDBOX_LAUNCHER` points at that executable; `SIGNHERE_REQUIRE_PDF_SANDBOX=true` requires it for parser operations. Linux Landlock (kernel 5.13+ with `landlock` in `/sys/kernel/security/lsm`) and seccomp filters must be available, and the container seccomp profile must allow the `landlock_*` syscalls (Docker Engine 23+ does by default). Unsupported kernels/policies fail closed with the errno, kernel release and a hint; do not disable the requirement to declare a production deployment ready. The startup probe logs the detected Landlock ABI.
+
+Landlock ABI 1 (Linux 5.13-5.18) cannot grant cross-directory rename/link, so the kernel denies them all. ABI 1-2 (before Linux 6.2) do not control truncation, so the syscall filter denies `truncate(2)`, read-only `O_TRUNC` opens and `openat2` on every kernel; write opens and `ftruncate` remain governed by Landlock write access. Image code is root-owned so no permitted read path is writable by the parser, even without the read-only root filesystem.
 
 The unprivileged launcher clears inherited application environment variables and file descriptors, applies no-new-privileges, and confines file access to image-owned public runtime/code plus one private job directory below `/tmp`. It denies reads/writes to `/keys`, `/data`, `/proc`, other jobs, and arbitrary host paths. Its syscall filter denies external network and Unix-service sockets/connections, ptrace/process-memory access, queued signals and resource-limit changes targeting other processes, new processes, namespace operations and io_uring. Filesystem metadata mutation syscalls (permissions, ownership, timestamps and extended attributes) are separately denied because Landlock alone does not cover all of them. An anonymous Unix socket pair is permitted because Python asyncio uses it internally; it does not provide a connection to external services. Runtime threads remain available.
 

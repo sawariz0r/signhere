@@ -129,7 +129,7 @@ The script does not overwrite existing backups or put credentials in command-lin
 For Docker, create a dump inside the database container, then copy it out (this avoids binary-output corruption in older Windows PowerShell):
 
 ```sh
-docker compose exec postgres pg_dump -U signhere -d signhere -Fc -f /tmp/signhere.dump
+docker compose exec postgres pg_dump -U postgres -d signhere -Fc -f /tmp/signhere.dump
 docker compose cp postgres:/tmp/signhere.dump ./backups/signhere.dump
 ```
 
