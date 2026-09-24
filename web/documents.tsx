@@ -96,7 +96,17 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
     } catch (error) { if (selection.current === currentSelection) setError(message(error)); }
     finally { if (selection.current === currentSelection) setPreparing(false); }
   };
-  useEffect(() => { if (!parent) return; const rendered = takeHandOff(parent.id); if (rendered) void handleFile(rendered); }, []);
+  // A draft rendered in the editor arrives as a PDF, with its title and signers prefilled.
+  const editorDraft = useRef<string | null>(null);
+  useEffect(() => {
+    const rendered = takeHandOff(parent ? parent.id : 'new');
+    if (!rendered) return;
+    editorDraft.current = rendered.draftId;
+    void handleFile(rendered.file);
+    if (rendered.title) setTitle(rendered.title);
+    if (rendered.recipients?.length) setRecipients(rendered.recipients);
+    if (rendered.includeSender) setIncludeMe(true);
+  }, []);
   const send = async (event: FormEvent) => {
     event.preventDefault(); setError('');
     const selected = recipients.filter(r => r.name.trim() || r.email.trim()).map(r => ({ name: r.name.trim(), email: r.email.trim() }));
@@ -111,6 +121,8 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
         ? await request<CreatedDocument>(`/api/documents/${encodeURIComponent(parent.id)}/attachments`, { ...fields, parentRecipientIds: inherited })
         : await request<CreatedDocument>('/api/documents', fields);
       setCreated(result); setStep(2); clearFile();
+      // The draft has become a document; keep it out of the drafts list.
+      if (editorDraft.current) { deleteDraft(editorDraft.current); editorDraft.current = null; }
       const senderExpected = parent ? includeMe || coversMe : includeMe;
       const senderAssignmentValid = !senderExpected || (parent ? Boolean(result.senderRecipientId && result.links.some(link => link.recipientId === result.senderRecipientId)) : hasExpectedSenderAssignment(result, user, selected));
       setCreationError(senderAssignmentValid ? '' : 'Det gick inte att bekräfta dig som separat undertecknare. Dokumentet är skapat, men ingen signering har öppnats. Öppna dokumentet för att kontrollera parterna.');
@@ -129,7 +141,7 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
     <div className="steps" aria-label={`Steg ${step + 1} av 3`}>{[parent ? 'Bilaga' : 'Dokument', parent ? 'Parter' : 'Mottagare', senderPending ? 'Signera' : created?.document.status === 'completed' ? 'Klart' : 'Dela'].map((label, i) => <div className={`step${i <= step ? ' active' : ''}`} key={label}><span>{i < step ? '✓' : i + 1}</span><strong>{label}</strong><i /></div>)}</div>
     <section className="card new-card"><ErrorBox error={error} />
       {step === 0 && (file ? <form className="stack" onSubmit={e => { e.preventDefault(); if (prepared && !preparing) { setError(''); setStep(1); } }}>
-        <div className="file-summary"><PdfIcon /><div className="grow"><strong>{file.name}</strong><p>{size(file.size)}</p></div><button type="button" className="button secondary small" onClick={clearFile}>Byt</button></div>
+        <div className="file-summary"><PdfIcon /><div className="grow"><strong>{file.name}</strong><p>{size(file.size)}</p></div><button type="button" className="button secondary small" onClick={() => { editorDraft.current = null; clearFile(); }}>Byt</button></div>
         <Field label="Titel" value={title} onChange={e => setTitle(e.target.value)} required maxLength={160} />
         {preparing && <div role="status"><Loading>Förbereder PDF för signering…</Loading></div>}
         {prepared && <>
@@ -145,7 +157,7 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
         </>}
         <div className="muted text-small inline"><span className="mini-check">✓</span>En signatursida läggs till automatiskt sist i dokumentet.</div>
         <div className="actions end"><button className="button" disabled={preparing || !prepared}>Nästa</button></div>
-      </form> : <><Dropzone onFile={value => void handleFile(value)} title="Släpp din PDF här" subtitle="eller klicka för att välja fil" /><p className="upload-note">PDF · högst 10 MB och 100 sidor</p>{parent && onEditor && <div className="attachment-source"><span className="muted text-small">eller</span><button type="button" className="button secondary" onClick={onEditor}>Skapa bilagan i editorn</button></div>}</>)}
+      </form> : <><Dropzone onFile={value => { editorDraft.current = null; void handleFile(value); }} title="Släpp din PDF här" subtitle="eller klicka för att välja fil" /><p className="upload-note">PDF · högst 10 MB och 100 sidor</p>{parent && onEditor && <div className="attachment-source"><span className="muted text-small">eller</span><button type="button" className="button secondary" onClick={onEditor}>Skapa bilagan i editorn</button></div>}</>)}
       {step === 1 && <form className="stack" onSubmit={send}><div><h2>Vem ska signera?</h2><p className="muted text-small">{parent ? 'Parterna i huvuddokumentet är förvalda. Alla signerar samtidigt.' : 'Alla signerar samtidigt.'}</p></div>{parent && <fieldset className="stack small-gap party-choices"><legend className="eyebrow">Parter i {parent.title}</legend>{parent.recipients.map(recipient => <label className="checkbox party-choice" key={recipient.id}><input type="checkbox" checked={inherited.includes(recipient.id)} onChange={e => setInherited(current => e.target.checked ? parent.recipients.map(r => r.id).filter(id => id === recipient.id || current.includes(id)) : current.filter(id => id !== recipient.id))} /><Avatar name={recipient.signedName || recipient.name} /><span><strong>{recipient.signedName || recipient.name}{recipient.id === parent.senderRecipientId && parentSenderIsMe ? ' (du)' : ''}</strong>{recipient.email && <span className="muted text-small"> · {recipient.email}</span>}</span></label>)}{!inherited.length && <p className="muted text-small">Ingen av huvuddokumentets parter signerar bilagan.</p>}</fieldset>}<div className="stack small-gap">{recipients.map((recipient, i) => <div className="recipient-inputs" key={i}><input aria-label={`Mottagare ${i + 1}, namn`} placeholder="Namn" value={recipient.name} maxLength={160} onChange={e => setRecipients(recipients.map((r, j) => j === i ? { ...r, name: e.target.value } : r))} /><input aria-label={`Mottagare ${i + 1}, e-post`} placeholder="E-post" type="email" value={recipient.email} maxLength={254} onChange={e => setRecipients(recipients.map((r, j) => j === i ? { ...r, email: e.target.value } : r))} /><button className="icon-button" type="button" aria-label={`Ta bort mottagare ${i + 1}`} onClick={() => setRecipients(recipients.filter((_, j) => i !== j))}>×</button></div>)}</div><div className="actions between"><button type="button" className="button secondary small" disabled={recipients.length >= 20} onClick={() => setRecipients([...recipients, { name: '', email: '' }])}>{parent ? '+ Lägg till ny part' : '+ Lägg till mottagare'}</button>{!parentSenderIsMe && <label className="checkbox"><input type="checkbox" checked={includeMe} onChange={e => setIncludeMe(e.target.checked)} />Jag ska också signera</label>}</div><div className="stack small-gap" aria-live="polite"><p className="text-small">{parent ? `${signerCount} ${signerCount === 1 ? 'part' : 'parter'}` : includeMe ? `Du (${user.name})${recipientCount ? ` + ${recipientCount} mottagare` : ''}` : `${recipientCount} mottagare`} · {signerCount} {signerCount === 1 ? 'signatur' : 'signaturer'}</p>{sharesSenderEmail && <p className="muted text-small">Du och mottagaren signerar var för sig, även när ni använder samma e-postadress.</p>}</div><div className="method-note"><span className="mini-check">✓</span><span>Ritad signatur</span></div><div className="actions between divider"><button className="button secondary" type="button" disabled={busy} onClick={() => { setStep(0); setError(''); }}>Tillbaka</button><button className="button" disabled={busy || preparing || !prepared}>{busy ? (parent ? 'Skapar bilaga…' : 'Skapar dokument…') : includeMe || coversMe ? 'Skapa och signera' : 'Skicka för signering'}</button></div></form>}
       {step === 2 && created && (creationError ? <div className="stack">
         <h2>Signeringen kunde inte öppnas</h2><ErrorBox error={creationError} />
