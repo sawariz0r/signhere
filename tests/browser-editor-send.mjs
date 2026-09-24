@@ -36,13 +36,13 @@ try {
   const api = owner.request;
   assert.equal((await api.post(baseURL + '/api/setup', { data: { setupToken, name: 'Sara Sender', email: 'sara@example.test', password: 'correct horse battery staple', teamName: 'Avtal AB' }, headers: { Origin: baseURL } })).status(), 201);
   const page = await owner.newPage();
-  page.on('pageerror', error => { errors.push(`[\${step}] \${error.message}`); console.error(`Page error during "\${step}" at \${page.url()}:\n\${error.stack}`); });
+  page.on('pageerror', error => { errors.push(`[${step}] ${error.message}`); console.error(`Page error during "${step}" at ${page.url()}:\n${error.stack}`); });
   // The deliberate 503 below is logged by the browser as a failed resource; everything else must be clean.
-  page.on('console', message => { if (message.type() === 'error' && !message.text().includes('503')) { errors.push(`[\${step}] \${message.text()}`); console.error(`Console error during "\${step}" at \${page.url()}: \${message.text()}`, message.location()); } });
+  page.on('console', message => { if (message.type() === 'error' && !message.text().includes('503')) { errors.push(`[${step}] ${message.text()}`); console.error(`Console error during "${step}" at ${page.url()}: ${message.text()}`, message.location()); } });
 
   /** Opens a new draft with some text, the customer and its signers, and the given title. */
   async function draft(id, title, senderSigns) {
-    step = `draft \${id}`;
+    step = `draft ${id}`;
     await page.goto(`${baseURL}/editor/${id}`);
     await page.getByRole('button', { name: /Tomt dokument/ }).click();
     await page.locator('.ProseMirror').first().click();
