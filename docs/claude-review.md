@@ -1,4 +1,4 @@
-# Signhere reviews with Claude Opus 5.5
+# Signhere reviews with Claude
 
 > Historical review record: earlier sections describe their dated implementation snapshot, including features that were deferred then. For the current local-sealing foundation and remaining gates, see [implementation status](sealing-implementation.md), [architecture](architecture.md) and [SES cross-check](ses-spec-crosscheck.md).
 
@@ -75,3 +75,11 @@ This is planning only. Durable finalization, PDF seals, key provisioning and tru
 ## 2026-09-24: implemented local sealing foundation
 
 The A-C foundation is now implemented and underwent actual Opus 5.5 design and source critiques, with a follow-up on fixes. Earlier deferrals and test counts above describe the original foundation, not the current implementation. See [delivered behavior, review dispositions and current release gates](sealing-implementation.md) and [SES spec cross-check](ses-spec-crosscheck.md). Trusted timestamping remains disabled.
+
+## 2026-09-24: Fable 5.1 review of trust without BankID
+
+At the user's request, Claude CLI ran a brief-only design review with the exact model `claude-fable-5-1`, confirmed by returned model metadata. The substantive written review completed in 60,268 ms. Its verdict was **revise**: local verification and timestamps improve the sealed record, but independent participant approval needs an additional mechanism.
+
+The [full response and review scope](reviews/2026-09-24-fable-non-bankid-trust.md) are preserved alongside [assessed recommendations and corrections](reviews/2026-09-24-fable-trust-dispositions.md). In particular, self-hosted passkey enrollment and deterministic challenges do not alone defeat a dishonest operator or viewer; historical timestamp validity is not automatically lost on certificate expiry. The recommended next design is optional independent, document-bound approval with portable participant receipts.
+
+Claude received the prepared architecture brief only. It did not inspect source, browse, or execute tests. This consultation changed documentation only and is not a security audit, legal certification, or implemented feature.
