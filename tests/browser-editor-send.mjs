@@ -22,6 +22,8 @@ const runtime = await createApp({ databaseUrl, dataDir: output, keysDir: resolve
 server.on('request', runtime.app);
 const browser = await chromium.launch({ headless: true, ...(process.platform === 'win32' ? { channel: 'msedge' } : {}) });
 const errors = [];
+// The current step, so a browser error in CI says where it happened.
+let step = 'setup';
 const polyfill = () => { if (!Map.prototype.getOrInsertComputed) Map.prototype.getOrInsertComputed = function (key, make) { if (!this.has(key)) this.set(key, make(key)); return this.get(key); }; if (!WeakMap.prototype.getOrInsertComputed) WeakMap.prototype.getOrInsertComputed = Map.prototype.getOrInsertComputed; };
 const draftKey = id => 'signhere.drafts.v1.' + id;
 const company = { id: 'c1', name: 'Kund AB', orgNr: '556000-0000', address: 'Gatan 1', zip: '111 11', city: 'Stockholm', contacts: [
@@ -34,12 +36,13 @@ try {
   const api = owner.request;
   assert.equal((await api.post(baseURL + '/api/setup', { data: { setupToken, name: 'Sara Sender', email: 'sara@example.test', password: 'correct horse battery staple', teamName: 'Avtal AB' }, headers: { Origin: baseURL } })).status(), 201);
   const page = await owner.newPage();
-  page.on('pageerror', error => errors.push(error.message));
+  page.on('pageerror', error => { errors.push(`[\${step}] \${error.message}`); console.error(`Page error during "\${step}" at \${page.url()}:\n\${error.stack}`); });
   // The deliberate 503 below is logged by the browser as a failed resource; everything else must be clean.
-  page.on('console', message => { if (message.type() === 'error' && !message.text().includes('503')) errors.push(message.text()); });
+  page.on('console', message => { if (message.type() === 'error' && !message.text().includes('503')) { errors.push(`[\${step}] \${message.text()}`); console.error(`Console error during "\${step}" at \${page.url()}: \${message.text()}`, message.location()); } });
 
   /** Opens a new draft with some text, the customer and its signers, and the given title. */
   async function draft(id, title, senderSigns) {
+    step = `draft \${id}`;
     await page.goto(`${baseURL}/editor/${id}`);
     await page.getByRole('button', { name: /Tomt dokument/ }).click();
     await page.locator('.ProseMirror').first().click();
@@ -55,6 +58,7 @@ try {
 
   // An untitled draft cannot be sent; the issue points to the title.
   await draft('e2euntitled00001', '', true);
+  step = 'untitled draft is blocked';
   await page.getByRole('button', { name: 'Skicka' }).click();
   await expect(page.getByRole('dialog')).toHaveCount(0);
   await page.getByRole('button', { name: /Ge dokumentet ett namn/ }).click();
@@ -62,6 +66,7 @@ try {
 
   // One sheet confirms the signers chosen in the editor. A failed send keeps the draft and can be retried.
   await draft('e2esend000000001', 'Serviceavtal 2027', true);
+  step = 'confirm sheet';
   await page.getByRole('button', { name: 'Skicka' }).click();
   const sheet = page.getByRole('dialog', { name: 'Skicka för signering' });
   await expect(sheet).toBeVisible();
@@ -73,6 +78,7 @@ try {
   await page.route('**/api/documents', route => route.request().method() === 'POST'
     ? route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ error: 'Förseglingen behöver åtgärdas av administratören innan nya dokument kan skickas.' }) })
     : route.continue());
+  step = 'failed send';
   await sheet.getByRole('button', { name: 'Skicka och signera' }).click();
   await expect(sheet.getByRole('alert')).toHaveText(/Förseglingen behöver åtgärdas/, { timeout: 20000 });
   await expect(sheet.getByRole('button', { name: 'Försök igen' })).toBeEnabled();
@@ -81,6 +87,7 @@ try {
   await expect(sheet).toHaveCount(0);
   assert.ok(await page.evaluate(key => localStorage.getItem(key), draftKey('e2esend000000001')), 'A failed send keeps the draft.');
   await page.unroute('**/api/documents');
+  step = 'send and sign';
   await page.getByRole('button', { name: 'Skicka' }).click();
   await sheet.getByRole('button', { name: 'Skicka och signera' }).click();
 
@@ -110,11 +117,13 @@ try {
   const pdf = await PDFDocument.load(await (await api.get(`${baseURL}/api/documents/${documentId}/pdf?version=original`)).body());
   assert.equal(pdf.getPageCount(), 1, 'The editor renders the draft to a PDF that the server prepared for signing.');
   assert.equal(await page.evaluate(key => localStorage.getItem(key), draftKey('e2esend000000001')), null, 'A sent draft leaves the drafts list.');
+  step = 'open document';
   await page.getByRole('button', { name: 'Till dokumentet' }).click();
   await expect(page.getByRole('heading', { name: 'Serviceavtal 2027' })).toBeVisible();
 
   // Without the sender signing, sending goes straight to the links.
   await draft('e2esend000000002', 'Serviceavtal 2028', false);
+  step = 'send without signing';
   await page.getByRole('button', { name: 'Skicka' }).click();
   await expect(sheet.getByText('Sara Sender (du)')).toHaveCount(0);
   await sheet.getByRole('button', { name: 'Skicka för signering' }).click();
@@ -122,6 +131,7 @@ try {
   await expect(page.locator('.share-card')).toHaveCount(1);
   await page.screenshot({ path: output + '/04-sent-no-sender.png', fullPage: true });
   // Back leaves the sent page without reopening the deleted draft.
+  step = 'back';
   await page.goBack();
   await expect(page).not.toHaveURL(/e2esend000000002/);
   assert.deepEqual(errors, []);
