@@ -87,6 +87,8 @@ static void restrict_filesystem(const char *job) {
     allow_path(ruleset, "/etc/localtime", LANDLOCK_ACCESS_FS_READ_FILE, 0);
     allow_path(ruleset, "/etc/timezone", LANDLOCK_ACCESS_FS_READ_FILE, 0);
     allow_path(ruleset, "/etc/ssl/certs", LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR, 0);
+    /* Node aborts at startup if its OpenSSL config exists but cannot be read. */
+    allow_path(ruleset, "/etc/ssl/openssl.cnf", LANDLOCK_ACCESS_FS_READ_FILE, 0);
     allow_path(ruleset, "/dev/null", LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE, 1);
     allow_path(ruleset, "/dev/urandom", LANDLOCK_ACCESS_FS_READ_FILE, 1);
     allow_path(ruleset, "/dev/random", LANDLOCK_ACCESS_FS_READ_FILE, 0);
