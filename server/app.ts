@@ -37,7 +37,7 @@ export interface AppConfig {
 }
 const DAY = 86400000;
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
-const emailSchema = z.email().trim().toLowerCase().max(254);
+const emailSchema = z.email('Ogiltig e-postadress.').trim().toLowerCase().max(254);
 const passwordSchema = z.string().min(12, 'Lösenordet behöver minst 12 tecken.').max(128);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);

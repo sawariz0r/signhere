@@ -4,6 +4,7 @@ import { takeHandOff } from './handoff';
 import { PdfPreview } from './pdf';
 import { deleteDraft, listDrafts } from './editor/model';
 import { Sign } from './sign';
+import { CreatedSummary, hasExpectedSenderAssignment, SENDER_UNCONFIRMED, SenderSigning, senderState } from './created';
 import { Avatar, CopyLink, Dropzone, ErrorBox, Field, Loading, PdfIcon, Signature, Status } from './ui';
 import type { AuditEvent, CreatedDocument, Delivery, PreparedPdf, SigningDocument, User } from './types';
 
@@ -23,24 +24,6 @@ export function Documents({ onOpen, onNew, onCreate, onDraft }: { onOpen: (id: s
       <div className="document-list">{visible.map(doc => <button className="document-row" key={doc.id} onClick={() => onOpen(doc.id)}><PdfIcon /><span className="document-name"><strong>{doc.title}</strong><span>Till {doc.recipients.map(r => r.name).join(', ')}{doc.attachmentCount ? ` · ${doc.attachmentCount} ${doc.attachmentCount === 1 ? 'bilaga' : 'bilagor'}${doc.openAttachmentCount ? ` (${doc.openAttachmentCount} väntar)` : ''}` : ''}</span></span><Status doc={doc} /><span className="document-date">{date(doc.createdAt)}</span></button>)}{!visible.length && <div className="loading">Inga dokument här.</div>}</div>
     </>)}
   </div>;
-}
-
-function hasExpectedSenderAssignment(result: CreatedDocument, user: User, selected: { name: string; email: string }[]) {
-  const normalizeEmail = (email: string) => email.trim().toLowerCase();
-  try {
-    const { document, senderRecipientId, links } = result;
-    const assigned = document.recipients;
-    if (!senderRecipientId || document.senderRecipientId !== senderRecipientId || document.status !== 'pending'
-      || assigned.length !== selected.length + 1 || new Set(assigned.map(recipient => recipient.id)).size !== assigned.length
-      || assigned.some(recipient => recipient.signedAt) || links.filter(link => link.recipientId === senderRecipientId).length !== 1) return false;
-    const sender = assigned.find(recipient => recipient.id === senderRecipientId);
-    if (!sender || sender.name !== user.name || !sender.email || normalizeEmail(sender.email) !== normalizeEmail(user.email)) return false;
-    const parties = assigned.filter(recipient => recipient.id !== senderRecipientId);
-    return parties.every((recipient, index) => recipient.name === selected[index].name
-      && Boolean(recipient.email) && normalizeEmail(recipient.email!) === normalizeEmail(selected[index].email));
-  } catch {
-    return false;
-  }
 }
 
 /** Creates a main document, or with `parent` a bilaga signed by the parties of that completed document. */
@@ -95,16 +78,14 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
     } catch (error) { if (selection.current === currentSelection) setError(message(error)); }
     finally { if (selection.current === currentSelection) setPreparing(false); }
   };
-  // A draft rendered in the editor arrives as a PDF, with its title and signers prefilled.
+  // A bilaga drafted in the editor arrives as a PDF.
   const editorDraft = useRef<string | null>(null);
   useEffect(() => {
-    const rendered = takeHandOff(parent ? parent.id : 'new');
+    if (!parent) return;
+    const rendered = takeHandOff(parent.id);
     if (!rendered) return;
     editorDraft.current = rendered.draftId;
     void handleFile(rendered.file);
-    if (rendered.title) setTitle(rendered.title);
-    if (rendered.recipients?.length) setRecipients(rendered.recipients);
-    if (rendered.includeSender) setIncludeMe(true);
   }, []);
   const send = async (event: FormEvent) => {
     event.preventDefault(); setError('');
@@ -124,18 +105,12 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
       if (editorDraft.current) { deleteDraft(editorDraft.current); editorDraft.current = null; }
       const senderExpected = parent ? includeMe || coversMe : includeMe;
       const senderAssignmentValid = !senderExpected || (parent ? Boolean(result.senderRecipientId && result.links.some(link => link.recipientId === result.senderRecipientId)) : hasExpectedSenderAssignment(result, user, selected));
-      setCreationError(senderAssignmentValid ? '' : 'Det gick inte att bekräfta dig som separat undertecknare. Dokumentet är skapat, men ingen signering har öppnats. Öppna dokumentet för att kontrollera parterna.');
+      setCreationError(senderAssignmentValid ? '' : SENDER_UNCONFIRMED);
       setSenderSigning(senderExpected && senderAssignmentValid); window.scrollTo(0, 0);
     } catch (error) { setError(message(error)); } finally { setBusy(false); }
   };
-  const senderRecipient = created?.document.recipients.find(recipient => recipient.id === created.senderRecipientId);
-  const senderLink = created?.links.find(link => link.recipientId === created.senderRecipientId);
-  const senderPending = Boolean(senderRecipient && !senderRecipient.signedAt && created?.document.status === 'pending');
-  const sharingLinks = created?.links.filter(link => link.recipientId !== created.senderRecipientId) ?? [];
-  if (senderSigning && senderLink) return <Sign token={new URL(senderLink.url).hash.slice(1)} embedded autoOpen onBack={() => { setSenderSigning(false); window.scrollTo(0, 0); }} onSigned={document => {
-    setCreated(current => current && ({ ...current, document: { ...document, recipients: document.recipients.map(recipient => ({ ...current.document.recipients.find(original => original.id === recipient.id), ...recipient })) } }));
-    setSenderSigning(false);
-  }} />;
+  const { senderLink, senderPending } = senderState(created);
+  if (created && senderSigning && senderLink) return <SenderSigning created={created} onBack={() => setSenderSigning(false)} onSigned={next => { setCreated(next); setSenderSigning(false); }} />;
   return <div className="narrow"><div className="page-heading new-heading"><div><h1>{parent ? 'Ny bilaga' : 'Nytt dokument'}</h1>{parent && <p className="muted text-small">Till {parent.title}</p>}</div><button className="text-button" disabled={busy} onClick={() => created ? onOpen(created.document.id) : onCancel()}>{created ? 'Stäng' : 'Avbryt'}</button></div>
     <div className="steps" aria-label={`Steg ${step + 1} av 3`}>{[parent ? 'Bilaga' : 'Dokument', parent ? 'Parter' : 'Mottagare', senderPending ? 'Signera' : created?.document.status === 'completed' ? 'Klart' : 'Dela'].map((label, i) => <div className={`step${i <= step ? ' active' : ''}`} key={label}><span>{i < step ? '✓' : i + 1}</span><strong>{label}</strong><i /></div>)}</div>
     <section className="card new-card"><ErrorBox error={error} />
@@ -158,18 +133,7 @@ export function NewDocument({ user, onCancel, onOpen, parent, onEditor }: { user
         <div className="actions end"><button className="button" disabled={preparing || !prepared}>Nästa</button></div>
       </form> : <><Dropzone onFile={value => { editorDraft.current = null; void handleFile(value); }} title="Släpp din PDF här" subtitle="eller klicka för att välja fil" /><p className="upload-note">PDF · högst 10 MB och 100 sidor</p>{parent && onEditor && <div className="attachment-source"><span className="muted text-small">eller</span><button type="button" className="button secondary" onClick={onEditor}>Skapa bilagan i editorn</button></div>}</>)}
       {step === 1 && <form className="stack" onSubmit={send}><div><h2>Vem ska signera?</h2><p className="muted text-small">{parent ? 'Parterna i huvuddokumentet är förvalda. Alla signerar samtidigt.' : 'Alla signerar samtidigt.'}</p></div>{parent && <fieldset className="stack small-gap party-choices"><legend className="eyebrow">Parter i {parent.title}</legend>{parent.recipients.map(recipient => <label className="checkbox party-choice" key={recipient.id}><input type="checkbox" checked={inherited.includes(recipient.id)} onChange={e => setInherited(current => e.target.checked ? parent.recipients.map(r => r.id).filter(id => id === recipient.id || current.includes(id)) : current.filter(id => id !== recipient.id))} /><Avatar name={recipient.signedName || recipient.name} /><span><strong>{recipient.signedName || recipient.name}{recipient.id === parent.senderRecipientId && parentSenderIsMe ? ' (du)' : ''}</strong>{recipient.email && <span className="muted text-small"> · {recipient.email}</span>}</span></label>)}{!inherited.length && <p className="muted text-small">Ingen av huvuddokumentets parter signerar bilagan.</p>}</fieldset>}<div className="stack small-gap">{recipients.map((recipient, i) => <div className="recipient-inputs" key={i}><input aria-label={`Mottagare ${i + 1}, namn`} placeholder="Namn" value={recipient.name} maxLength={160} onChange={e => setRecipients(recipients.map((r, j) => j === i ? { ...r, name: e.target.value } : r))} /><input aria-label={`Mottagare ${i + 1}, e-post`} placeholder="E-post" type="email" value={recipient.email} maxLength={254} onChange={e => setRecipients(recipients.map((r, j) => j === i ? { ...r, email: e.target.value } : r))} /><button className="icon-button" type="button" aria-label={`Ta bort mottagare ${i + 1}`} onClick={() => setRecipients(recipients.filter((_, j) => i !== j))}>×</button></div>)}</div><div className="actions between"><button type="button" className="button secondary small" disabled={recipients.length >= 20} onClick={() => setRecipients([...recipients, { name: '', email: '' }])}>{parent ? '+ Lägg till ny part' : '+ Lägg till mottagare'}</button>{!parentSenderIsMe && <label className="checkbox"><input type="checkbox" checked={includeMe} onChange={e => setIncludeMe(e.target.checked)} />Jag ska också signera</label>}</div><div className="stack small-gap" aria-live="polite"><p className="text-small">{parent ? `${signerCount} ${signerCount === 1 ? 'part' : 'parter'}` : includeMe ? `Du (${user.name})${recipientCount ? ` + ${recipientCount} mottagare` : ''}` : `${recipientCount} mottagare`} · {signerCount} {signerCount === 1 ? 'signatur' : 'signaturer'}</p>{sharesSenderEmail && <p className="muted text-small">Du och mottagaren signerar var för sig, även när ni använder samma e-postadress.</p>}</div><div className="method-note"><span className="mini-check">✓</span><span>Ritad signatur</span></div><div className="actions between divider"><button className="button secondary" type="button" disabled={busy} onClick={() => { setStep(0); setError(''); }}>Tillbaka</button><button className="button" disabled={busy || preparing || !prepared}>{busy ? (parent ? 'Skapar bilaga…' : 'Skapar dokument…') : includeMe || coversMe ? 'Skapa och signera' : 'Skicka för signering'}</button></div></form>}
-      {step === 2 && created && (creationError ? <div className="stack">
-        <h2>Signeringen kunde inte öppnas</h2><ErrorBox error={creationError} />
-        <div className="actions end"><button className="button" onClick={() => onOpen(created.document.id)}>Öppna dokumentet</button></div>
-      </div> : senderPending ? <div className="stack">
-        <div><h2>Nu är det din tur att signera</h2><p className="muted text-small">Dokumentet är skapat och väntar på din signatur.</p></div>
-        <div className="actions end"><button className="button" onClick={() => setSenderSigning(true)}>Signera dokumentet</button></div>
-      </div> : <div className="stack">
-        <div className="inline"><span className="circle medium">✓</span><div><h2>{created.document.status === 'completed' ? 'Dokumentet är färdigsignerat' : senderRecipient?.signedAt ? 'Din signatur är klar' : 'Redo att signeras'}</h2><p className="muted text-small">{created.document.status === 'completed' ? 'Alla parter har signerat. Den signerade PDF-filen finns på dokumentsidan.' : created.document.status === 'finalizing' ? 'Alla underskrifter är sparade. PDF-filen färdigställs på dokumentsidan.' : 'Dela den personliga länken med varje mottagare.'}</p></div></div>
-        {senderRecipient?.signedAt && created.document.status === 'pending' && <p className="text-small" role="status">{created.document.recipients.filter(recipient => recipient.signedAt).length} av {created.document.recipients.length} signerat</p>}
-        {sharingLinks.length > 0 && <><div className="stack small-gap">{sharingLinks.map(link => <div className="share-card" key={link.recipientId}><div className="inline"><Avatar name={link.name} /><div><strong>{link.name}</strong><p className="muted text-small">{created.document.recipients.find(r => r.id === link.recipientId)?.email}</p></div></div><CopyLink url={link.url} /></div>)}</div><p className="muted text-small">{created.notified ? 'Länkarna har skickats via e-post till varje mottagare. Du kan också kopiera dem här.' : 'Spara länkarna nu. Varje länk ger tillgång till en mottagares signering. Inga e-postmeddelanden skickas automatiskt.'}{parent ? ' Parterna ser även bilagan när de öppnar sin länk till huvuddokumentet.' : ''}</p></>}
-        <div className="actions end divider"><button className="button" onClick={() => onOpen(created.document.id)}>Till dokumentet</button></div>
-      </div>)}
+      {step === 2 && created && <CreatedSummary created={created} creationError={creationError} attachment={Boolean(parent)} onOpen={onOpen} onSign={() => setSenderSigning(true)} />}
     </section>
   </div>;
 }
