@@ -33,11 +33,11 @@ try {
 import errno, os, socket, ctypes, asyncio, resource, fcntl, platform
 from pathlib import Path
 job, sibling, forbidden = ${JSON.stringify(job)}, ${JSON.stringify(sibling)}, ${JSON.stringify(forbidden)}
-def blocked(action):
+def blocked(action, *denials):
     try:
         action()
     except OSError as error:
-        assert error.errno in (errno.EPERM, errno.EACCES, errno.EBADF), str(error)
+        assert error.errno in (errno.EPERM, errno.EACCES, errno.EBADF, *denials), str(error)
     else:
         raise AssertionError('Forbidden operation succeeded')
 # A pre-opened secret descriptor must not survive the launcher.
@@ -61,7 +61,9 @@ blocked(lambda: socket.socket(socket.AF_UNIX, socket.SOCK_STREAM))
 blocked(lambda: os.fork())
 Path(job, 'escape-link').symlink_to(forbidden)
 blocked(lambda: Path(job, 'escape-link').read_bytes())
-blocked(lambda: os.link(forbidden, Path(job, 'escape-hardlink')))
+# Landlock reports a refused link as EXDEV (missing refer right) on newer kernels.
+blocked(lambda: os.link(forbidden, Path(job, 'escape-hardlink')), errno.EXDEV)
+assert not Path(job, 'escape-hardlink').exists()
 libc = ctypes.CDLL(None, use_errno=True)
 assert libc.ptrace(16, ${parent}, 0, 0) == -1 and ctypes.get_errno() == errno.EPERM
 queued_signal_calls = (129, 297) if platform.machine() == 'x86_64' else (138, 240)
