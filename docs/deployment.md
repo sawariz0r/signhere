@@ -34,7 +34,7 @@ SMTP is the default provider and activates when `SMTP_HOST` is set:
 
 To use Resend instead, set `SIGNHERE_MAIL_PROVIDER=resend`, `RESEND_API_KEY` (or `RESEND_API_KEY_FILE`) and a `SIGNHERE_MAIL_FROM` on a domain verified in Resend. Resend requests carry an idempotency key per delivery, so retries within Resend's window do not duplicate mail.
 
-Invalid mail settings stop the application at startup rather than failing silently later. The startup log states which provider is active. Enabling email later does not backfill older documents automatically; use *Skicka signerade kopior via e-post* on a completed document's page.
+E-mail never blocks startup. Empty variables count as unset. An incomplete or invalid mail setting (for example `SMTP_HOST` without a sender, or `SIGNHERE_MAIL_PROVIDER=resend` without a key) turns e-mail off and logs the reason at startup; signing, completion and receipts keep working with manually shared links. The startup log states which provider is active. Enabling email later does not backfill older documents automatically; use *Skicka signerade kopior via e-post* on a completed document's page.
 
 A bilaga is a separate signing document with its own recipients, audit chain, seal and evidence export. Its creation event, every signing intent and its frozen evidence core record `attachmentOf` (main document ID, title, completed SHA-256 and bilaga number), so the offline verifier rejects evidence moved to another main document. A party's signing or receipt link also reaches the main document and the bilagor that the same party signs; a signature made that way records the link used in `accessRecipientId` and `accessDocumentId`.
 
