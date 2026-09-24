@@ -68,6 +68,8 @@ Neither database guards nor a self-signed seal protects against a hostile host o
 
 ## Access and audit boundaries
 
+Team branding is presentation, never evidence. The browser rasterises an uploaded logo (PNG, SVG, JPEG or WebP) to a PNG before upload, so SVG markup never reaches the server; the server checks the PNG signature, size (500 kB) and dimensions (2048 px) without decoding it and serves it publicly at a content-addressed `/api/logos/<sha256>` URL. The accent is a palette key, not a colour. Signing and copy pages read the document team's current brand. The PDF signature page renders the brand when finalization builds it, inside the PDF sandbox, and it is not part of the frozen evidence core; a finalization retry after a brand change renders the newer brand.
+
 First-owner setup requires a private installation token and closes once initialized. Accounts use scrypt and server-managed cookie sessions. Expensive password hashing has a concurrency limit. Team-scoped authorization protects management and private evidence exports; a creator is not an isolated owner inside their team. Owner-role checks additionally protect selected administrative operations.
 
 Recipient capabilities contain 256 random bits and are stored as hashes. They are delivered in URL fragments, supplied from memory to the API, omitted from audit/log payloads and protected with no-referrer responses. The unsigned lifetime is configurable with `SIGNHERE_SIGNING_LINK_TTL_DAYS` (1–365 days; default 7), applying when links are created or rotated. Pending cancellation or rotation revokes signing access.

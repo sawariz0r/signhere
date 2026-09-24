@@ -19,6 +19,8 @@ import { createResponseBudget } from './response-budget.js';
 import { createDeliveryWorker, enqueueCompletedCopies, listDeliveries, resendDelivery } from './delivery.js';
 import type { Mailer } from './mail.js';
 import { createNotifier, type Message, type Notifier } from './notify.js';
+import { ACCENTS, MAX_LOGO_BYTES, accentSchema, brandOf, checkLogoPng } from './brand.js';
+import type { PdfBrand } from './pdf.js';
 
 export interface AppConfig {
   databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
@@ -36,6 +38,8 @@ export interface AppConfig {
   notifier?: Notifier;
 }
 const DAY = 86400000;
+/** The build writes assets/version.json next to the server; development reads package.json. */
+const appVersion = Promise.any(['./assets/version.json', '../package.json'].map(path => readFile(new URL(path, import.meta.url), 'utf8').then(text => z.object({ version: z.string().max(64) }).parse(JSON.parse(text)).version))).catch(() => 'okänd');
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
 const emailSchema = z.email().trim().toLowerCase().max(254);
 const passwordSchema = z.string().min(12, 'Lösenordet behöver minst 12 tecken.').max(128);
@@ -46,6 +50,15 @@ type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
 const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation,evidence_version,protection_policy,seal_metadata,parent_id,attachment_number';
 const MAX_ATTACHMENTS = 50;
 const toUser = (row: Row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name });
+const brandColumns = 'name,logo_hash,logo_show_name,accent';
+const teamBrand = async (db: Queryable, teamId: string) => brandOf((await db.query('SELECT ' + brandColumns + ' FROM teams WHERE id=$1', [teamId])).rows[0] ?? {});
+/** Presentation only: rendered on the signature page at finalization, never part of the evidence core. */
+async function pdfBrand(db: Queryable, teamId: string): Promise<PdfBrand | undefined> {
+  const team = (await db.query('SELECT name,logo,logo_show_name,accent FROM teams WHERE id=$1', [teamId])).rows[0];
+  if (!team) return undefined;
+  const brand = brandOf(team);
+  return { name: brand.name, showName: brand.showName, accent: ACCENTS[brand.accent], ...(team.logo ? { logoPngBase64: Buffer.from(team.logo).toString('base64') } : {}) };
+}
 const consentFor = (recipient: Row) => recipient.signing_intent ? z.object({ version: z.string().min(1).max(128), text: z.string().min(1).max(10000) }).parse(JSON.parse(recipient.signing_intent.toString('utf8')).consent) : CONSENT;
 const eventDto = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
 function requestEvidence(req: Request) { return { ip: (req.ip ?? '').slice(0, 128), userAgent: (req.get('user-agent') ?? '').slice(0, 512) }; }
@@ -109,7 +122,7 @@ export async function createApp(config: AppConfig) {
         return { name: recipient.name, signedName: recipient.signedName, email: recipient.email, signedAt: recipient.signedAt,
           strokes: event.data.signature?.strokes ?? [], methodId: recipient.methodId, methodVersion: recipient.methodVersion, consent: event.data.consent };
       });
-      const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true, core.document.attachmentOf);
+      const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true, core.document.attachmentOf, await pdfBrand(pool, document.team_id));
       const manifest: SealManifest = { schema: 'signhere-seal-v1', evidenceSchema: 2, installationId: identity.installationId,
         documentId: document.id, evidenceDigest: sha256(evidenceCore), preparedHash: document.original_hash,
         checkpoint, certificateFingerprint: identity.fingerprintSha256, policy: { timestamp: 'off' } };
@@ -171,10 +184,15 @@ export async function createApp(config: AppConfig) {
   const smallJson = express.json({ limit: '32kb', strict: true });
   const signingJson = express.json({ limit: '1mb', strict: true });
   const uploadJson = express.json({ limit: '15mb', strict: true });
+  const logoJson = express.json({ limit: '1mb', strict: true });
   app.use('/api', async (req, res, next) => {
     if (req.method === 'POST' && /^\/documents(?:\/prepare|\/[0-9a-f-]{36}\/attachments)?\/?$/i.test(req.path)) {
       // Authenticate before allocating the large base64 upload body.
       await requireUser(req, res, () => uploadJson(req, res, next));
+      return;
+    }
+    if (req.method === 'PUT' && /^\/team\/logo\/?$/i.test(req.path)) {
+      await requireUser(req, res, () => logoJson(req, res, next));
       return;
     }
     if (req.method === 'POST' && /^\/sign\/complete\/?$/i.test(req.path)) signingJson(req, res, next);
@@ -188,7 +206,7 @@ export async function createApp(config: AppConfig) {
   async function currentUser(req: Request) {
     const value = sessionToken(req);
     if (!value) return undefined;
-    return (await pool.query('SELECT u.*,t.name AS team_name FROM sessions s JOIN users u ON u.id=s.user_id JOIN teams t ON t.id=u.team_id WHERE s.token_hash=$1 AND s.expires_at>$2', [sha256(value), now()])).rows[0];
+    return (await pool.query('SELECT u.*,t.name AS team_name,t.logo_hash,t.logo_show_name,t.accent FROM sessions s JOIN users u ON u.id=s.user_id JOIN teams t ON t.id=u.team_id WHERE s.token_hash=$1 AND s.expires_at>$2', [sha256(value), now()])).rows[0];
   }
   async function requireUser(req: Request, res: Response, next: NextFunction) {
     const user = await currentUser(req);
@@ -326,7 +344,7 @@ export async function createApp(config: AppConfig) {
   });
   app.get('/api/bootstrap', async (req, res) => {
     const user = await currentUser(req);
-    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods(), delivery: { email: Boolean(mailer) } });
+    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, ...(user ? { brand: brandOf(user) } : {}), methods: listMethods(), delivery: { email: Boolean(mailer) } });
   });
   app.post('/api/setup', async (req, res) => {
     const input = z.object({ setupToken: z.string().min(1).max(256), name: nameSchema, email: emailSchema, password: passwordSchema, teamName: nameSchema }).strict().parse(req.body);
@@ -565,13 +583,45 @@ export async function createApp(config: AppConfig) {
     const teamId = res.locals.user.team_id;
     const members = (await pool.query('SELECT id,name,email,role FROM users WHERE team_id=$1 ORDER BY created_at', [teamId])).rows;
     const invitations = res.locals.user.role === 'owner' ? (await pool.query('SELECT id,email,expires_at FROM invitations WHERE team_id=$1 AND accepted_at IS NULL AND expires_at>$2 ORDER BY created_at DESC', [teamId, now()])).rows.map(row => ({ id: row.id, email: row.email, expiresAt: new Date(Number(row.expires_at)).toISOString() })) : [];
-    res.json({ name: res.locals.user.team_name, members, invitations });
+    res.json({ name: res.locals.user.team_name, brand: brandOf(res.locals.user), members, invitations });
   });
   app.patch('/api/team', requireUser, async (req, res) => {
     owner(res);
-    const { name } = z.object({ name: nameSchema }).strict().parse(req.body);
-    await pool.query('UPDATE teams SET name=$1 WHERE id=$2', [name, res.locals.user.team_id]);
-    res.json({ name });
+    const input = z.object({ name: nameSchema.optional(), logoShowName: z.boolean().optional(), accent: accentSchema.optional() }).strict()
+      .refine(value => Object.keys(value).length > 0, 'Inget att spara.').parse(req.body);
+    const team = (await pool.query('UPDATE teams SET name=COALESCE($1,name),logo_show_name=COALESCE($2,logo_show_name),accent=COALESCE($3,accent) WHERE id=$4 RETURNING ' + brandColumns,
+      [input.name ?? null, input.logoShowName ?? null, input.accent ?? null, res.locals.user.team_id])).rows[0];
+    res.json({ name: team.name, brand: brandOf(team) });
+  });
+  // The browser rasterises every accepted format (PNG, SVG, JPEG, WebP) to PNG, so SVG never reaches the server.
+  app.put('/api/team/logo', requireUser, async (req, res) => {
+    owner(res);
+    const { pngBase64 } = z.object({ pngBase64: z.base64().max(Math.ceil(MAX_LOGO_BYTES / 3) * 4) }).strict().parse(req.body);
+    const bytes = Buffer.from(pngBase64, 'base64');
+    try { checkLogoPng(bytes); } catch (error) { throw new ApiError(400, (error as Error).message); }
+    const team = (await pool.query('UPDATE teams SET logo=$1,logo_hash=$2 WHERE id=$3 RETURNING ' + brandColumns, [bytes, sha256(bytes), res.locals.user.team_id])).rows[0];
+    res.json({ brand: brandOf(team) });
+  });
+  app.delete('/api/team/logo', requireUser, async (_req, res) => {
+    owner(res);
+    const team = (await pool.query('UPDATE teams SET logo=NULL,logo_hash=NULL WHERE id=$1 RETURNING ' + brandColumns, [res.locals.user.team_id])).rows[0];
+    res.json({ brand: brandOf(team) });
+  });
+  // Public and content-addressed so signing, copy and certificate pages can show it without a session.
+  app.get('/api/logos/:hash', async (req, res) => {
+    const hash = hashSchema.safeParse(req.params.hash);
+    const row = hash.success ? (await pool.query('SELECT logo FROM teams WHERE logo_hash=$1 LIMIT 1', [hash.data])).rows[0] : undefined;
+    if (!row) throw new ApiError(404, 'Logotypen finns inte.');
+    res.set('Cache-Control', 'public, max-age=31536000, immutable').type('image/png').send(row.logo);
+  });
+  app.get('/api/instance', requireUser, async (_req, res) => {
+    owner(res);
+    const sealing = keys ? await keys.cachedRefresh() : null;
+    res.json({
+      version: await appVersion,
+      email: mailer ? { provider: mailer.provider, ...(mailer.host ? { host: mailer.host } : {}) } : null,
+      sealing: sealing ? { ready: sealing.ready, source: config.sealP12File ? 'p12' : 'local', ...(sealing.notAfter ? { notAfter: sealing.notAfter } : {}), ...(sealing.fingerprintSha256 ? { fingerprintSha256: sealing.fingerprintSha256 } : {}) } : null,
+    });
   });
   app.post('/api/team/invitations', requireUser, async (req, res) => {
     owner(res);
@@ -622,7 +672,7 @@ export async function createApp(config: AppConfig) {
       }
       const consent = consentFor(recipient);
       await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent });
-      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version }, emailCopy: Boolean(mailer) };
+      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version }, emailCopy: Boolean(mailer), brand: await teamBrand(client, document.team_id) };
     });
     res.json(result);
   });
@@ -683,7 +733,7 @@ export async function createApp(config: AppConfig) {
         let completed: Buffer;
         try {
           completed = await (config.pdfFinalizer ?? finalizePdf)(original, document.title, document.id, document.original_hash, CONSENT,
-            signers.map(signer => ({ name: signer.name, signedName: signer.claimed_name, email: signer.email, signedAt: signer.signed_at, strokes: signer.signature?.strokes ?? [], methodId: signer.method_id, methodVersion: signer.method_version })), checkpoint);
+            signers.map(signer => ({ name: signer.name, signedName: signer.claimed_name, email: signer.email, signedAt: signer.signed_at, strokes: signer.signature?.strokes ?? [], methodId: signer.method_id, methodVersion: signer.method_version })), checkpoint, false, undefined, await pdfBrand(client, document.team_id));
         } catch { throw new ApiError(503, 'PDF-filen kunde inte färdigställas. Ingen underskrift sparades. Försök igen.'); }
         const completedHash = sha256(completed);
         const completedAt = at();
@@ -700,7 +750,7 @@ export async function createApp(config: AppConfig) {
   app.post('/api/sign/dossier', async (req, res) => {
     const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
     const { document, recipient } = await partyCredential(pool, raw);
-    res.json({ documentId: document.id, documents: await partyDocuments(pool, document, recipient) });
+    res.json({ documentId: document.id, documents: await partyDocuments(pool, document, recipient), brand: await teamBrand(pool, document.team_id) });
   });
   app.post('/api/sign/download', async (req, res) => {
     const { token: raw, documentId } = partyInput.parse(req.body);
@@ -760,11 +810,11 @@ export async function createApp(config: AppConfig) {
     app.use(express.static(webDir, { index: false, dotfiles: 'deny', maxAge: 0 }));
     app.get('/{*path}', (_req, res) => res.sendFile(join(webDir, 'index.html')));
   } catch { /* The API remains usable while the development frontend runs separately. */ }
-  app.use((error: unknown, _req: Request, res: Response, _next: NextFunction) => {
+  app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (res.headersSent) return;
     if (error instanceof ZodError) { res.status(400).json({ error: error.issues[0]?.message ?? 'Kontrollera uppgifterna.' }); return; }
     if (error instanceof ApiError) { res.status(error.status).json({ error: error.message }); return; }
-    if ((error as Row)?.type === 'entity.too.large') { res.status(413).json({ error: 'Filen är för stor. PDF-filen får vara högst 10 MB.' }); return; }
+    if ((error as Row)?.type === 'entity.too.large') { res.status(413).json({ error: /^\/api\/team\/logo/i.test(req.path) ? 'Filen är större än 500 kB.' : 'Filen är för stor. PDF-filen får vara högst 10 MB.' }); return; }
     if (error instanceof SyntaxError && 'body' in error) { res.status(400).json({ error: 'Ogiltig JSON.' }); return; }
     if ((error as Row)?.code === '23505') { res.status(409).json({ error: 'Uppgifterna är redan registrerade.' }); return; }
     // Deliberately omit request data, SQL, bearer tokens and personal details.

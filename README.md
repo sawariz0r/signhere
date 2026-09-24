@@ -7,6 +7,7 @@ Simple, self-hosted document signing. Swedish interface based on the supplied Si
 ## What works
 
 - Protected first-owner setup, login, persistent sessions and team invitations.
+- Settings (account menu, top right) with tabs for Varumärke, Team and Instans. Whitelabeling: a company name, a logo and one accent colour from a fixed palette brand the app header, the signing and copy pages, the certificate view and the PDF signature page. "powered by signhere" and the SIGNHERE seal stay.
 - Upload a PDF, automatically flatten supported annotations and forms, optionally preview the signing copy, add recipients, and share personal signing links.
 - Read the actual PDF, draw a signature, and explicitly agree to the recorded consent. Selecting “Jag ska också signera” adds the sender separately from every entered party, even when they share an email address, and opens the sender’s signing step after creation. Each assignment needs its own signature and audit event; the document stays pending until all have signed.
 - Track recipient progress and audit events; revoke a pending document or rotate a recipient link.
