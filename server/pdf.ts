@@ -11,6 +11,7 @@ export const MAX_PDF_BYTES = 10 * 1024 * 1024;
 export interface PdfSigner { name: string; signedName?: string; email: string; signedAt: string; strokes: Strokes; methodId: string; methodVersion: string; consent?: { text: string; version: string }; }
 export interface PdfPreparation { kind: 'flatten'; engine: 'mupdf'; engineVersion: string; sourceHash: string; sourceSize: number; annotationCount: number; formFieldCount: number; noteCount: number; }
 export interface AuditCheckpoint { sequence: number; hash: string; }
+export interface PdfAttachmentOf { documentId: string; title: string; completedHash: string; number: number; }
 let active = 0;
 const waiters: Array<() => void> = [];
 async function acquire() {
@@ -71,6 +72,6 @@ export async function preparePdf(bytes: Buffer) {
   const result = await run<{ bytes: Uint8Array; pages: number; hash: string; preparation: PdfPreparation | null }>('prepare', [bytes]);
   return { ...result, bytes: Buffer.from(result.bytes) };
 }
-export async function finalizePdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], auditCheckpoint?: AuditCheckpoint, sealExpected = false) {
-  return Buffer.from(await run<Uint8Array>('finalize', [original, title, documentId, originalHash, consent, signers, auditCheckpoint, sealExpected]));
+export async function finalizePdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], auditCheckpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf) {
+  return Buffer.from(await run<Uint8Array>('finalize', [original, title, documentId, originalHash, consent, signers, auditCheckpoint, sealExpected, ...(attachmentOf ? [attachmentOf] : [])]));
 }

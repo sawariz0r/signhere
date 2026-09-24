@@ -63,6 +63,9 @@ export function verifyEvidence(manifest, original, completed, uploaded) {
   for (const key of ['title', 'fileName', 'originalHash', 'size', 'pages', 'sender']) {
     check(canonical(created.data[key]) === canonical(doc[key]), `Document ${key} does not match the initial snapshot.`);
   }
+  // A bilaga records the completed main document it extends in its creation snapshot.
+  check(canonical(created.data.attachmentOf ?? null) === canonical(doc.attachmentOf ?? null), 'Attachment binding does not match the initial snapshot.');
+  if (doc.attachmentOf) check(object(doc.attachmentOf) && typeof doc.attachmentOf.documentId === 'string' && doc.attachmentOf.documentId !== doc.id && /^[a-f0-9]{64}$/.test(doc.attachmentOf.completedHash) && Number.isSafeInteger(doc.attachmentOf.number) && doc.attachmentOf.number > 0, 'Invalid attachment binding.');
   const preparation = doc.preparation ?? null;
   check(canonical(created.data.preparation ?? null) === canonical(preparation), 'Conversion metadata does not match the initial snapshot.');
   if (preparation) {
@@ -164,6 +167,7 @@ function verifyV2Consistency(manifest, original, completed, uploaded) {
     check(Buffer.from(canonical(intent), 'utf8').equals(raw), 'Invalid strict intent encoding.');
     check(intent.schema === 'signhere-intent-v2' && intent.domain === 'signhere/document-approval', 'Unknown signing intent.');
     check(intent.installationId === core.installationId && intent.documentId === doc.id && intent.revisionId === doc.id && intent.recipientId === recipient.id && intent.preparedHash === digest(original), 'Intent is bound to another document or recipient.');
+    check(canonical(intent.attachmentOf ?? null) === canonical(core.document.attachmentOf ?? null), 'Intent is bound to another main document.');
     check(canonical(intent.consent) === canonical(signed.data.consent) && canonical(intent.method) === canonical(signed.data.method) && validNonce(intent.nonce), 'Intent consent/method/nonce mismatch.');
   }
   check(manifest.events.at(-1).data.evidenceCoreHash === digest(bytes), 'Completion does not bind exact evidence.');

@@ -15,6 +15,10 @@ docker compose exec signhere cat /data/setup-token
 
 Unsigned recipient links default to 7 days. Set `SIGNHERE_SIGNING_LINK_TTL_DAYS` to an integer from 1 to 365 to change the lifetime of new or rotated links. Acceptance changes the original capability to a 30-day read-only receipt with exact idempotent retries; it cannot accept a changed signature. Separate completed-copy links also expire after 30 days and can be revoked by the team.
 
+E-mail is optional. With `SMTP_URL` (`smtp://` or `smtps://`, credentials in the URL) and `SMTP_FROM`, new signing links go to each party (not to a sender who signs in the app), and each signer receives a fresh 30-day receipt link when a document or bilaga is fully signed. Delivery is best effort after the database commit and never changes signing state; failures are logged without addresses or content. Without SMTP the platform behaves as before and links are shared manually.
+
+A bilaga is a separate signing document with its own recipients, audit chain, seal and evidence export. Its creation event, every signing intent and its frozen evidence core record `attachmentOf` (main document ID, title, completed SHA-256 and bilaga number), so the offline verifier rejects evidence moved to another main document. A party's signing or receipt link also reaches the main document and the bilagor that the same party signs; a signature made that way records the link used in `accessRecipientId` and `accessDocumentId`.
+
 The setup token is an administrator credential; enter it only into the first-owner setup form. It is not written to application logs.
 
 Three persistent named volumes retain PostgreSQL data (`postgres-data`), existing setup state (`signhere-data`), and private sealing keys (`signhere-keys`). Keeping the small existing setup-state volume avoids moving or reinterpreting prior installations. Key files are in `/keys`, owned by the application UID with a private directory. Keys are never part of the image or database rows. `docker compose down` preserves the volumes; `down -v` deletes the installation and must not be used for ordinary updates.

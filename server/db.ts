@@ -33,7 +33,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 3) throw new Error('Database schema is newer than this application.');
+      if (version > 4) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -90,8 +90,8 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
         DROP TRIGGER IF EXISTS documents_no_truncate ON documents;
         CREATE TRIGGER documents_no_truncate BEFORE TRUNCATE ON documents FOR EACH STATEMENT EXECUTE FUNCTION reject_event_mutation();
         CREATE OR REPLACE FUNCTION guard_document() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-          IF ROW(OLD.id,OLD.team_id,OLD.created_by,OLD.title,OLD.file_name,OLD.original,OLD.original_hash,OLD.size,OLD.pages,OLD.sender,OLD.method_id,OLD.method_version,OLD.created_at,OLD.uploaded,OLD.preparation,OLD.evidence_version,OLD.protection_policy)
-            IS DISTINCT FROM ROW(NEW.id,NEW.team_id,NEW.created_by,NEW.title,NEW.file_name,NEW.original,NEW.original_hash,NEW.size,NEW.pages,NEW.sender,NEW.method_id,NEW.method_version,NEW.created_at,NEW.uploaded,NEW.preparation,NEW.evidence_version,NEW.protection_policy)
+          IF ROW(OLD.id,OLD.team_id,OLD.created_by,OLD.title,OLD.file_name,OLD.original,OLD.original_hash,OLD.size,OLD.pages,OLD.sender,OLD.method_id,OLD.method_version,OLD.created_at,OLD.uploaded,OLD.preparation,OLD.evidence_version,OLD.protection_policy,OLD.parent_id,OLD.attachment_number)
+            IS DISTINCT FROM ROW(NEW.id,NEW.team_id,NEW.created_by,NEW.title,NEW.file_name,NEW.original,NEW.original_hash,NEW.size,NEW.pages,NEW.sender,NEW.method_id,NEW.method_version,NEW.created_at,NEW.uploaded,NEW.preparation,NEW.evidence_version,NEW.protection_policy,NEW.parent_id,NEW.attachment_number)
             THEN RAISE EXCEPTION 'Document source and protection policy are immutable'; END IF;
           IF OLD.status IN ('completed','cancelled') AND OLD IS DISTINCT FROM NEW THEN RAISE EXCEPTION 'Closed document is immutable'; END IF;
           IF OLD.evidence_version=1 THEN
@@ -122,7 +122,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
         CREATE OR REPLACE FUNCTION guard_recipient() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE current_status text; BEGIN
           SELECT status INTO current_status FROM documents WHERE id=OLD.document_id FOR UPDATE;
           IF current_status <> 'pending' AND OLD IS DISTINCT FROM NEW THEN RAISE EXCEPTION 'Closed recipient is immutable'; END IF;
-          IF ROW(OLD.id,OLD.document_id,OLD.position,OLD.name,OLD.email,OLD.method_id,OLD.method_version,OLD.signing_intent) IS DISTINCT FROM ROW(NEW.id,NEW.document_id,NEW.position,NEW.name,NEW.email,NEW.method_id,NEW.method_version,NEW.signing_intent)
+          IF ROW(OLD.id,OLD.document_id,OLD.position,OLD.name,OLD.email,OLD.method_id,OLD.method_version,OLD.signing_intent,OLD.parent_recipient_id) IS DISTINCT FROM ROW(NEW.id,NEW.document_id,NEW.position,NEW.name,NEW.email,NEW.method_id,NEW.method_version,NEW.signing_intent,NEW.parent_recipient_id)
             THEN RAISE EXCEPTION 'Recipient assignment is immutable'; END IF;
           IF OLD.signed_at IS NOT NULL AND OLD IS DISTINCT FROM NEW THEN RAISE EXCEPTION 'Completed signature is immutable'; END IF;
           RETURN NEW; END $$;
@@ -209,7 +209,31 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
         CREATE TRIGGER sealing_certificates_immutable BEFORE UPDATE OR DELETE ON sealing_certificates FOR EACH ROW EXECUTE FUNCTION reject_event_mutation();
         CREATE TRIGGER sealing_certificates_no_truncate BEFORE TRUNCATE ON sealing_certificates FOR EACH STATEMENT EXECUTE FUNCTION reject_event_mutation();
       `);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      // Bilagor (attachments) are separate signing documents bound to a completed main document.
+      // The main document's closed audit chain stays immutable; each attachment has its own chain.
+      if (version < 4) await client.query(`
+        ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_id uuid REFERENCES documents(id);
+        ALTER TABLE documents ADD COLUMN IF NOT EXISTS attachment_number integer;
+        ALTER TABLE documents ADD CONSTRAINT documents_attachment_pair CHECK((parent_id IS NULL)=(attachment_number IS NULL) AND (attachment_number IS NULL OR attachment_number BETWEEN 1 AND 100));
+        CREATE UNIQUE INDEX documents_attachment_number ON documents(parent_id,attachment_number) WHERE parent_id IS NOT NULL;
+        ALTER TABLE recipients ADD COLUMN IF NOT EXISTS parent_recipient_id uuid REFERENCES recipients(id);
+        CREATE UNIQUE INDEX recipients_parent_unique ON recipients(document_id,parent_recipient_id) WHERE parent_recipient_id IS NOT NULL;
+        CREATE INDEX recipients_parent ON recipients(parent_recipient_id) WHERE parent_recipient_id IS NOT NULL;
+        CREATE FUNCTION guard_attachment() RETURNS trigger LANGUAGE plpgsql AS $$ DECLARE main record; BEGIN
+          IF NEW.parent_id IS NULL THEN RETURN NEW; END IF;
+          SELECT team_id,status,parent_id INTO main FROM documents WHERE id=NEW.parent_id FOR SHARE;
+          IF NOT FOUND OR main.parent_id IS NOT NULL OR main.status <> 'completed' OR main.team_id <> NEW.team_id
+            THEN RAISE EXCEPTION 'An attachment requires a completed main document in the same team'; END IF;
+          RETURN NEW; END $$;
+        CREATE TRIGGER documents_attachment BEFORE INSERT ON documents FOR EACH ROW EXECUTE FUNCTION guard_attachment();
+        CREATE FUNCTION guard_recipient_parent() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF NEW.parent_recipient_id IS NOT NULL AND NOT EXISTS(SELECT 1 FROM recipients r JOIN documents d ON d.parent_id=r.document_id
+            WHERE d.id=NEW.document_id AND r.id=NEW.parent_recipient_id)
+            THEN RAISE EXCEPTION 'An attachment party must belong to the main document'; END IF;
+          RETURN NEW; END $$;
+        CREATE TRIGGER recipients_parent_valid BEFORE INSERT ON recipients FOR EACH ROW EXECUTE FUNCTION guard_recipient_parent();
+      `);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;

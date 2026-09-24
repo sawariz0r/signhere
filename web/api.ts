@@ -40,6 +40,7 @@ export const date = (value: string | null | undefined) => value ? new Date(value
 export const dateTime = (value: string | null | undefined) => value ? `${date(value)}, ${new Date(value).toLocaleTimeString('sv-SE')}` : '—';
 export const initials = (name: string) => name.trim().split(/\s+/).slice(0, 2).map(n => n[0]?.toUpperCase()).join('');
 export const size = (bytes: number) => bytes >= 1_000_000 ? `${(bytes / 1_000_000).toLocaleString('sv-SE', { maximumFractionDigits: 1 })} MB` : `${Math.max(1, Math.round(bytes / 1024))} kB`;
+export const attachmentLabel = (attachment: { number: number }) => `Bilaga ${attachment.number}`;
 export const pages = (n: number) => `${n} ${n === 1 ? 'sida' : 'sidor'} + signatursida`;
 
 export function fileBase64(file: File): Promise<string> {
