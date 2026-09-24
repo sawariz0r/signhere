@@ -199,6 +199,10 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
   // Reconstruct the previous storage shape in this disposable schema, preserving
   // actual legacy documents/events, then execute the real version-3 migration.
   await f.pool.query(`
+    DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
+    DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();
+    ALTER TABLE recipients DROP COLUMN parent_recipient_id;
+    ALTER TABLE documents DROP COLUMN parent_id, DROP COLUMN attachment_number;
     DROP TABLE completed_copy_access,finalization_attempts,finalization_jobs,sealing_key_events,sealing_certificates,sealing_identity;
     DROP FUNCTION guard_completed_copy_access();
     ALTER TABLE recipients DROP CONSTRAINT recipients_id_document_unique;
@@ -207,7 +211,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
     ALTER TABLE documents DROP COLUMN evidence_version, DROP COLUMN evidence_core, DROP COLUMN protection_policy, DROP COLUMN seal_metadata;
     ALTER TABLE documents DROP CONSTRAINT documents_status_check;
     ALTER TABLE documents ADD CONSTRAINT documents_status_check CHECK(status IN ('pending','completed','cancelled'));
-    DELETE FROM migrations WHERE version=3;
+    DELETE FROM migrations WHERE version>=3;
   `);
   const reopened = await createDatabase(databaseUrl!, f.schema);
   t.after(() => reopened.end());

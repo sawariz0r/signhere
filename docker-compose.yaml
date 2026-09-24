@@ -12,6 +12,8 @@ services:
       SIGNHERE_SIGNING_LINK_TTL_DAYS: ${SIGNHERE_SIGNING_LINK_TTL_DAYS:-7}
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-}
       DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?}@postgres:5432/signhere
       MIGRATION_DATABASE_URL: postgresql://signhere_migrator:${POSTGRES_PASSWORD:?}@postgres:5432/signhere
     volumes:

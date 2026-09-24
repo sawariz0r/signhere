@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, PDFNull, PDFString, PDFHexString, PDFNumber, PDFPage, rgb, grayscale, cmyk, pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import type { PdfSigner, AuditCheckpoint, PdfPreparation } from './pdf.js';
+import type { PdfSigner, AuditCheckpoint, PdfPreparation, PdfAttachmentOf } from './pdf.js';
 const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
 
 async function inspectPdfBytes(bytes: Buffer, options: { allowForms?: boolean; flat?: boolean } = {}) {
@@ -368,7 +368,7 @@ export async function preparePdfBytes(bytes: Buffer) {
   const preparation: PdfPreparation = { kind: 'flatten', engine: 'mupdf', engineVersion, sourceHash: checked.hash, sourceSize: bytes.length, annotationCount, formFieldCount, noteCount: notes.length };
   return { bytes: flattened, pages: result.pages, hash: result.hash, preparation };
 }
-export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint, sealExpected = false) {
+export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf) {
   if (hash(original) !== originalHash) throw new Error('Originalfilens fingeravtryck stämmer inte.');
   const pdf = await PDFDocument.load(original, { updateMetadata: false });
   pdf.registerFontkit(fontkit);
@@ -394,6 +394,11 @@ export async function createCompletedPdf(original: Uint8Array, title: string, do
     line('signhere / signeringsbevis', 22); y -= 12;
     wrap(title, 14); y -= 8;
     line(`Dokument: ${documentId}`, 9);
+    if (attachmentOf) {
+      wrap(`Bilaga ${attachmentOf.number} till: ${attachmentOf.title}`, 10);
+      line(`Huvuddokument: ${attachmentOf.documentId}`, 9);
+      line('Huvuddokumentets signerade SHA-256:', 9); line(attachmentOf.completedHash, 8);
+    }
     line(`Undertecknare ${index + 1} av ${signers.length}`, 12);
     wrap(`Uppgivet namn: ${signer.signedName ?? signer.name}`);
     wrap(`Tilldelad mottagare: ${signer.name}`);

@@ -15,6 +15,8 @@ export interface FinalizationArtifact { bytes: Buffer; sealMetadata: Row }
 export interface FinalizationServices {
   buildArtifact(snapshot: FinalizationSnapshot): Promise<FinalizationArtifact>;
   signingIdentity?: Row | (() => Promise<Row>);
+  /** Called after the completed artifact is committed. Must not throw. */
+  onPublished?(documentId: string): void;
 }
 export interface FinalizationOptions {
   leaseMs?: number; pollMs?: number; retryBaseMs?: number; retryMaxMs?: number;
@@ -176,6 +178,7 @@ export function createFinalizationWorker(pool: Pool, services: FinalizationServi
       const snapshot = await loadFinalizationSnapshot(pool, job);
       const artifact = await services.buildArtifact(snapshot);
       const published = await publishFinalization(pool, snapshot, artifact, options);
+      if (published) services.onPublished?.(job.document_id);
       return { status: published ? 'completed' : 'superseded', documentId: job.document_id, attempt: job.attempts };
     } catch (error) {
       return await failFinalization(pool, job, error, options);

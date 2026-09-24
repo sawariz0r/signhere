@@ -4,10 +4,12 @@ import { sha256, type AuditCheckpoint } from './pdf.js';
 import { CONSENT } from './plugins.js';
 
 export const LOCAL_SEAL_POLICY = Object.freeze({ profile: 'signhere-seal-v1', timestamp: 'off' as const });
-export function signingIntent(installationId: string, document: Row, recipient: Row) {
+export function signingIntent(installationId: string, document: Row, recipient: Row, attachmentOf?: Row) {
   return Buffer.from(canonical({
     schema: 'signhere-intent-v2', domain: 'signhere/document-approval', installationId,
     documentId: document.id, revisionId: document.id, recipientId: recipient.id,
+    // A bilaga approval is bound to the exact completed main document it extends.
+    ...(attachmentOf ? { attachmentOf } : {}),
     preparedHash: document.original_hash, method: { id: recipient.method_id, version: recipient.method_version },
     consent: CONSENT, nonce: randomBytes(32).toString('base64url'),
   }), 'utf8');
@@ -25,6 +27,7 @@ export function freezeEvidenceCore(installationId: string, document: Row, recipi
     document: { id: document.id, title: document.title, fileName: document.file_name,
       originalHash: document.original_hash, size: document.size, pages: document.pages,
       createdAt: document.created_at, sender: document.sender, senderRecipientId: created.senderRecipientId ?? null,
+      ...(created.attachmentOf ? { attachmentOf: created.attachmentOf } : {}),
       ...(document.preparation ? { preparation: document.preparation } : {}) },
     recipients: recipients.map(recipient => ({ id: recipient.id, position: recipient.position, name: recipient.name, email: recipient.email,
       methodId: recipient.method_id, methodVersion: recipient.method_version, signedAt: recipient.signed_at,

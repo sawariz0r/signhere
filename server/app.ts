@@ -16,6 +16,7 @@ import { LOCAL_SEAL_POLICY, signingIntent, intentEvidence, freezeEvidenceCore } 
 import { verificationPackage } from './verification-package.js';
 import { createPdfReadiness } from './pdf-readiness.js';
 import { createResponseBudget } from './response-budget.js';
+import { createNotifier, type Message, type Notifier } from './notify.js';
 
 export interface AppConfig {
   databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
@@ -26,6 +27,8 @@ export interface AppConfig {
   legacyCreation?: boolean;
   signingLinkTtlDays?: number;
   finalization?: { autoStart?: boolean; pollMs?: number };
+  /** Optional e-mail delivery. Without it, personal links are shared manually. */
+  notifier?: Notifier;
 }
 const DAY = 86400000;
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
@@ -35,13 +38,14 @@ const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);
 const id = (value: unknown) => z.uuid().parse(value);
 type Queryable = Pick<Pool, 'query'> | Pick<PoolClient, 'query'>;
-const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation,evidence_version,protection_policy,seal_metadata';
+const docColumns = 'id,team_id,created_by,title,file_name,original_hash,size,pages,status,sender,method_id,method_version,created_at,completed_at,completed_hash,signing_checkpoint,preparation,evidence_version,protection_policy,seal_metadata,parent_id,attachment_number';
+const MAX_ATTACHMENTS = 50;
 const toUser = (row: Row) => ({ id: row.id, name: row.name, email: row.email, role: row.role, teamId: row.team_id, teamName: row.team_name });
 const consentFor = (recipient: Row) => recipient.signing_intent ? z.object({ version: z.string().min(1).max(128), text: z.string().min(1).max(10000) }).parse(JSON.parse(recipient.signing_intent.toString('utf8')).consent) : CONSENT;
 const eventDto = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
 function requestEvidence(req: Request) { return { ip: (req.ip ?? '').slice(0, 128), userAgent: (req.get('user-agent') ?? '').slice(0, 512) }; }
 async function documentDto(db: Queryable, row: Row, publicView = false, summary = false): Promise<Row> {
-  const recipients = (await db.query('SELECT ' + (summary ? 'id,name,email,method_id,method_version,viewed_at,signed_at' : '*') + ' FROM recipients WHERE document_id=$1 ORDER BY position', [row.id])).rows;
+  const recipients = (await db.query('SELECT ' + (summary ? 'id,name,email,method_id,method_version,viewed_at,signed_at,parent_recipient_id' : '*') + ' FROM recipients WHERE document_id=$1 ORDER BY position', [row.id])).rows;
   const events = publicView || summary ? [] : (await db.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [row.id])).rows.map(eventDto);
   const created = events[0]?.data ?? (await db.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data;
   // New documents explicitly distinguish the sender assignment from other parties,
@@ -54,11 +58,14 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
     id: row.id, title: row.title, fileName: row.file_name, size: row.size, pages: row.pages, status: row.status,
     originalHash: row.original_hash, completedHash: row.completed_hash, createdAt: row.created_at, completedAt: row.completed_at,
     sender: row.sender, senderRecipientId, evidenceVersion: row.evidence_version,
+    // Read from the creation snapshot so exported evidence matches the frozen evidence core.
+    ...(created?.attachmentOf ? { attachmentOf: created.attachmentOf } : {}),
     ...(row.seal_metadata ? { seal: { profile: row.seal_metadata.profile, fingerprintSha256: row.seal_metadata.certificateFingerprint, cryptographicPdfSeal: true, trustedTimestamp: false, identityVerified: false } } : {}),
     ...(row.preparation ? { preparation: row.preparation } : {}),
     recipients: recipients.map((recipient: Row) => ({
       id: recipient.id, name: recipient.name, ...(publicView ? {} : { email: recipient.email }),
       methodId: recipient.method_id, methodVersion: recipient.method_version, viewedAt: recipient.viewed_at, signedAt: recipient.signed_at,
+      ...(!publicView && recipient.parent_recipient_id ? { parentRecipientId: recipient.parent_recipient_id } : {}),
       ...(recipient.signature ? { signature: recipient.signature, signedName: recipient.claimed_name } : {}),
       ...(!publicView && recipient.evidence ? { ip: recipient.evidence.ip, userAgent: recipient.evidence.userAgent } : {}),
     })),
@@ -95,13 +102,14 @@ export async function createApp(config: AppConfig) {
         return { name: recipient.name, signedName: recipient.signedName, email: recipient.email, signedAt: recipient.signedAt,
           strokes: event.data.signature?.strokes ?? [], methodId: recipient.methodId, methodVersion: recipient.methodVersion, consent: event.data.consent };
       });
-      const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true);
+      const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true, core.document.attachmentOf);
       const manifest: SealManifest = { schema: 'signhere-seal-v1', evidenceSchema: 2, installationId: identity.installationId,
         documentId: document.id, evidenceDigest: sha256(evidenceCore), preparedHash: document.original_hash,
         checkpoint, certificateFingerprint: identity.fingerprintSha256, policy: { timestamp: 'off' } };
       const result = await signPdf(candidate, manifest, await keys.keyFor(identity.fingerprintSha256));
       return { bytes: result.bytes, sealMetadata: { profile: result.metadata.profile, certificateFingerprint: result.metadata.certificateFingerprint, certificatePem: result.metadata.certificatePem, manifest: result.metadata.manifest, pdfHash: result.metadata.pdfHash } };
     },
+    onPublished: documentId => afterCompletion(documentId),
   }, { now, pollMs: config.finalization?.pollMs });
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const setupPath = join(config.dataDir, 'setup-token');
@@ -156,7 +164,7 @@ export async function createApp(config: AppConfig) {
   const signingJson = express.json({ limit: '1mb', strict: true });
   const uploadJson = express.json({ limit: '15mb', strict: true });
   app.use('/api', async (req, res, next) => {
-    if (req.method === 'POST' && /^\/documents(?:\/prepare)?\/?$/i.test(req.path)) {
+    if (req.method === 'POST' && /^\/documents(?:\/prepare|\/[0-9a-f-]{36}\/attachments)?\/?$/i.test(req.path)) {
       // Authenticate before allocating the large base64 upload body.
       await requireUser(req, res, () => uploadJson(req, res, next));
       return;
@@ -201,7 +209,90 @@ export async function createApp(config: AppConfig) {
     if (document.status === 'cancelled') throw new ApiError(410, 'Dokumentet har avbrutits.');
     return { document, recipient };
   }
+  /** The main-document party a recipient represents, if any. Parties added only to a bilaga have none. */
+  const mainPartyId = (document: Row, recipient: Row): string | null => document.parent_id ? recipient.parent_recipient_id : recipient.id;
+  /**
+   * A party's personal link also reaches the main document and bilagor that the same party signs.
+   * Without documentId this is the link's own assignment.
+   */
+  async function partyTarget(client: Queryable, raw: string, documentId: string | undefined, lock = false) {
+    if (!documentId) return bearer(client, raw, lock);
+    const own = await bearer(client, raw);
+    if (documentId === own.document.id) return lock ? bearer(client, raw, true) : own;
+    const target = await relatedTarget(client, own, documentId, lock);
+    if (target.document.status === 'cancelled' && !target.recipient.signed_at) throw new ApiError(410, 'Dokumentet har avbrutits.');
+    return { ...target, via: own.recipient as Row };
+  }
+  async function relatedTarget(client: Queryable, own: { document: Row; recipient: Row }, documentId: string, lock = false) {
+    const target = (await client.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1' + (lock ? ' FOR UPDATE' : ''), [id(documentId)])).rows[0];
+    const partyId = mainPartyId(own.document, own.recipient);
+    if (!target || !partyId || (target.parent_id ?? target.id) !== (own.document.parent_id ?? own.document.id)) throw new ApiError(404, 'Dokumentet finns inte.');
+    const recipient = (await client.query('SELECT * FROM recipients WHERE document_id=$1 AND ' + (target.parent_id ? 'parent_recipient_id' : 'id') + '=$2', [target.id, partyId])).rows[0];
+    if (!recipient) throw new ApiError(404, 'Dokumentet finns inte.');
+    return { document: target as Row, recipient: recipient as Row };
+  }
+  /** Signing links and completed-copy links both identify a party for read-only access. */
+  async function partyCredential(client: Queryable, raw: string) {
+    const signing = (await client.query('SELECT 1 FROM recipients WHERE token_hash=$1', [sha256(raw)])).rowCount;
+    if (signing) return bearer(client, raw);
+    const copy = (await client.query('SELECT document_id,recipient_id FROM completed_copy_access WHERE token_hash=$1 AND expires_at>$2', [sha256(raw), now()])).rows[0];
+    if (!copy) throw new ApiError(404, 'Länken är ogiltig eller har upphört att gälla.');
+    const document = (await client.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1', [copy.document_id])).rows[0];
+    const recipient = (await client.query('SELECT * FROM recipients WHERE id=$1 AND document_id=$2', [copy.recipient_id, copy.document_id])).rows[0];
+    return { document, recipient };
+  }
+  /** The main document (when this party signed it) and every bilaga this party signs, oldest first. */
+  async function partyDocuments(client: Queryable, document: Row, recipient: Row) {
+    const rootId = document.parent_id ?? document.id;
+    const partyId = mainPartyId(document, recipient);
+    const rows = (await client.query('SELECT ' + docColumns + ' FROM documents d WHERE (d.id=$1 AND $2::uuid IS NOT NULL) OR d.id=$3 OR (d.parent_id=$1 AND EXISTS(SELECT 1 FROM recipients r WHERE r.document_id=d.id AND r.parent_recipient_id=$2)) ORDER BY d.attachment_number NULLS FIRST', [rootId, partyId, document.id])).rows;
+    const result: Row[] = [];
+    for (const row of rows) {
+      const party = row.id === document.id ? recipient : (await client.query('SELECT * FROM recipients WHERE document_id=$1 AND ' + (row.parent_id ? 'parent_recipient_id' : 'id') + '=$2', [row.id, partyId])).rows[0];
+      const recipients = (await client.query('SELECT id,name,claimed_name FROM recipients WHERE document_id=$1', [row.id])).rows;
+      const actor = (recipientId: unknown) => { const found = recipients.find(item => item.id === recipientId); return found ? found.claimed_name ?? found.name : null; };
+      // Parties see who did what and when, but not other parties' addresses, IPs or devices.
+      const events = (await client.query('SELECT sequence,type,at,hash,data FROM events WHERE document_id=$1 ORDER BY sequence', [row.id])).rows.map(event => ({
+        documentId: row.id, sequence: event.sequence, type: event.type, at: event.at, hash: event.hash,
+        actor: event.type === 'document.created' ? event.data.sender?.name ?? null : actor(event.data.recipientId),
+      }));
+      result.push({ ...await documentDto(client, row, true), partyRecipientId: party?.id ?? null, events });
+    }
+    return result;
+  }
   const pdfResponse = (res: Response, bytes: Uint8Array, documentId: string, download = false) => res.type('application/pdf').set('Content-Disposition', (download ? 'attachment' : 'inline') + '; filename="signhere-' + documentId + '.pdf"').send(Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+
+  const notifier = config.notifier ?? createNotifier();
+  const signature = ['', 'Länken är personlig. Vidarebefordra den inte.', '', '– signhere'];
+  function invitationMessage(to: string, name: string, url: string, title: string, senderName: string, attachmentOf?: AttachmentOf): Message {
+    return attachmentOf ? { to, subject: attachmentLabel(attachmentOf) + ' väntar på din signatur', text: [
+      'Hej ' + name + ',', '', senderName + ' har lagt till en bilaga till "' + attachmentOf.title + '": "' + title + '".',
+      'Bilagan är en del av avtalet och signeras av parterna precis som huvuddokumentet.', '',
+      'Läs och signera bilagan här:', url, '', 'Via länken ser du också huvuddokumentet, alla bilagor och händelseloggen.', ...signature].join('\n') }
+      : { to, subject: title + ' väntar på din signatur', text: ['Hej ' + name + ',', '', senderName + ' har skickat "' + title + '" till dig för signering.', '', 'Läs och signera här:', url, ...signature].join('\n') };
+  }
+  /** Best effort after completion: each signer gets a fresh receipt link, the sender gets the document page. */
+  async function notifyCompleted(documentId: string) {
+    if (!notifier.enabled) return;
+    const row = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1', [documentId])).rows[0];
+    if (row?.status !== 'completed') return;
+    const created = (await pool.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data ?? {};
+    const label = created.attachmentOf ? attachmentLabel(created.attachmentOf) + ': "' + row.title + '"' : '"' + row.title + '"';
+    const signers = (await pool.query('SELECT id,name,email FROM recipients WHERE document_id=$1 AND signed_at IS NOT NULL ORDER BY position', [row.id])).rows;
+    const messages: Message[] = [];
+    for (const signer of signers) {
+      if (signer.id === created.senderRecipientId) continue;
+      const raw = token();
+      await pool.query('INSERT INTO completed_copy_access(token_hash,document_id,recipient_id,expires_at,created_at) VALUES($1,$2,$3,$4,$5)', [sha256(raw), row.id, signer.id, now() + 30 * DAY, at()]);
+      messages.push({ to: signer.email, subject: 'Signerat av alla parter: ' + (created.attachmentOf ? attachmentLabel(created.attachmentOf) : row.title), text: [
+        'Hej ' + signer.name + ',', '', label + ' är nu signerat av alla parter.', '',
+        'Hämta den signerade PDF-filen' + (row.parent_id ? ', huvuddokumentet och övriga bilagor' : '') + ' och se händelseloggen här:', origin + '/copy#' + raw, ...signature].join('\n') });
+    }
+    const owner = (await pool.query('SELECT name,email FROM users WHERE id=$1', [row.created_by])).rows[0];
+    if (owner) messages.push({ to: owner.email, subject: 'Signerat av alla parter: ' + (created.attachmentOf ? attachmentLabel(created.attachmentOf) : row.title), text: ['Hej ' + owner.name + ',', '', label + ' är nu signerat av alla parter.', '', origin + '/documents/' + row.id, '', '– signhere'].join('\n') });
+    await notifier.send(messages);
+  }
+  const afterCompletion = (documentId: string) => { void notifyCompleted(documentId).catch(() => console.error('signhere: completion notification failed')); };
 
   app.get('/api/health', async (_req, res) => {
     try { await pool.query('SELECT 1'); const status = await keys?.cachedRefresh(); res.json({ ok: true, sealing: { ready: Boolean(status?.ready) } }); }
@@ -251,8 +342,13 @@ export async function createApp(config: AppConfig) {
 
 
   app.get('/api/documents', requireUser, async (_req, res) => {
-    const rows = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE team_id=$1 ORDER BY created_at DESC LIMIT 200', [res.locals.user.team_id])).rows;
-    res.json({ documents: await Promise.all(rows.map(row => documentDto(pool, row, false, true))) });
+    // Bilagor are listed on their main document, not as separate documents.
+    const rows = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE team_id=$1 AND parent_id IS NULL ORDER BY created_at DESC LIMIT 200', [res.locals.user.team_id])).rows;
+    const counts = (await pool.query("SELECT parent_id,count(*) AS total,count(*) FILTER (WHERE status IN ('pending','finalizing')) AS open FROM documents WHERE parent_id=ANY($1::uuid[]) GROUP BY parent_id", [rows.map(row => row.id)])).rows;
+    res.json({ documents: await Promise.all(rows.map(async row => {
+      const count = counts.find(item => item.parent_id === row.id);
+      return { ...await documentDto(pool, row, false, true), attachmentCount: Number(count?.total ?? 0), openAttachmentCount: Number(count?.open ?? 0) };
+    })) });
   });
   const pdfBase64Schema = z.string().min(12).max(Math.ceil(MAX_PDF_BYTES / 3) * 4);
   function decodeUpload(value: string) {
@@ -270,22 +366,15 @@ export async function createApp(config: AppConfig) {
     const prepared = await prepareUpload(decodeUpload(input.pdfBase64));
     res.json({ pdfBase64: prepared.bytes.toString('base64'), hash: prepared.hash, pages: prepared.pages, size: prepared.bytes.length, preparation: prepared.preparation });
   });
-  app.post('/api/documents', requireUser, async (req, res) => {
-    const input = z.object({
-      title: nameSchema,
-      fileName: z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f/\\]/.test(value) && /\.pdf$/i.test(value), 'Filnamnet måste sluta på .pdf.'),
-      pdfBase64: pdfBase64Schema,
-      // Accepted for older clients; a sender preview is optional.
-      preparedHash: hashSchema.optional(),
-      recipients: z.array(z.object({ name: nameSchema, email: emailSchema }).strict()).max(25),
-      includeSender: z.boolean().default(false),
-      methodId: z.literal('draw'),
-    }).strict().parse(req.body);
-    if (new Set(input.recipients.map(recipient => recipient.email)).size !== input.recipients.length) throw new ApiError(400, 'Varje mottagare behöver en unik e-postadress.');
-    const recipients = [...input.recipients];
-    if (input.includeSender) {
-      recipients.push({ name: res.locals.user.name, email: res.locals.user.email });
-    }
+  const fileNameSchema = z.string().trim().min(1).max(200).refine(value => !/[\u0000-\u001f\u007f/\\]/.test(value) && /\.pdf$/i.test(value), 'Filnamnet måste sluta på .pdf.');
+  const partySchema = z.object({ name: nameSchema, email: emailSchema }).strict();
+  type Party = { name: string; email: string; parentRecipientId: string | null };
+  type AttachmentOf = { documentId: string; title: string; completedHash: string; number: number };
+  const attachmentLabel = (attachment: AttachmentOf) => 'Bilaga ' + attachment.number + ' till ' + attachment.title;
+  /** Shared by main documents and bilagor. The sender assignment, when present, is always the last party. */
+  async function createSigningDocument(req: Request, res: Response, input: { title: string; fileName: string; pdfBase64: string; methodId: 'draw' }, parties: Party[], sender: Party | null, parent?: Row) {
+    const recipients = [...parties, ...(sender ? [sender] : [])];
+    if (new Set(parties.map(recipient => recipient.email)).size !== parties.length) throw new ApiError(400, 'Varje mottagare behöver en unik e-postadress.');
     if (!recipients.length) throw new ApiError(400, 'Lägg till en mottagare eller välj att signera själv.');
     if (recipients.length > 25) throw new ApiError(400, 'Dokumentet får ha högst 25 mottagare, inklusive dig själv.');
     const creationIdentity = await keys?.refresh();
@@ -304,8 +393,8 @@ export async function createApp(config: AppConfig) {
       const identity = creationIdentity!;
       try {
         const candidate = await finalizePdf(bytes, input.title, documentId, parsed.hash, CONSENT,
-          recipients.map(recipient => ({ ...recipient, signedAt: at(), strokes: [[[0, 0], [1, 1]]], methodId: method.id, methodVersion: method.version })),
-          { sequence: 1000, hash: '0'.repeat(64) }, true);
+          recipients.map(recipient => ({ name: recipient.name, email: recipient.email, signedAt: at(), strokes: [[[0, 0], [1, 1]]], methodId: method.id, methodVersion: method.version })),
+          { sequence: 1000, hash: '0'.repeat(64) }, true, parent ? { documentId: parent.id, title: parent.title, completedHash: parent.completed_hash, number: MAX_ATTACHMENTS } : undefined);
         await preflightSealPdf(candidate, { fingerprintSha256: identity.fingerprintSha256!, certificatePem: identity.certificatePem!, chainPem: identity.chainPem });
       } catch (error) {
         if (error instanceof SealInputError) throw new ApiError(400, 'PDF-filen kunde inte förberedas för försegling. Exportera en ny PDF och försök igen.');
@@ -314,25 +403,80 @@ export async function createApp(config: AppConfig) {
       }
     }
     const result = await transaction(pool, async client => {
-      const sender = { name: res.locals.user.name, email: res.locals.user.email, teamName: res.locals.user.team_name };
+      let attachmentOf: AttachmentOf | undefined;
+      if (parent) {
+        // The lock serializes numbering. A completed main document is never modified.
+        const main = await ownedDocument(client, parent.id, res.locals.user.team_id, true);
+        if (main.status !== 'completed' || main.parent_id) throw new ApiError(409, 'Bilagor kan bara läggas till ett färdigsignerat huvuddokument.');
+        const count = Number((await client.query('SELECT count(*) AS count FROM documents WHERE parent_id=$1', [main.id])).rows[0].count);
+        if (count >= MAX_ATTACHMENTS) throw new ApiError(409, 'Dokumentet har redan det högsta antalet bilagor.');
+        attachmentOf = { documentId: main.id, title: main.title, completedHash: main.completed_hash, number: count + 1 };
+      }
+      const senderSnapshot = { name: res.locals.user.name, email: res.locals.user.email, teamName: res.locals.user.team_name };
       const createdAt = at();
-      const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation,evidence_version,protection_policy) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15,$16,$17) RETURNING " + docColumns,
-        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, sender, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation, config.legacyCreation ? 1 : 2, config.legacyCreation ? null : LOCAL_SEAL_POLICY])).rows[0];
+      const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation,evidence_version,protection_policy,parent_id,attachment_number) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING " + docColumns,
+        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, senderSnapshot, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation, config.legacyCreation ? 1 : 2, config.legacyCreation ? null : LOCAL_SEAL_POLICY, attachmentOf?.documentId ?? null, attachmentOf?.number ?? null])).rows[0];
       const links: Row[] = [];
       for (const [position, recipient] of recipients.entries()) {
         const recipientId = uid(), raw = token();
-        await client.query('INSERT INTO recipients(id,document_id,position,name,email,method_id,method_version,token_hash,expires_at,signing_intent) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)', [recipientId, documentId, position, recipient.name, recipient.email, method.id, method.version, sha256(raw), now() + linkTtlDays * DAY, config.legacyCreation ? null : signingIntent(creationIdentity!.installationId, row, { id: recipientId, method_id: method.id, method_version: method.version })]);
+        await client.query('INSERT INTO recipients(id,document_id,position,name,email,method_id,method_version,token_hash,expires_at,signing_intent,parent_recipient_id) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [recipientId, documentId, position, recipient.name, recipient.email, method.id, method.version, sha256(raw), now() + linkTtlDays * DAY, config.legacyCreation ? null : signingIntent(creationIdentity!.installationId, row, { id: recipientId, method_id: method.id, method_version: method.version }, attachmentOf), recipient.parentRecipientId]);
         links.push({ recipientId, name: recipient.name, url: origin + '/sign#' + raw });
       }
-      const senderRecipientId = input.includeSender ? links[links.length - 1].recipientId : null;
-      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
-      return { document: await documentDto(client, row), links, senderRecipientId };
+      const senderRecipientId = sender ? links[links.length - 1].recipientId : null;
+      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), ...(attachmentOf ? { attachmentOf } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender: senderSnapshot, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email, ...(recipient.parentRecipientId ? { parentRecipientId: recipient.parentRecipientId } : {}) })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      return { document: await documentDto(client, row), links, senderRecipientId, attachmentOf };
     });
-    res.status(201).json(result);
+    const { attachmentOf, ...response } = result;
+    // Sent after commit. The sender signs in the app and is not e-mailed a link.
+    void notifier.send(response.links.flatMap((link: Row, position: number) => link.recipientId === response.senderRecipientId ? [] : [invitationMessage(recipients[position].email, link.name, link.url, input.title, res.locals.user.name, attachmentOf)]));
+    return { ...response, notified: notifier.enabled };
+  }
+  app.post('/api/documents', requireUser, async (req, res) => {
+    const input = z.object({
+      title: nameSchema,
+      fileName: fileNameSchema,
+      pdfBase64: pdfBase64Schema,
+      // Accepted for older clients; a sender preview is optional.
+      preparedHash: hashSchema.optional(),
+      recipients: z.array(partySchema).max(25),
+      includeSender: z.boolean().default(false),
+      methodId: z.literal('draw'),
+    }).strict().parse(req.body);
+    const sender = input.includeSender ? { name: res.locals.user.name, email: res.locals.user.email, parentRecipientId: null } : null;
+    res.status(201).json(await createSigningDocument(req, res, input, input.recipients.map(recipient => ({ ...recipient, parentRecipientId: null })), sender));
+  });
+  app.post('/api/documents/:id/attachments', requireUser, async (req, res) => {
+    const input = z.object({
+      title: nameSchema, fileName: fileNameSchema, pdfBase64: pdfBase64Schema,
+      // Parties of the main document who sign this bilaga too. By default the client selects all of them.
+      parentRecipientIds: z.array(z.uuid()).max(25),
+      recipients: z.array(partySchema).max(25),
+      includeSender: z.boolean().default(false),
+      methodId: z.literal('draw'),
+    }).strict().parse(req.body);
+    if (new Set(input.parentRecipientIds).size !== input.parentRecipientIds.length) throw new ApiError(400, 'Varje part kan bara väljas en gång.');
+    const parent = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (parent.parent_id) throw new ApiError(409, 'En bilaga kan inte ha egna bilagor. Lägg till bilagan på huvuddokumentet.');
+    if (parent.status !== 'completed') throw new ApiError(409, 'Bilagor kan bara läggas till ett färdigsignerat huvuddokument.');
+    const mainRecipients = (await pool.query('SELECT id,name,email FROM recipients WHERE document_id=$1 ORDER BY position', [parent.id])).rows;
+    const mainSenderRecipientId = (await documentDto(pool, parent, false, true)).senderRecipientId;
+    const parties: Party[] = [];
+    let sender: Party | null = null;
+    for (const recipientId of input.parentRecipientIds) {
+      const recipient = mainRecipients.find(item => item.id === recipientId);
+      if (!recipient) throw new ApiError(400, 'En vald part finns inte i huvuddokumentet.');
+      // The main document's own signing sender keeps the sender assignment when they add the bilaga.
+      if (recipientId === mainSenderRecipientId && parent.created_by === res.locals.user.id) sender = { name: res.locals.user.name, email: res.locals.user.email, parentRecipientId: recipientId };
+      else parties.push({ name: recipient.name, email: recipient.email, parentRecipientId: recipient.id });
+    }
+    parties.push(...input.recipients.map(recipient => ({ ...recipient, parentRecipientId: null })));
+    if (input.includeSender && !sender) sender = { name: res.locals.user.name, email: res.locals.user.email, parentRecipientId: null };
+    res.status(201).json(await createSigningDocument(req, res, input, parties, sender, parent));
   });
   app.get('/api/documents/:id', requireUser, async (req, res) => {
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
-    res.json({ document: await documentDto(pool, row) });
+    const attachments = row.parent_id ? [] : (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE parent_id=$1 ORDER BY attachment_number', [row.id])).rows;
+    res.json({ document: { ...await documentDto(pool, row), ...(row.parent_id ? {} : { attachments: await Promise.all(attachments.map(attachment => documentDto(pool, attachment))) }) } });
   });
   app.get('/api/documents/:id/pdf', requireUser, async (req, res) => withResponse(res, 'download', res.locals.user.id, async () => {
     const version = z.enum(['original', 'completed', 'uploaded']).parse(req.query.version ?? 'original');
@@ -446,10 +590,11 @@ export async function createApp(config: AppConfig) {
   });
 
 
+  const partyInput = z.object({ token: tokenSchema, documentId: z.uuid().optional() }).strict();
   app.post('/api/sign/session', async (req, res) => {
-    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    const { token: raw, documentId } = partyInput.parse(req.body);
     const result = await transaction(pool, async client => {
-      const { document, recipient } = await bearer(client, raw, true);
+      const { document, recipient } = await partyTarget(client, raw, documentId, true);
       const method = getSigningMethod(recipient.method_id);
       if (!method || method.version !== recipient.method_version) throw new ApiError(409, 'Signeringsmetoden är inte tillgänglig.');
       if (document.status === 'pending' && !recipient.viewed_at && !recipient.signed_at) {
@@ -464,8 +609,8 @@ export async function createApp(config: AppConfig) {
     res.json(result);
   });
   app.post('/api/sign/pdf', async (req, res) => {
-    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
-    const { document, recipient } = await bearer(pool, raw);
+    const { token: raw, documentId } = partyInput.parse(req.body);
+    const { document, recipient } = await partyTarget(pool, raw, documentId);
     await withResponse(res, 'view', recipient.id, async () => {
       const row = (await pool.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0];
       pdfResponse(res, row.original, document.id);
@@ -473,14 +618,14 @@ export async function createApp(config: AppConfig) {
   });
   app.post('/api/sign/complete', async (req, res) => {
     const input = z.object({
-      token: tokenSchema, documentHash: hashSchema, consentVersion: z.string().min(1).max(128),
+      token: tokenSchema, documentId: z.uuid().optional(), documentHash: hashSchema, consentVersion: z.string().min(1).max(128),
       accepted: z.literal(true), name: nameSchema, payload: z.unknown(), signingIntentHash: hashSchema.optional(),
     }).strict().parse(req.body);
     const result = await transaction(pool, async client => {
       // PostgreSQL owns the per-document lock, including across processes. The
       // reserved client keeps all signature events/artifacts in one transaction.
       // Cancellation and token rotation acquire the same lock.
-      const { document, recipient } = await bearer(client, input.token, true);
+      const { document, recipient, via } = await partyTarget(client, input.token, input.documentId, true) as { document: Row; recipient: Row; via?: Row };
       const consent = consentFor(recipient);
       if (input.consentVersion !== consent.version) throw new ApiError(400, 'Samtycket stämmer inte. Öppna dokumentet igen.');
       if (document.evidence_version === 2 && (!recipient.signing_intent || input.signingIntentHash !== sha256(recipient.signing_intent))) throw new ApiError(409, 'Öppna dokumentet igen för att bekräfta den aktuella signeringen.');
@@ -504,6 +649,8 @@ export async function createApp(config: AppConfig) {
         ...(document.evidence_version === 2 ? { documentId: document.id, transactionId: document.id, authenticationMethod: 'personal_signing_link', consentAcceptedAt: signedAt, signedAt } : {}),
         consent, method: { id: method.id, version: method.version }, signature: verified.visualSignature ?? null,
         providerEvidence, ...(recipient.signing_intent ? { intent: intentEvidence(recipient.signing_intent) } : {}), ...requestEvidence(req),
+        // Signed through the same party's link to the main document or another bilaga.
+        ...(via ? { accessRecipientId: via.id, accessDocumentId: via.document_id } : {}),
       };
       await client.query('UPDATE recipients SET signed_at=$1,claimed_name=$2,signature=$3,evidence=$4,submission_hash=$5,expires_at=$6 WHERE id=$7', [signedAt, input.name, verified.visualSignature ?? null, evidence, submissionHash, now() + 30 * DAY, recipient.id]);
       const checkpoint = await appendEvent(client, document.id, 'recipient.signed', signedAt, evidence);
@@ -525,13 +672,22 @@ export async function createApp(config: AppConfig) {
         finalDocument = (await client.query("UPDATE documents SET status='completed',completed=$1,completed_hash=$2,completed_at=$3,signing_checkpoint=$4 WHERE id=$5 RETURNING " + docColumns, [completed, completedHash, completedAt, checkpoint, document.id])).rows[0];
         await appendEvent(client, document.id, 'document.completed', completedAt, { originalHash: document.original_hash, completedHash, signingCheckpoint: checkpoint });
       }
-      return { document: await documentDto(client, finalDocument, true), recipientId: recipient.id };
+      return { document: await documentDto(client, finalDocument, true), recipientId: recipient.id, completedNow: finalDocument.status === 'completed' };
     });
-    res.json(result);
+    const { completedNow, ...response } = result as Row;
+    if (completedNow) afterCompletion(response.document.id);
+    res.json(response);
+  });
+  app.post('/api/sign/dossier', async (req, res) => {
+    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
+    const { document, recipient } = await partyCredential(pool, raw);
+    res.json({ documentId: document.id, documents: await partyDocuments(pool, document, recipient) });
   });
   app.post('/api/sign/download', async (req, res) => {
-    const { token: raw } = z.object({ token: tokenSchema }).strict().parse(req.body);
-    const { document, recipient } = await bearer(pool, raw);
+    const { token: raw, documentId } = partyInput.parse(req.body);
+    // Completed-copy links are read-only; they reach the same party's documents as the signing link.
+    const own = await partyCredential(pool, raw);
+    const { document, recipient } = !documentId || documentId === own.document.id ? own : await relatedTarget(pool, own, documentId);
     if (!recipient.signed_at || document.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
     await withResponse(res, 'download', recipient.id, async () => {
       const row = (await pool.query('SELECT completed FROM documents WHERE id=$1', [document.id])).rows[0];

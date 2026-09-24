@@ -1,5 +1,6 @@
 import { resolve } from 'node:path';
 import { createApp } from './app.js';
+import { createNotifier } from './notify.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required. Configure PostgreSQL before starting signhere.');
@@ -12,6 +13,7 @@ const runtime = await createApp({
   keysDir: process.env.SIGNHERE_KEYS_DIR,
   signingLinkTtlDays: Number(process.env.SIGNHERE_SIGNING_LINK_TTL_DAYS ?? 7),
   sealP12File: process.env.SIGNHERE_SEAL_P12_FILE, sealPasswordFile: process.env.SIGNHERE_SEAL_PASSWORD_FILE,
+  notifier: createNotifier({ smtpUrl: process.env.SMTP_URL || undefined, from: process.env.SMTP_FROM || undefined }),
   trustProxy: process.env.TRUST_PROXY?.split(',').map(value => value.trim()).filter(Boolean),
 });
 const server = runtime.app.listen(port, process.env.HOST ?? '127.0.0.1', () => console.log('signhere listening on port ' + port));

@@ -6,22 +6,23 @@ import {
   type Block, type Company, type DocSettings, type Draft, type Issue, type RecipientCompany,
 } from './model';
 
-export function SidePanel({ issues, flash, onIssue }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void }) {
+/** With `attachment`, signers come from the main document, so sending and signer options are hidden. */
+export function SidePanel({ issues, flash, onIssue, attachment = false }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment?: boolean }) {
   return <aside className="ed-panel" aria-label="Utskick och inställningar">
-    <StatusCard issues={issues} flash={flash} onIssue={onIssue} />
-    <RecipientsCard />
-    <OutlineCard />
-    <SendingCard />
+    <StatusCard issues={issues} flash={flash} onIssue={onIssue} attachment={attachment} />
+    <RecipientsCard attachment={attachment} />
+    <OutlineCard attachment={attachment} />
+    {!attachment && <SendingCard />}
     <AppearanceCard />
   </aside>;
 }
 
-function StatusCard({ issues, flash, onIssue }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void }) {
-  const title = !issues.length ? 'Klart att skicka' : issues.length === 1 ? '1 sak kvar' : `${issues.length} saker kvar`;
+function StatusCard({ issues, flash, onIssue, attachment }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment: boolean }) {
+  const title = !issues.length ? (attachment ? 'Klar att använda' : 'Klart att skicka') : issues.length === 1 ? '1 sak kvar' : `${issues.length} saker kvar`;
   return <section className={`ed-card ed-status${flash ? ' flash' : ''}${issues.length ? '' : ' done'}`} data-status aria-live="polite">
     <h2><span className="ed-dot" aria-hidden="true" />{title}</h2>
     {issues.length ? <div className="ed-issues">{issues.map(issue => <button key={issue.message} type="button" onClick={() => onIssue(issue)}><span>{issue.message}</span><ArrowRight size={15} aria-hidden="true" /></button>)}</div>
-      : <p className="ed-card-text">Mottagare, fält och priser är ifyllda.</p>}
+      : <p className="ed-card-text">{attachment ? 'Fält och priser är ifyllda.' : 'Mottagare, fält och priser är ifyllda.'}</p>}
   </section>;
 }
 
@@ -30,7 +31,7 @@ function StatusCard({ issues, flash, onIssue }: { issues: Issue[]; flash: boolea
 type CompanyForm = { name: string; orgNr: string; address: string; zip: string; city: string; contactName: string; contactEmail: string; contactRole: string; save: boolean };
 const emptyForm = (name = ''): CompanyForm => ({ name, orgNr: '', address: '', zip: '', city: '', contactName: '', contactEmail: '', contactRole: '', save: true });
 
-function RecipientsCard() {
+function RecipientsCard({ attachment }: { attachment: boolean }) {
   const { draft, update } = useEditorApi();
   const [book, setBook] = useState<Company[]>(loadBook);
   const [query, setQuery] = useState('');
@@ -81,7 +82,7 @@ function RecipientsCard() {
   const toggleSigner = (id: string) => setCompany(current => current && { ...current, contacts: current.contacts.map(person => person.id === id ? { ...person, signs: !person.signs } : person) });
 
   return <section className="ed-card ed-recipients" data-rec-card>
-    <div className="ed-card-head"><h2>Mottagare</h2><span>Blir parter och signerare</span></div>
+    <div className="ed-card-head"><h2>Mottagare</h2><span>{attachment ? 'Används i kundfälten' : 'Blir parter och signerare'}</span></div>
 
     {mode ? <form className="ed-form" onSubmit={submit} noValidate>
       <strong>{mode === 'edit' ? 'Ändra företag' : 'Nytt företag'}</strong>
@@ -138,7 +139,7 @@ function RecipientsCard() {
       </form> : <button type="button" className="ed-text-btn start" onClick={() => { setContact({ name: '', email: '', role: '' }); setContactError(''); setContactOpen(true); }}>+ Kontaktperson</button>}
     </div>}
 
-    <label className="ed-check ed-me"><input type="checkbox" checked={draft.settings.senderSigns} onChange={event => update(current => ({ ...current, settings: { ...current.settings, senderSigns: event.target.checked } }))} />Jag signerar också</label>
+    {!attachment && <label className="ed-check ed-me"><input type="checkbox" checked={draft.settings.senderSigns} onChange={event => update(current => ({ ...current, settings: { ...current.settings, senderSigns: event.target.checked } }))} />Jag signerar också</label>}
   </section>;
 }
 
@@ -150,7 +151,7 @@ function outlineText(draft: Draft, block: Block) {
   return '';
 }
 
-function OutlineCard() {
+function OutlineCard({ attachment }: { attachment: boolean }) {
   const { draft, user, selectedId, jump } = useEditorApi();
   const count = signers(draft, user).length;
   return <section className="ed-card ed-outline">
@@ -158,9 +159,9 @@ function OutlineCard() {
     {draft.blocks.map((block, index) => <button key={block.id} type="button" className={selectedId === block.id ? 'active' : ''} onClick={() => jump(block.id)}>
       <span className="ed-outline-n">{String(index + 1).padStart(2, '0')}</span><strong>{BLOCK_LABELS[block.type]}</strong><span className="ed-outline-sub">{outlineText(draft, block)}</span>
     </button>)}
-    <button type="button" className={selectedId === SIGNATURE_ID ? 'active' : ''} onClick={() => jump(SIGNATURE_ID)}>
+    {!attachment && <button type="button" className={selectedId === SIGNATURE_ID ? 'active' : ''} onClick={() => jump(SIGNATURE_ID)}>
       <span className="ed-outline-n">—</span><strong>Signaturer</strong><span className="ed-outline-sub">{count === 1 ? '1 person' : `${count} personer`}</span>
-    </button>
+    </button>}
   </section>;
 }
 
