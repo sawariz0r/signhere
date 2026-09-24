@@ -33,6 +33,8 @@ const company = { id: 'c1', name: 'Kund AB', orgNr: '556000-0000', address: 'Gat
 try {
   const owner = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   await owner.addInitScript(polyfill);
+  // Keep the whole stack of a browser error, so a report shows what started it.
+  await owner.addInitScript(() => { Error.stackTraceLimit = 100; });
   const api = owner.request;
   assert.equal((await api.post(baseURL + '/api/setup', { data: { setupToken, name: 'Sara Sender', email: 'sara@example.test', password: 'correct horse battery staple', teamName: 'Avtal AB' }, headers: { Origin: baseURL } })).status(), 201);
   const page = await owner.newPage();
