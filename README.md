@@ -62,6 +62,8 @@ Coolify builds the image from this repository and runs the app and PostgreSQL fr
    | `APP_DATABASE_PASSWORD` | A different long URL-safe random value for the restricted runtime role. Keep it stable after first deployment. |
    | `BASE_URL` | The exact public origin, e.g. `https://sign.example.com`, with no trailing slash. Requests from any other origin are rejected. |
 
+   Enter real values for both passwords; if Coolify pre-fills one with placeholder text, replace it. Leave *Available at Buildtime* off for both, because the image build doesn't need them and Coolify prints build-time variables in the deployment log.
+
    That's all. PostgreSQL runs inside the same stack, so there is no connection string to set. `TRUST_PROXY` defaults to `uniquelocal`, which trusts Coolify's proxy on the private Docker network so the audit trail records visitors' real IPs. Leave `PORT` and `BIND_ADDRESS` at their defaults; change `PORT` only if host port 3000 is already taken.
 4. **Domain:** on the `signhere` service, set *Domains* to `https://sign.example.com:3000`. The `:3000` tells the proxy which container port to route to; it is not part of the public URL. Leave the `postgres` service without a domain.
 5. **Deploy**, and wait for the health check to turn green.

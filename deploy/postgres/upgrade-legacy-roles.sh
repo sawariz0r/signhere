@@ -20,6 +20,14 @@ if [ "$POSTGRES_PASSWORD" = "$APP_DATABASE_PASSWORD" ]; then
   echo 'POSTGRES_PASSWORD and APP_DATABASE_PASSWORD must be different.' >&2
   exit 1
 fi
+# Both passwords are embedded unescaped in the application's connection URLs. This also
+# catches placeholder text some deployment tools store in place of an unset variable.
+for password in "$POSTGRES_PASSWORD" "$APP_DATABASE_PASSWORD"; do
+  case $password in *[[:space:]@/?#%]*)
+    echo 'POSTGRES_PASSWORD and APP_DATABASE_PASSWORD must be URL-safe (no spaces or @ / ? # %).' >&2
+    exit 1;;
+  esac
+done
 database="${POSTGRES_DB:-signhere}"
 run() { user=$1; password=$2; shift 2; PGPASSWORD=$password psql -X -q -v ON_ERROR_STOP=1 --username "$user" --dbname "$database" "$@"; }
 can_login() { run "$1" "$2" -Atc 'SELECT 1' >/dev/null 2>&1; }
