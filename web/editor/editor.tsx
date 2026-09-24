@@ -1,65 +1,62 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
 import type { Editor } from '@tiptap/react';
-import { Check, CloudAlert, LoaderCircle, Monitor, PanelLeft, Plus, Redo2, Send, Settings2, Smartphone, Undo2, X } from 'lucide-react';
+import { ArrowRight, Check, X } from 'lucide-react';
+import '@fontsource-variable/source-serif-4';
 import { EditorContext, useEditorApi, type EditorApi } from './context';
-import { BlockFrame, BlockView } from './blocks';
-import { BLOCK_ICONS, BlockPalette, DesignPanel, DRAG_TYPE, FieldsPanel, HeaderSettings, SettingsPanel } from './sidebar';
-import { SendDrawer, type SendRequest } from './send';
-import { BLOCK_LABELS, createBlock, createDraft, loadDraft, saveDraft, SINGLE_BLOCKS, TEMPLATES, templateBlocks, validate, type Block, type BlockType, type Draft, type HeaderBlock } from './model';
-import type { User } from '../types';
+import { BlockFrame, BlockView, SignatureSection, UnitList } from './blocks';
+import { SidePanel } from './sidebar';
+import { SendDialog, type SendRequest } from './send';
+import {
+  BLOCK_LABELS, createBlock, createDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, validate,
+  type Block, type BlockType, type Draft, type Issue, type TemplateKey,
+} from './model';
+import type { ShareLink, User } from '../types';
 import './editor.css';
 
-const MOVE_TYPE = 'application/x-signhere-move';
 const HISTORY_LIMIT = 100;
-type Tab = 'blocks' | 'design' | 'fields' | 'settings';
+type Toast = { message: string; restore?: { block: Block; index: number } };
 
-function insertIndex(blocks: Block[], type: BlockType, after: string | null) {
-  if (type === 'signature') return blocks.length;
-  const selected = after ? blocks.findIndex(block => block.id === after) : -1;
-  const tail = blocks.findIndex(block => block.type === 'signature' || (type !== 'terms' && block.type === 'terms'));
-  if (selected >= 0 && (tail < 0 || selected < tail)) return selected + 1;
-  return tail < 0 ? blocks.length : tail;
-}
+const reducedMotion = () => window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+const scrollToElement = (selector: string, offset: number) => requestAnimationFrame(() => {
+  const element = document.querySelector(selector);
+  if (element) window.scrollTo({ top: Math.max(0, element.getBoundingClientRect().top + window.scrollY - offset), behavior: reducedMotion() ? 'auto' : 'smooth' });
+});
 
-function InsertPoint({ index }: { index: number }) {
+function Tray({ label, index, onClose }: { label: string; index: number; onClose?: () => void }) {
   const { draft, addBlock } = useEditorApi();
-  const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false); };
-    document.addEventListener('mousedown', close);
-    return () => document.removeEventListener('mousedown', close);
-  }, [open]);
-  const types = (Object.keys(BLOCK_LABELS) as BlockType[]).filter(type => !(SINGLE_BLOCKS.has(type) && draft.blocks.some(block => block.type === type)));
-  return <div ref={ref} className={`ed-insert${open ? ' open' : ''}`}>
-    <button type="button" className="ed-insert-button" aria-label="Infoga block här" aria-expanded={open} onClick={() => setOpen(value => !value)}><Plus size={14} /></button>
-    {open && <div className="ed-popover ed-insert-menu" role="menu">{types.map(type => { const Icon = BLOCK_ICONS[type]; return <button key={type} type="button" role="menuitem" onClick={() => { addBlock(type, index); setOpen(false); }}><Icon size={15} />{BLOCK_LABELS[type]}</button>; })}</div>}
+  const present = new Set(draft.blocks.map(block => block.type));
+  return <div className={`ed-tray${onClose ? '' : ' end'}`} role="group" aria-label={label}>
+    <span>{label}</span>
+    {TRAY_ORDER.filter(type => !(SINGLE_BLOCKS.has(type) && present.has(type))).map(type => <button key={type} type="button" onClick={() => addBlock(type, index)}>{BLOCK_LABELS[type]}</button>)}
+    {onClose && <button type="button" className="ed-tray-close" aria-label="Stäng" title="Stäng" onClick={onClose}><X size={16} /></button>}
   </div>;
 }
 
-export function DocumentEditor({ draftId, user, onClose, onSend }: { draftId: string; user: User; onClose: () => void; onSend?: (request: SendRequest) => Promise<void> }) {
+export function DocumentEditor({ draftId, user, onClose, onSend }: { draftId: string; user: User; onClose: () => void; onSend?: (request: SendRequest) => Promise<ShareLink[]> }) {
   const [draft, setDraft] = useState<Draft>(() => loadDraft(draftId) ?? createDraft(draftId, user));
   const [revision, setRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [settingsId, setSettingsId] = useState<string | null>(null);
+  const [insertAt, setInsertAt] = useState<number | 'end' | null>(null);
   const [preview, setPreview] = useState(false);
-  const [device, setDevice] = useState<'desktop' | 'mobile'>('desktop');
-  const [sidebar, setSidebar] = useState(() => window.innerWidth > 900);
-  const [tab, setTab] = useState<Tab>('blocks');
-  const [sending, setSending] = useState(false);
+  const [fresh, setFresh] = useState<string | null>(null);
+  const [paperWidth, setPaperWidth] = useState(800);
+  const [toast, setToast] = useState<Toast | null>(null);
+  const [sendOpen, setSendOpen] = useState(false);
+  const [flash, setFlash] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
-  const [dropIndex, setDropIndex] = useState<number | null>(null);
   const past = useRef<Draft[]>([]);
   const future = useRef<Draft[]>([]);
   const lastSnapshot = useRef(0);
   const firstRender = useRef(true);
-  const scrollTo = useRef<string | null>(null);
   const activeEditor = useRef<Editor | null>(null);
-  const canvas = useRef<HTMLDivElement>(null);
-  const [, forceHistory] = useState(0);
+  const paper = useRef<HTMLElement>(null);
+  const flip = useRef<Map<string, number> | null>(null);
+  const timers = useRef<Record<string, number>>({});
   const latest = useRef(draft);
   latest.current = draft;
+
+  const later = useCallback((name: string, ms: number, run: () => void) => { window.clearTimeout(timers.current[name]); timers.current[name] = window.setTimeout(run, ms); }, []);
+  useEffect(() => () => Object.values(timers.current).forEach(window.clearTimeout), []);
 
   const update = useCallback((change: (draft: Draft) => Draft, options: { structural?: boolean } = {}) => {
     setDraft(current => {
@@ -69,7 +66,6 @@ export function DocumentEditor({ draftId, user, onClose, onSend }: { draftId: st
       if (options.structural || now - lastSnapshot.current > 700) {
         past.current = [...past.current.slice(-HISTORY_LIMIT + 1), current];
         future.current = [];
-        forceHistory(value => value + 1);
       }
       lastSnapshot.current = options.structural ? 0 : now;
       return next;
@@ -85,27 +81,88 @@ export function DocumentEditor({ draftId, user, onClose, onSend }: { draftId: st
     setDraft(target);
     lastSnapshot.current = 0;
     setRevision(value => value + 1);
-    forceHistory(value => value + 1);
+    setToast(null);
   }, []);
 
-  const addBlock = useCallback((type: BlockType, index?: number) => {
+  const markFresh = useCallback((id: string) => { setFresh(id); later('fresh', 450, () => setFresh(null)); }, [later]);
+  const select = useCallback((id: string | null) => { setSelectedId(id); setInsertAt(null); }, []);
+
+  const addBlock = useCallback((type: BlockType, index: number) => {
     const block = createBlock(type);
     update(current => {
       if (SINGLE_BLOCKS.has(type) && current.blocks.some(item => item.type === type)) return current;
       const blocks = [...current.blocks];
-      blocks.splice(index ?? insertIndex(blocks, type, selectedId), 0, block);
+      blocks.splice(index, 0, block.type === 'header' && current.title !== 'Namnlöst dokument' ? { ...block, title: current.title } : block);
       return { ...current, blocks };
     }, { structural: true });
-    setSelectedId(block.id);
-    scrollTo.current = block.id;
-  }, [selectedId, update]);
+    select(block.id);
+    markFresh(block.id);
+  }, [update, select, markFresh]);
+
+  const captureFlip = () => {
+    const tops = new Map<string, number>();
+    paper.current?.querySelectorAll<HTMLElement>('[data-block]').forEach(element => tops.set(element.dataset.block!, element.getBoundingClientRect().top));
+    flip.current = tops;
+  };
+  const moveBlock = useCallback((id: string, offset: number) => {
+    captureFlip();
+    update(current => {
+      const from = current.blocks.findIndex(block => block.id === id), to = from + offset;
+      if (from < 0 || to < 0 || to >= current.blocks.length) return current;
+      const blocks = [...current.blocks];
+      [blocks[from], blocks[to]] = [blocks[to], blocks[from]];
+      return { ...current, blocks };
+    }, { structural: true });
+  }, [update]);
+  const copyBlock = useCallback((id: string) => {
+    const index = latest.current.blocks.findIndex(block => block.id === id);
+    const source = latest.current.blocks[index];
+    if (!source || SINGLE_BLOCKS.has(source.type)) return;
+    const copy = duplicateBlock(source);
+    update(current => { const blocks = [...current.blocks]; blocks.splice(index + 1, 0, copy); return { ...current, blocks }; }, { structural: true });
+    select(copy.id);
+    markFresh(copy.id);
+  }, [update, select, markFresh]);
+  const removeBlock = useCallback((id: string) => {
+    const index = latest.current.blocks.findIndex(block => block.id === id);
+    const block = latest.current.blocks[index];
+    if (!block) return;
+    update(current => ({ ...current, blocks: current.blocks.filter(item => item.id !== id) }), { structural: true });
+    select(null);
+    setToast({ message: `${BLOCK_LABELS[block.type]} togs bort`, restore: { block, index } });
+    later('toast', 5000, () => setToast(null));
+  }, [update, select, later]);
+  const restore = () => {
+    const saved = toast?.restore;
+    if (!saved) return;
+    update(current => {
+      if (current.blocks.some(block => block.id === saved.block.id)) return current;
+      const blocks = [...current.blocks];
+      blocks.splice(Math.min(saved.index, blocks.length), 0, saved.block);
+      return { ...current, blocks };
+    }, { structural: true });
+    setToast(null);
+    select(saved.block.id);
+    markFresh(saved.block.id);
+  };
+
+  const jump = useCallback((id: string) => { setPreview(false); select(id); scrollToElement(`[data-block="${id}"]`, 110); }, [select]);
+  const focusRecipients = useCallback(() => {
+    setPreview(false);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const card = document.querySelector('[data-rec-card]');
+      if (!card) return;
+      const inputs = [...card.querySelectorAll<HTMLInputElement>('input:not([type=checkbox])')];
+      const target = inputs.find(input => !input.value.trim()) ?? inputs[0];
+      if (target) target.focus({ preventScroll: true });
+      scrollToElement('[data-rec-card]', 84);
+    }));
+  }, []);
 
   const api = useMemo<EditorApi>(() => ({
-    draft, preview, selectedId, select: setSelectedId, update, addBlock, activeEditor,
-    updateBlock: (id, patch) => update(current => ({ ...current, blocks: current.blocks.map(block => block.id === id ? { ...block, ...patch } as Block : block) })),
-    setField: (key, value) => update(current => ({ ...current, fields: { ...current.fields, [key]: value } })),
-    openSettings: id => { setSettingsId(id); setSelectedId(id); },
-  }), [draft, preview, selectedId, update, addBlock]);
+    draft, user, preview, selectedId, fresh, paperWidth, select, jump, focusRecipients, update, addBlock, moveBlock, copyBlock, removeBlock, activeEditor,
+    updateBlock: (id, patch) => update(current => ({ ...current, blocks: current.blocks.map(block => block.id === id ? { ...block, ...(typeof patch === 'function' ? patch(block as never) : patch) } as Block : block) })),
+  }), [draft, user, preview, selectedId, fresh, paperWidth, select, jump, focusRecipients, update, addBlock, moveBlock, copyBlock, removeBlock]);
 
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
@@ -116,120 +173,122 @@ export function DocumentEditor({ draftId, user, onClose, onSend }: { draftId: st
     return () => window.clearTimeout(timer);
   }, [draft]);
 
-  useEffect(() => {
-    const id = scrollTo.current;
-    if (!id) return;
-    scrollTo.current = null;
-    requestAnimationFrame(() => canvas.current?.querySelector(`[data-block-id="${id}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' }));
+  useLayoutEffect(() => {
+    const tops = flip.current;
+    flip.current = null;
+    if (!tops || reducedMotion()) return;
+    paper.current?.querySelectorAll<HTMLElement>('[data-block]').forEach(element => {
+      const before = tops.get(element.dataset.block!);
+      if (before === undefined) return;
+      const delta = before - element.getBoundingClientRect().top;
+      if (Math.abs(delta) < 1) return;
+      element.style.transition = 'none';
+      element.style.transform = `translateY(${delta}px)`;
+      requestAnimationFrame(() => requestAnimationFrame(() => { element.style.transition = 'transform .22s cubic-bezier(.2,.7,.2,1)'; element.style.transform = ''; }));
+      window.setTimeout(() => { element.style.transition = ''; }, 320);
+    });
   }, [draft.blocks]);
 
+  useEffect(() => {
+    const element = paper.current;
+    if (!element || typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(() => setPaperWidth(width => Math.abs(width - element.clientWidth) > 4 ? element.clientWidth : width));
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
   useEffect(() => { document.title = `${draft.title || 'Namnlöst dokument'} · Redigera · signhere`; }, [draft.title]);
+
+  const issues = validate(draft);
+  const openSend = () => {
+    if (issues.length) {
+      setPreview(false); setFlash(true);
+      later('flash', 1400, () => setFlash(false));
+      scrollToElement('[data-status]', 84);
+      return;
+    }
+    select(null);
+    setSendOpen(true);
+  };
+  const onIssue = (issue: Issue) => {
+    if (issue.target?.kind === 'recipients') focusRecipients();
+    else if (issue.target?.kind === 'block') jump(issue.target.id);
+  };
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement;
       const typing = target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
       const mod = event.metaKey || event.ctrlKey;
-      if (mod && event.key.toLowerCase() === 's') { event.preventDefault(); try { saveDraft({ ...draft, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); } return; }
-      if (mod && !typing && event.key.toLowerCase() === 'z') { event.preventDefault(); travel(event.shiftKey ? 'redo' : 'undo'); return; }
-      if (mod && !typing && event.key.toLowerCase() === 'y') { event.preventDefault(); travel('redo'); return; }
-      if (event.key === 'Escape' && !typing) { if (sending) setSending(false); else if (settingsId) setSettingsId(null); else setSelectedId(null); }
+      const key = event.key.toLowerCase();
+      if (mod && key === 's') { event.preventDefault(); try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); } return; }
+      if (event.key === 'Escape') {
+        if (event.defaultPrevented) return;
+        if (sendOpen) setSendOpen(false);
+        else { if (typing) target.blur(); select(null); }
+        return;
+      }
+      if (typing || preview || sendOpen) return;
+      if (mod && (key === 'z' || key === 'y')) { event.preventDefault(); travel(key === 'y' || event.shiftKey ? 'redo' : 'undo'); return; }
+      if (!selectedId || selectedId === SIGNATURE_ID) return;
+      if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); removeBlock(selectedId); }
+      else if (mod && key === 'd') { event.preventDefault(); copyBlock(selectedId); }
+      else if (event.altKey && (event.key === 'ArrowUp' || event.key === 'ArrowDown')) { event.preventDefault(); moveBlock(selectedId, event.key === 'ArrowUp' ? -1 : 1); }
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [draft, travel, sending, settingsId]);
+  }, [preview, sendOpen, selectedId, select, travel, removeBlock, copyBlock, moveBlock]);
 
-  const dropAt = (event: React.DragEvent) => {
-    const items = [...(canvas.current?.querySelectorAll<HTMLElement>('.ed-page > .ed-flow > .ed-block') ?? [])];
-    const index = items.findIndex(item => { const rect = item.getBoundingClientRect(); return event.clientY < rect.top + rect.height / 2; });
-    return index < 0 ? items.length : index;
+  const applyTemplate = (key: TemplateKey) => {
+    if (key === 'blank') { addBlock('text', 0); return; }
+    const label = TEMPLATES.find(template => template.key === key)!.label;
+    update(current => ({ ...current, title: current.title === 'Namnlöst dokument' ? label : current.title, blocks: templateBlocks(key) }), { structural: true });
   };
-  const accepts = (event: React.DragEvent) => event.dataTransfer.types.includes(DRAG_TYPE) || event.dataTransfer.types.includes(MOVE_TYPE);
-  const onDrop = (event: React.DragEvent) => {
-    if (!accepts(event)) return;
-    event.preventDefault();
-    const index = dropAt(event);
-    setDropIndex(null);
-    const type = event.dataTransfer.getData(DRAG_TYPE) as BlockType;
-    const moving = event.dataTransfer.getData(MOVE_TYPE);
-    if (type) addBlock(type, index);
-    else if (moving) update(current => {
-      const from = current.blocks.findIndex(block => block.id === moving);
-      if (from < 0) return current;
-      const blocks = [...current.blocks];
-      const [item] = blocks.splice(from, 1);
-      blocks.splice(from < index ? index - 1 : index, 0, item);
-      return blocks.every((block, i) => block === current.blocks[i]) ? current : { ...current, blocks };
-    }, { structural: true });
-  };
+  const deselect = (event: React.MouseEvent) => { if (event.target === event.currentTarget) select(null); };
+  const font = FONTS.find(([key]) => key === draft.theme.font)?.[2] ?? FONTS[0][2];
+  const paperStyle = { fontFamily: font, '--doc-accent': draft.theme.accent } as CSSProperties;
 
-  const issues = validate(draft);
-  const errors = issues.filter(issue => issue.level === 'error').length;
-  const settingsBlock = draft.blocks.find(block => block.id === settingsId && block.type === 'header') as HeaderBlock | undefined;
-  const pageStyle = { '--doc-accent': draft.theme.accent, '--doc-page': draft.theme.pageColor, '--doc-font': `var(--ed-font-${draft.theme.font})`, '--doc-scale': draft.theme.scale === 'compact' ? 0.9 : draft.theme.scale === 'large' ? 1.1 : 1 } as CSSProperties;
-
-  return <EditorContext.Provider value={api}><div className={`ed${preview ? ' is-preview' : ''}${sidebar && !preview ? ' has-sidebar' : ''}`}>
+  return <EditorContext.Provider value={api}><div className={`ed${preview ? ' is-preview' : ''}`}>
     <header className="ed-topbar">
-      <div className="ed-topbar-side">
-        <button type="button" className="ed-icon-ghost" aria-label="Stäng editorn" title="Stäng" onClick={onClose}><X size={18} /></button>
-        {!preview && <button type="button" className={`ed-icon-ghost${sidebar ? ' active' : ''}`} aria-label="Visa eller dölj sidopanel" aria-pressed={sidebar} title="Sidopanel" onClick={() => setSidebar(value => !value)}><PanelLeft size={18} /></button>}
-        <input className="ed-title-input" aria-label="Dokumentnamn" value={draft.title} placeholder="Namnlöst dokument" onChange={event => update(current => ({ ...current, title: event.target.value }))} />
-      </div>
-      <div className="ed-mode-switch" role="tablist" aria-label="Läge">
-        <button type="button" role="tab" aria-selected={!preview} className={!preview ? 'active' : ''} onClick={() => setPreview(false)}>Redigera</button>
-        <button type="button" role="tab" aria-selected={preview} className={preview ? 'active' : ''} onClick={() => { setPreview(true); setSelectedId(null); setSettingsId(null); }}>Förhandsgranska</button>
-      </div>
-      <div className="ed-topbar-side end">
-        {preview ? <div className="ed-segment icons" aria-label="Enhet">{([['desktop', Monitor, 'Dator'], ['mobile', Smartphone, 'Mobil']] as const).map(([key, Icon, label]) => <button key={key} type="button" aria-label={label} title={label} aria-pressed={device === key} className={device === key ? 'active' : ''} onClick={() => setDevice(key)}><Icon size={15} /></button>)}</div>
-          : <><button type="button" className="ed-icon-ghost" aria-label="Ångra" title="Ångra (Ctrl+Z)" disabled={!past.current.length} onClick={() => travel('undo')}><Undo2 size={17} /></button><button type="button" className="ed-icon-ghost" aria-label="Gör om" title="Gör om (Ctrl+Shift+Z)" disabled={!future.current.length} onClick={() => travel('redo')}><Redo2 size={17} /></button></>}
-        <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><LoaderCircle size={14} className="spin" />Sparar</> : saveState === 'error' ? <><CloudAlert size={14} />Kunde inte spara</> : <><Check size={14} />Sparat</>}</span>
-        <button type="button" className="button small ed-review" onClick={() => setSending(true)}><Send size={14} />Granska & skicka{errors > 0 && <span className="ed-badge" aria-label={`${errors} saker att åtgärda`}>{errors}</span>}</button>
+      <div className="ed-topbar-inner">
+        <button type="button" className="ed-logo" aria-label="Tillbaka till dokument" title="Tillbaka till dokument" onClick={onClose}><span><i /></span></button>
+        <span className="ed-slash" aria-hidden="true">/</span>
+        <input className="ed-title" aria-label="Dokumentnamn" value={draft.title} placeholder="Namnlöst dokument" onChange={event => update(current => ({ ...current, title: event.target.value }))} />
+        <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <><Check size={13} strokeWidth={3} aria-hidden="true" />Sparat</>}</span>
+        <div className="ed-topbar-actions">
+          <button type="button" className="ed-btn large" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
+          <button type="button" className="ed-btn primary large" onClick={openSend}>Skicka{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
+        </div>
       </div>
     </header>
 
-    {!preview && sidebar && <aside className="ed-sidebar" aria-label="Verktyg">
-      <div className="ed-tabs" role="tablist">{([['blocks', 'Block'], ['design', 'Design'], ['fields', 'Fält']] as const).map(([key, label]) => <button key={key} type="button" role="tab" aria-selected={tab === key} className={tab === key ? 'active' : ''} onClick={() => setTab(key)}>{label}</button>)}
-        <button type="button" role="tab" aria-selected={tab === 'settings'} aria-label="Inställningar" title="Inställningar" className={`ed-tab-icon${tab === 'settings' ? ' active' : ''}`} onClick={() => setTab('settings')}><Settings2 size={16} /></button></div>
-      <div className="ed-sidebar-scroll">
-        {tab === 'blocks' && <><p className="ed-panel-hint pad">Klicka för att lägga till, eller dra in blocket där du vill ha det.</p><BlockPalette onPick={() => { if (window.innerWidth <= 900) setSidebar(false); }} /></>}
-        {tab === 'design' && <DesignPanel />}
-        {tab === 'fields' && <FieldsPanel />}
-        {tab === 'settings' && <SettingsPanel />}
+    <div className="ed-main">
+      <div className="ed-canvas" onMouseDown={deselect}>
+        {preview && <p className="ed-preview-note"><span aria-hidden="true" />Förhandsgranskning – så här ser mottagaren dokumentet.</p>}
+        <article ref={paper} className="ed-paper" style={paperStyle} onMouseDown={deselect}>
+          {!draft.blocks.length ? <div className="ed-start">
+            <div className="ed-mono">Börja med</div>
+            <h2>Vad vill du skicka?</h2>
+            <div className="ed-start-list">{TEMPLATES.map(template => <button key={template.key} type="button" onClick={() => applyTemplate(template.key)}>
+              <span><strong>{template.label}</strong><span>{template.description}</span></span><ArrowRight size={18} aria-hidden="true" />
+            </button>)}</div>
+          </div> : <div className="ed-flow" key={revision}>
+            {draft.blocks.map((block, index) => <Fragment key={block.id}>
+              {!preview && index > 0 && (insertAt === index ? <Tray label="Infoga" index={index} onClose={() => setInsertAt(null)} />
+                : <button type="button" className="ed-slot" aria-label="Infoga block här" title="Infoga block här" onClick={() => { setSelectedId(null); setInsertAt(index); }}><span /><i>+</i><span /></button>)}
+              <BlockFrame block={block} index={index} count={draft.blocks.length}><BlockView block={block} /></BlockFrame>
+            </Fragment>)}
+          </div>}
+          {!preview && draft.blocks.length > 0 && (insertAt === 'end' ? <Tray label="Lägg till" index={draft.blocks.length} />
+            : <button type="button" className="ed-add-end" onClick={() => { setSelectedId(null); setInsertAt('end'); }}>+ Lägg till block</button>)}
+          {draft.blocks.length > 0 && <SignatureSection />}
+        </article>
       </div>
-    </aside>}
+      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} />}
+    </div>
+    <UnitList />
 
-    <main ref={canvas} className="ed-canvas" onMouseDown={event => { if (event.target === event.currentTarget) setSelectedId(null); }}
-      onDragOver={event => { if (!accepts(event)) return; event.preventDefault(); event.dataTransfer.dropEffect = event.dataTransfer.types.includes(MOVE_TYPE) ? 'move' : 'copy'; setDropIndex(dropAt(event)); }}
-      onDragLeave={event => { if (!event.currentTarget.contains(event.relatedTarget as Node)) setDropIndex(null); }} onDrop={onDrop}>
-      <div className={`ed-page${device === 'mobile' && preview ? ' mobile' : ''}${!draft.blocks.length ? ' empty' : ''}`} style={pageStyle}>
-        {!draft.blocks.length ? <div className={`ed-empty${dropIndex !== null ? ' dragging' : ''}`}>
-          <div className="ed-empty-art" aria-hidden="true"><span><i /><b /></span><span className="cursor" /></div>
-          <h2>Börja bygga ditt dokument</h2>
-          <p>Dra ett block från menyn till vänster, eller utgå från en mall.</p>
-          <div className="ed-templates">{TEMPLATES.filter(template => template.key !== 'blank').map(template => <button key={template.key} type="button" onClick={() => update(current => ({ ...current, title: current.title === 'Namnlöst dokument' ? template.label : current.title, blocks: templateBlocks(template.key) }), { structural: true })}><strong>{template.label}</strong><span>{template.description}</span></button>)}</div>
-        </div> : <div className="ed-flow" key={revision}>
-          {draft.blocks.map((block, index) => <FragmentBlock key={block.id} block={block} index={index} count={draft.blocks.length} dropIndex={dropIndex} preview={preview} />)}
-          {dropIndex === draft.blocks.length && <div className="ed-drop-line" />}
-        </div>}
-      </div>
-      {!preview && draft.blocks.length > 0 && <button type="button" className="ed-add-end" onClick={() => { setSidebar(true); setTab('blocks'); }}><Plus size={15} />Lägg till block</button>}
-    </main>
-
-    {settingsBlock && !preview && <HeaderSettings block={settingsBlock} onClose={() => setSettingsId(null)} />}
-    {sending && <SendDrawer user={user} onClose={() => setSending(false)} onSend={onSend} onFix={fix => { if (fix === 'add-signature') addBlock('signature'); setSending(false); }} />}
+    {sendOpen && <SendDialog onClose={() => setSendOpen(false)} onSend={onSend} />}
+    {toast && <div className="ed-toast-wrap"><div className="ed-toast" role="status"><span>{toast.message}</span>{toast.restore && <button type="button" onClick={restore}>Ångra</button>}</div></div>}
   </div></EditorContext.Provider>;
 }
-
-function FragmentBlock({ block, index, count, dropIndex, preview }: { block: Block; index: number; count: number; dropIndex: number | null; preview: boolean }) {
-  return <>
-    {dropIndex === index && <div className="ed-drop-line" />}
-    {!preview && index > 0 && <InsertPoint index={index} />}
-    <BlockFrame block={block} index={index} count={count} onDragStart={event => {
-      event.dataTransfer.setData(MOVE_TYPE, block.id);
-      event.dataTransfer.effectAllowed = 'move';
-      const element = (event.currentTarget as HTMLElement).closest('.ed-block');
-      if (element) event.dataTransfer.setDragImage(element, 24, 24);
-    }}><BlockView block={block} /></BlockFrame>
-  </>;
-}
-

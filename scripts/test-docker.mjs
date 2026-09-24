@@ -19,9 +19,9 @@ const projects = [];
 const owner = { name: 'Container Test Owner', email: 'owner@example.test', password: randomBytes(32).toString('hex'), teamName: 'Disposable container test' };
 const sha256 = bytes => createHash('sha256').update(bytes).digest('hex');
 const redact = text => passwords.reduce((value, password) => value.replaceAll(password, '[redacted]'), String(text));
-function docker(args, input) {
+function docker(args, input, binary = false) {
   return new Promise((resolveRun, reject) => {
-    const child = execFile('docker', args, { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 600000 }, (error, stdout, stderr) => {
+    const child = execFile('docker', args, { cwd: root, windowsHide: true, maxBuffer: 16 * 1024 * 1024, timeout: 600000, encoding: binary ? 'buffer' : 'utf8' }, (error, stdout, stderr) => {
       if (error) reject(new Error(`Docker command failed (${error.code}): ${redact(stderr || stdout)}`));
       else resolveRun(stdout);
     });
@@ -38,7 +38,7 @@ async function newProject(label) {
   const origin = `http://127.0.0.1:${port}`;
   await writeFile(envPath, `POSTGRES_PASSWORD=${passwords[0]}\nAPP_DATABASE_PASSWORD=${passwords[1]}\nBASE_URL=${origin}\nPORT=${port}\nBIND_ADDRESS=127.0.0.1\n`, { mode: 0o600 });
   const project = { name: `signhere-ci-${suffix}-${label}`, origin, cookie: '' };
-  project.run = (args, input) => docker(['compose', '--project-name', project.name, '--env-file', envPath, '--file', resolve(root, 'docker-compose.yaml'), ...args], input);
+  project.run = (args, input, binary) => docker(['compose', '--project-name', project.name, '--env-file', envPath, '--file', resolve(root, 'docker-compose.yaml'), ...args], input, binary);
   projects.push(project);
   return project;
 }
@@ -136,8 +136,8 @@ try {
   // exporting its key store, then snapshot the DB; both belong to this identity.
   const dumpPath = resolve(output, 'database.dump');
   const keysPath = resolve(output, 'keys.tar');
-  await source.run(['exec', '-T', 'signhere', 'tar', '-C', '/keys', '-cf', '/tmp/ci-keys.tar', '.']);
-  await source.run(['cp', 'signhere:/tmp/ci-keys.tar', keysPath]);
+  // /tmp is a tmpfs mount that `docker cp` cannot read, so stream the archive out instead.
+  await writeFile(keysPath, await source.run(['exec', '-T', 'signhere', 'tar', '-C', '/keys', '-cf', '-', '.'], undefined, true), { mode: 0o600 });
   await chmod(keysPath, 0o600);
   await source.run(['stop', 'signhere']);
   await source.run(['exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres', '-d', 'signhere', '--format=custom', '--no-owner', '--no-acl', '--file=/tmp/ci-database.dump']);
@@ -159,6 +159,13 @@ try {
   await checkRuntimePermissions(restored);
   await signFixture(restored, 'After paired restore');
   console.log('Docker fresh setup, signing, restricted runtime role, restart, identity persistence, and paired key/database restore passed.');
+} catch (error) {
+  // Surface container output before teardown; compose only reports "unhealthy".
+  for (const project of projects) {
+    console.error(`--- ${project.name} logs ---`);
+    console.error(await project.run(['logs', '--no-color', '--tail', '200']).catch(failure => redact(failure.message)).then(redact));
+  }
+  throw error;
 } finally {
   for (const project of projects.reverse()) {
     // Names are generated above; never attach this test to an existing deployment.

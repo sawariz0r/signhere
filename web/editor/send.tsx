@@ -1,59 +1,64 @@
-import { useState } from 'react';
-import { CircleAlert, CircleCheck, Plus, Send, TriangleAlert, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { Check } from 'lucide-react';
 import { useEditorApi } from './context';
-import { expiryDate, fieldValue, validate, type Draft } from './model';
-import type { User } from '../types';
+import { expiryDate, initials, signers, type Draft } from './model';
+import type { ShareLink } from '../types';
 
-export type SendRequest = { draft: Draft; recipients: { name: string; email: string }[]; expiresAt: string; saveAsTemplate: boolean };
+export type SendRequest = { draft: Draft; recipients: { name: string; email: string }[]; expiresAt: string; remind: boolean; allowDecline: boolean };
 
-export function SendDrawer({ user, onClose, onSend, onFix }: { user: User; onClose: () => void; onSend?: (request: SendRequest) => Promise<void>; onFix: (fix: 'add-signature' | 'add-customer') => void }) {
-  const { draft, update, setField } = useEditorApi();
-  const [extra, setExtra] = useState<{ name: string; email: string }[]>([]);
-  const [expires, setExpires] = useState(() => expiryDate(draft).toISOString().slice(0, 10));
-  const [saveAsTemplate, setSaveAsTemplate] = useState(false);
-  const [busy, setBusy] = useState(false);
+export function SendDialog({ onClose, onSend }: { onClose: () => void; onSend?: (request: SendRequest) => Promise<ShareLink[]> }) {
+  const { draft, user } = useEditorApi();
+  const [sending, setSending] = useState(false);
+  const [links, setLinks] = useState<ShareLink[] | null>(null);
+  const [copied, setCopied] = useState<string | null>(null);
   const [error, setError] = useState('');
-  const issues = validate(draft);
-  const blocking = issues.filter(issue => issue.level === 'error');
-  const recipients = [{ name: fieldValue(draft, 'customer.name'), email: fieldValue(draft, 'customer.email') }, ...extra].filter(item => item.name || item.email);
-  const invalid = recipients.some(item => !item.name.trim() || !/^\S+@\S+\.\S+$/.test(item.email.trim()));
+  const card = useRef<HTMLDivElement>(null);
+  const list = signers(draft, user);
+  const { expiresInDays, remind, allowDecline } = draft.settings;
+  const copyTimer = useRef(0);
+  useEffect(() => { card.current?.querySelector<HTMLButtonElement>('button:not(:disabled)')?.focus(); }, [links]);
+  useEffect(() => () => window.clearTimeout(copyTimer.current), []);
+
   const send = async () => {
-    if (!onSend) return;
-    setBusy(true); setError('');
-    try { await onSend({ draft, recipients, expiresAt: expires, saveAsTemplate }); }
+    if (!onSend || sending) return;
+    setSending(true); setError('');
+    try { setLinks(await onSend({ draft, recipients: list.map(({ name, email }) => ({ name, email })), expiresAt: expiryDate(draft).toISOString().slice(0, 10), remind, allowDecline })); }
     catch (reason) { setError(reason instanceof Error ? reason.message : 'Något gick fel.'); }
-    finally { setBusy(false); }
+    finally { setSending(false); }
   };
-  return <><div className="ed-scrim" onClick={onClose} /><aside className="ed-drawer ed-send" role="dialog" aria-modal="true" aria-labelledby="ed-send-title">
-    <div className="ed-drawer-head"><h2 id="ed-send-title">Granska & skicka</h2><button type="button" className="ed-icon-ghost" aria-label="Stäng" onClick={onClose}><X size={18} /></button></div>
-    <div className="ed-panel-body">
-      <label className="ed-send-field"><span>Dokumentnamn</span><input value={draft.title} onChange={event => update(value => ({ ...value, title: event.target.value }))} /></label>
-      <div className="ed-send-field"><span>Från</span><div className="ed-person"><span className="avatar">{user.name.slice(0, 1).toUpperCase()}</span><div><strong>{user.name}</strong><span>{user.email}</span></div></div></div>
-      <div className="ed-send-field"><span>Till</span>
-        <div className="ed-recipient">
-          <input aria-label="Kundens namn" placeholder="Namn" value={draft.fields['customer.name'] ?? ''} onChange={event => setField('customer.name', event.target.value)} />
-          <input aria-label="Kundens e-post" placeholder="E-post" type="email" value={draft.fields['customer.email'] ?? ''} onChange={event => setField('customer.email', event.target.value)} />
+  const copy = (link: ShareLink) => {
+    void navigator.clipboard?.writeText(link.url).catch(() => undefined);
+    setCopied(link.recipientId);
+    window.clearTimeout(copyTimer.current);
+    copyTimer.current = window.setTimeout(() => setCopied(null), 1400);
+  };
+
+  return <div className="ed-scrim" onMouseDown={event => { if (event.target === event.currentTarget && !sending) onClose(); }}>
+    <div ref={card} className="ed-dialog" role="dialog" aria-modal="true" aria-labelledby="ed-send-title">
+      {links ? <>
+        <div className="ed-sent-head">
+          <span className="ed-sent-mark" aria-hidden="true"><Check size={22} strokeWidth={2.5} /></span>
+          <div><h2 id="ed-send-title">Skickat</h2><p>Varje mottagare får sin personliga länk via e-post.</p></div>
         </div>
-        {extra.map((item, index) => <div className="ed-recipient" key={index}>
-          <input aria-label={`Mottagare ${index + 2}, namn`} placeholder="Namn" value={item.name} onChange={event => setExtra(list => list.map((row, i) => i === index ? { ...row, name: event.target.value } : row))} />
-          <input aria-label={`Mottagare ${index + 2}, e-post`} placeholder="E-post" type="email" value={item.email} onChange={event => setExtra(list => list.map((row, i) => i === index ? { ...row, email: event.target.value } : row))} />
-          <button type="button" className="ed-icon-ghost" aria-label="Ta bort mottagare" onClick={() => setExtra(list => list.filter((_, i) => i !== index))}><X size={15} /></button>
-        </div>)}
-        <button type="button" className="ed-add-row" onClick={() => setExtra(list => [...list, { name: '', email: '' }])}><Plus size={14} />Fler mottagare</button>
-      </div>
-      <div className="ed-checklist">
-        {issues.length ? issues.map((issue, index) => <div key={index} className={`ed-issue ${issue.level}`}>{issue.level === 'error' ? <CircleAlert size={16} /> : <TriangleAlert size={16} />}<span>{issue.message}</span>{issue.fix === 'add-signature' && <button type="button" className="button small" onClick={() => onFix('add-signature')}>Lägg till</button>}</div>)
-          : <div className="ed-issue ok"><CircleCheck size={16} /><span>Allt ser bra ut. Dokumentet är redo att skickas.</span></div>}
-      </div>
-      <div className="ed-send-row">
-        <label className="ed-send-field"><span>Giltig till</span><input type="date" value={expires} min={new Date().toISOString().slice(0, 10)} onChange={event => setExpires(event.target.value)} /></label>
-      </div>
-      <label className="ed-check"><input type="checkbox" checked={saveAsTemplate} onChange={event => setSaveAsTemplate(event.target.checked)} />Spara även som mall</label>
-      {error && <div className="error" role="alert">{error}</div>}
+        {links.length > 0 && <div className="ed-links">{links.map(link => <div key={link.recipientId} className="ed-link">
+          <div><strong>{link.name}</strong><code>{link.url}</code></div>
+          <button type="button" className="ed-btn" onClick={() => copy(link)}>{copied === link.recipientId ? 'Kopierad' : 'Kopiera'}</button>
+        </div>)}</div>}
+        <div className="ed-dialog-actions"><button type="button" className="ed-btn primary large" onClick={onClose}>Klar</button></div>
+      </> : <>
+        <div><h2 id="ed-send-title">Skicka för signering</h2><p className="ed-dialog-sub">{draft.title || 'Namnlöst dokument'}</p></div>
+        <div className="ed-send-list">{list.map(signer => <div key={signer.id}>
+          <span className="ed-avatar large">{initials(signer.name)}</span>
+          <div><strong>{signer.name}</strong><span>{signer.email}</span></div>
+        </div>)}</div>
+        <p className="ed-dialog-note">Signera inom {expiresInDays} dagar{remind && ' · påminnelse var 3:e dag'}{allowDecline && ' · kan nekas'}</p>
+        {!onSend && <p className="ed-dialog-note">Utskick från editorn kopplas på när servern kan rendera blocken till PDF. Utkastet sparas under tiden.</p>}
+        {error && <p className="ed-error" role="alert">{error}</p>}
+        <div className="ed-dialog-actions">
+          <button type="button" className="ed-btn large" onClick={onClose} disabled={sending}>Avbryt</button>
+          <button type="button" className="ed-btn primary large send" disabled={!onSend || sending} onClick={send}>{sending && <span className="ed-pulse" aria-hidden="true" />}{sending ? 'Skickar' : 'Skicka'}</button>
+        </div>
+      </>}
     </div>
-    <div className="ed-drawer-foot">
-      <button type="button" className="button ed-send-button" disabled={!onSend || busy || blocking.length > 0 || invalid} onClick={send}><Send size={16} />{busy ? 'Skickar…' : 'Skicka för signering'}</button>
-      {!onSend && <p className="ed-panel-hint">Utskick från editorn kopplas på när servern kan rendera blocken till PDF. Utkastet sparas under tiden.</p>}
-    </div>
-  </aside></>;
+  </div>;
 }
