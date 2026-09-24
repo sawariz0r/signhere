@@ -13,7 +13,23 @@ docker compose up -d --build
 docker compose exec signhere cat /data/setup-token
 ```
 
-Unsigned recipient links default to 7 days. Set `SIGNHERE_SIGNING_LINK_TTL_DAYS` to an integer from 1 to 365 to change the lifetime of new or rotated links. Acceptance changes the original capability to a 30-day read-only receipt with exact idempotent retries; it cannot accept a changed signature. Separate completed-copy links also expire after 30 days and can be revoked by the team.
+Unsigned recipient links default to 7 days. Set `SIGNHERE_SIGNING_LINK_TTL_DAYS` to an integer from 1 to 365 to change the lifetime of new or rotated links. Acceptance changes the original capability to a read-only receipt, usable while the document is pending or finalizing, and until at least 30 days after completion, with exact idempotent retries; it cannot accept a changed signature. Separate completed-copy links also expire after 30 days and can be revoked by the team.
+
+## Email delivery of completed copies
+
+Email is optional. When configured, completing a document queues one email per distinct address (every party plus the sender) with the sealed PDF attached. PDFs over 10 MB are sent as a 30-day copy link instead. The queue is stored in PostgreSQL and committed in the same transaction as the completed PDF, so a crash or mail outage never loses a delivery: transient failures retry with backoff (up to 8 attempts), and permanent rejections (bad address, refused credentials) stop and show on the document page, where the team can resend. Delivery is at-least-once; a crash mid-send can occasionally produce a duplicate email. Deliveries are operational records, not signing evidence, and are not part of the audit chain.
+
+SMTP is the default provider and activates when `SMTP_HOST` is set:
+
+| Variable | Meaning |
+|---|---|
+| `SIGNHERE_MAIL_FROM` | Required sender, e.g. `Signhere <signering@example.com>`. |
+| `SMTP_HOST`, `SMTP_PORT` | Server and port (default 587). Port 465 uses implicit TLS; other ports must upgrade with STARTTLS or the send fails. Override with `SMTP_SECURE=true/false`. |
+| `SMTP_USER`, `SMTP_PASSWORD` or `SMTP_PASSWORD_FILE` | Optional credentials. Prefer the file form for mounted secrets. |
+
+To use Resend instead, set `SIGNHERE_MAIL_PROVIDER=resend`, `RESEND_API_KEY` (or `RESEND_API_KEY_FILE`) and a `SIGNHERE_MAIL_FROM` on a domain verified in Resend. Resend requests carry an idempotency key per delivery, so retries within Resend's window do not duplicate mail.
+
+Invalid mail settings stop the application at startup rather than failing silently later. The startup log states which provider is active. Enabling email later does not backfill older documents automatically; use *Skicka signerade kopior via e-post* on a completed document's page.
 
 The setup token is an administrator credential; enter it only into the first-owner setup form. It is not written to application logs.
 

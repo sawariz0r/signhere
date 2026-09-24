@@ -199,6 +199,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
   // Reconstruct the previous storage shape in this disposable schema, preserving
   // actual legacy documents/events, then execute the real version-3 migration.
   await f.pool.query(`
+    DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
     DROP TABLE completed_copy_access,finalization_attempts,finalization_jobs,sealing_key_events,sealing_certificates,sealing_identity;
     DROP FUNCTION guard_completed_copy_access();
     ALTER TABLE recipients DROP CONSTRAINT recipients_id_document_unique;
@@ -207,7 +208,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
     ALTER TABLE documents DROP COLUMN evidence_version, DROP COLUMN evidence_core, DROP COLUMN protection_policy, DROP COLUMN seal_metadata;
     ALTER TABLE documents DROP CONSTRAINT documents_status_check;
     ALTER TABLE documents ADD CONSTRAINT documents_status_check CHECK(status IN ('pending','completed','cancelled'));
-    DELETE FROM migrations WHERE version=3;
+    DELETE FROM migrations WHERE version>=3;
   `);
   const reopened = await createDatabase(databaseUrl!, f.schema);
   t.after(() => reopened.end());
@@ -249,4 +250,25 @@ test('a transient key failure retries automatically and retains its sanitized ca
   available = true;
   assert.equal((await worker.runOnce()).status, 'completed');
   assert.equal((await f.pool.query("SELECT count(*) FROM events WHERE document_id=$1 AND type='recipient.signed'", [doc.id])).rows[0].count, '1');
+});
+
+test('the publish hook runs inside the completion transaction', async t => {
+  const f = await fixture(t); const doc = await f.document();
+  await f.accept(doc.id, doc.recipientIds[0]);
+  const seen: string[] = [];
+  const worker = createFinalizationWorker(f.pool, { signingIdentity: identity, buildArtifact: async () => artifact }, {
+    now: () => Date.parse(fixedTime),
+    onPublished: async (client, documentId) => { seen.push((await client.query('SELECT status FROM documents WHERE id=$1', [documentId])).rows[0].status); },
+  });
+  t.after(() => worker.stop());
+  assert.equal((await worker.runOnce()).status, 'completed');
+  assert.deepEqual(seen, ['completed']);
+  const failing = await f.document();
+  await f.accept(failing.id, failing.recipientIds[0]);
+  const rollback = createFinalizationWorker(f.pool, { signingIdentity: identity, buildArtifact: async () => artifact }, {
+    now: () => Date.parse(fixedTime), onPublished: async () => { throw new FinalizationRetryableError('delivery_enqueue_failed'); },
+  });
+  t.after(() => rollback.stop());
+  assert.equal((await rollback.runOnce()).status, 'retry');
+  assert.equal((await status(f.pool, failing.id)).status, 'finalizing');
 });

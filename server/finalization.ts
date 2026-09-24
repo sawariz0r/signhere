@@ -20,6 +20,8 @@ export interface FinalizationOptions {
   leaseMs?: number; pollMs?: number; retryBaseMs?: number; retryMaxMs?: number;
   /** Application time controls displayed completion time; lease fencing always uses PostgreSQL time. */
   now?: () => number;
+  /** Runs inside the publishing transaction, e.g. to queue completed-copy emails atomically. */
+  onPublished?: (client: PoolClient, documentId: string) => Promise<unknown>;
 }
 export class FinalizationRetryableError extends Error {
   constructor(public readonly code: string) { super(code); this.name = 'FinalizationRetryableError'; }
@@ -122,6 +124,7 @@ export async function publishFinalization(pool: Pool, snapshot: FinalizationSnap
       originalHash: document.original_hash, completedHash, signingCheckpoint: snapshot.checkpoint,
       evidenceVersion: 2, evidenceCoreHash, seal: artifact.sealMetadata,
     });
+    await options.onPublished?.(client, document.id);
     await client.query("UPDATE finalization_jobs SET status='completed',lease_until=NULL,last_error_code=NULL,updated_at=clock_timestamp() WHERE document_id=$1 AND generation=$2", [document.id, job.generation]);
     await client.query("UPDATE finalization_attempts SET status='completed',finished_at=clock_timestamp() WHERE document_id=$1 AND generation=$2", [document.id, job.generation]);
     return true;

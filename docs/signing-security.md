@@ -28,7 +28,7 @@ The token is placed after `#` in the signing URL and submitted in API bodies. Fr
 
 Unsigned links expire after 7 days by default. `SIGNHERE_SIGNING_LINK_TTL_DAYS` accepts 1–365 days for new or rotated links. A team user can invalidate an unsigned link by rotating it, or cancel a pending document. Whoever possesses a live link can use it: this is not independent verification of the person's identity or control of the assigned email account.
 
-After acceptance, the original link remains usable for a read-only receipt and completed-PDF download for 30 days. An exact repeated submission returns the saved result; a different submission is rejected. Signing authority is consumed, but the token is **not destroyed**. Separate completed-copy links also expire after 30 days and can be revoked by the team. The original accepted receipt capability has no separate revocation endpoint.
+After acceptance, the original link remains usable for a read-only receipt and completed-PDF download while the document is pending or finalizing, and until at least 30 days after completion. The signer can also download the exact prepared PDF they approved before the document completes. An exact repeated submission returns the saved result; a different submission is rejected. Signing authority is consumed, but the token is **not destroyed**. Separate completed-copy links also expire after 30 days and can be revoked by the team. The original accepted receipt capability has no separate revocation endpoint.
 
 Sources: [token generation](../server/security.ts), [capability endpoints](../server/app.ts).
 

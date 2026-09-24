@@ -12,7 +12,7 @@ The prototype defines account creation, document list/upload/sharing/details, ev
 | Database | PostgreSQL; transactions, document-row locks and immutable-data guards coordinate acceptance and publication. |
 | PDF preparation | MuPDF WebAssembly flattens supported forms/annotations locally; pdf-lib constructs the evidence appendix. |
 | Cryptographic seal | Bundled Python/pyHanko signs and verifies the installation's PDF/CMS profile. Parser operations are separated from key access. |
-| Deployment | Two services: application and PostgreSQL. No required central account, external signing service, SMTP, Redis or object store. |
+| Deployment | Two services: application and PostgreSQL. No required central account, external signing service, Redis or object store. SMTP or Resend is optional, for emailing completed copies. |
 | Persistence | PostgreSQL volume for document bytes/evidence/jobs, existing app setup-state volume, separate private key volume. |
 
 Public HTTPS terminates at the operator's reverse proxy. Non-localhost application origins require HTTPS. Proxy trust must match deployment routing before forwarded addresses can be relied on as network observations. Compose currently uses PostgreSQL 17; local tests use real PostgreSQL directly.
@@ -72,7 +72,7 @@ First-owner setup requires a private installation token and closes once initiali
 
 Recipient capabilities contain 256 random bits and are stored as hashes. They are delivered in URL fragments, supplied from memory to the API, omitted from audit/log payloads and protected with no-referrer responses. The unsigned lifetime is configurable with `SIGNHERE_SIGNING_LINK_TTL_DAYS` (1–365 days; default 7), applying when links are created or rotated. Pending cancellation or rotation revokes signing access.
 
-After acceptance, signing authority is consumed; exact retries remain idempotent. The original capability also remains a read-only receipt for 30 days after acceptance so a lost response does not strand the participant. This is deliberately different from destroying the raw token after a single request. A separate receipt exchange is deferred. The expiry behavior is described in the README and [SES cross-check](ses-spec-crosscheck.md).
+After acceptance, signing authority is consumed; exact retries remain idempotent. The original capability also remains a read-only receipt while the document is pending or finalizing, and until at least 30 days after completion, so a lost response or a slow co-signer does not strand the participant. This is deliberately different from destroying the raw token after a single request. A separate receipt exchange is deferred. The expiry behavior is described in the README and [SES cross-check](ses-spec-crosscheck.md).
 
 Signed bearer receipts and separate completed-copy links provide the completed PDF only. They do not provide the full private JSON/ZIP evidence. Authorized team members can export the complete bundle or create/revoke recipient copy links. Signed PDFs necessarily contain participant names/contact and consent details; a personal link remains a credential whose forwarding grants access.
 
