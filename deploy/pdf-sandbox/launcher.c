@@ -12,6 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
@@ -106,6 +107,8 @@ static void restrict_filesystem(const char *job) {
 #define __NR_removexattrat 466
 #endif
 
+/* The ioctl rule reads the high word of a 64-bit argument at offset +4. */
+_Static_assert(__BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__, "seccomp argument offsets assume little-endian");
 #define REJECT_SYSCALL(name) BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_##name, 0, 1), BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM)
 static void restrict_syscalls(void) {
     const struct sock_filter filters[] = {
@@ -164,13 +167,24 @@ static void restrict_syscalls(void) {
         BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_ASYNC, 0, 1),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        /* asyncio (socket.setblocking) and libuv set O_NONBLOCK/FD_CLOEXEC on their own descriptors
+         * through ioctl. Permit only those three requests; every other ioctl stays denied. */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_ioctl, 0, 8),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1]) + 4),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, 0, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIONBIO, 3, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIOCLEX, 2, 0),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIONCLEX, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
         REJECT_SYSCALL(socket), REJECT_SYSCALL(connect),
         REJECT_SYSCALL(bind), REJECT_SYSCALL(listen), REJECT_SYSCALL(accept), REJECT_SYSCALL(accept4),
         REJECT_SYSCALL(ptrace), REJECT_SYSCALL(process_vm_readv), REJECT_SYSCALL(process_vm_writev),
         REJECT_SYSCALL(pidfd_open), REJECT_SYSCALL(pidfd_getfd), REJECT_SYSCALL(kcmp),
         REJECT_SYSCALL(kill), REJECT_SYSCALL(tkill), REJECT_SYSCALL(tgkill),
         REJECT_SYSCALL(rt_sigqueueinfo), REJECT_SYSCALL(rt_tgsigqueueinfo), REJECT_SYSCALL(pidfd_send_signal),
-        REJECT_SYSCALL(ioctl),
 #ifdef __NR_chmod
         REJECT_SYSCALL(chmod),
 #endif

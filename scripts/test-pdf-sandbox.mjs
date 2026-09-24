@@ -30,7 +30,7 @@ try {
   await writeFile(dataProbe, marker, { mode: 0o600 });
   inherited = await open(forbidden, 'r');
   const source = `
-import errno, os, socket, ctypes, asyncio, resource, fcntl, platform
+import errno, os, socket, ctypes, asyncio, resource, fcntl, platform, termios
 from pathlib import Path
 job, sibling, forbidden = ${JSON.stringify(job)}, ${JSON.stringify(sibling)}, ${JSON.stringify(forbidden)}
 def blocked(action, *denials):
@@ -51,6 +51,8 @@ blocked(lambda: resource.prlimit(${parent}, resource.RLIMIT_NOFILE))
 blocked(lambda: fcntl.fcntl(0, fcntl.F_SETOWN, ${parent}))
 blocked(lambda: fcntl.fcntl(0, fcntl.F_SETSIG, 0))
 blocked(lambda: fcntl.fcntl(0, fcntl.F_SETFL, os.O_ASYNC))
+# Only FIONBIO/FIOCLEX/FIONCLEX ioctls are permitted; terminal injection stays denied.
+blocked(lambda: fcntl.ioctl(0, termios.TIOCSTI, b'x'))
 blocked(lambda: Path(${JSON.stringify(dataProbe)}).read_bytes())
 blocked(lambda: list(Path('/keys').iterdir()))
 blocked(lambda: Path('/proc/${parent}/environ').read_bytes())
