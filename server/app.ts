@@ -41,7 +41,7 @@ const DAY = 86400000;
 /** The build writes assets/version.json next to the server; development reads package.json. */
 const appVersion = Promise.any(['./assets/version.json', '../package.json'].map(path => readFile(new URL(path, import.meta.url), 'utf8').then(text => z.object({ version: z.string().max(64) }).parse(JSON.parse(text)).version))).catch(() => 'okänd');
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
-const emailSchema = z.email().trim().toLowerCase().max(254);
+const emailSchema = z.email('Ogiltig e-postadress.').trim().toLowerCase().max(254);
 const passwordSchema = z.string().min(12, 'Lösenordet behöver minst 12 tecken.').max(128);
 const tokenSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 const hashSchema = z.string().regex(/^[a-f0-9]{64}$/);

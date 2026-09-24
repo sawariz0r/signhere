@@ -5,8 +5,11 @@ import '@fontsource-variable/source-serif-4';
 import { EditorContext, useEditorApi, type EditorApi } from './context';
 import { BlockFrame, BlockView, SignatureSection, UnitList } from './blocks';
 import { SidePanel } from './sidebar';
+import { SendSheet, type SendPhase } from './send';
+import { createDocument, type Created } from '../created';
+import { fileBase64, message } from '../api';
 import {
-  BLOCK_LABELS, createBlock, createDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, validate,
+  BLOCK_LABELS, createBlock, createDraft, deleteDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, UNTITLED, signingContacts, validate,
   type Block, type BlockType, type Draft, type Issue, type TemplateKey,
 } from './model';
 import type { User } from '../types';
@@ -32,10 +35,10 @@ function Tray({ label, index, onClose }: { label: string; index: number; onClose
 }
 
 /**
- * The draft is rendered to a PDF and handed to `onUse`, which continues in the upload flow.
- * With `attachment`, the draft becomes a bilaga signed by parties chosen in the next step.
+ * Skicka confirms the signers chosen here, renders the draft to a PDF, creates the document and hands it to `onSent`.
+ * With `attachment`, the draft becomes a bilaga: its PDF goes to `attachment.onUse`, where the parties are chosen.
  */
-export function DocumentEditor({ draftId, user, onClose, onUse, attachment = false }: { draftId: string; user: User; onClose: () => void; onUse: (file: File, draft: Draft) => void; attachment?: boolean }) {
+export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = false, attachment }: { draftId: string; user: User; onClose: () => void; onSent: (result: Created) => void; emailEnabled?: boolean; attachment?: { onUse: (file: File) => void } }) {
   const [draft, setDraft] = useState<Draft>(() => loadDraft(draftId) ?? createDraft(draftId, user));
   const [revision, setRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -48,6 +51,9 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState('');
+  const [sheet, setSheet] = useState(false);
+  const [phase, setPhase] = useState<SendPhase>('idle');
+  const [sendError, setSendError] = useState('');
   const past = useRef<Draft[]>([]);
   const future = useRef<Draft[]>([]);
   const lastSnapshot = useRef(0);
@@ -57,6 +63,7 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
   const flip = useRef<Map<string, number> | null>(null);
   const timers = useRef<Record<string, number>>({});
   const latest = useRef(draft);
+  const sentRef = useRef(false);
   latest.current = draft;
 
   const later = useCallback((name: string, ms: number, run: () => void) => { window.clearTimeout(timers.current[name]); timers.current[name] = window.setTimeout(run, ms); }, []);
@@ -96,7 +103,7 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
     update(current => {
       if (SINGLE_BLOCKS.has(type) && current.blocks.some(item => item.type === type)) return current;
       const blocks = [...current.blocks];
-      blocks.splice(index, 0, block.type === 'header' && current.title !== 'Namnlöst dokument' ? { ...block, title: current.title } : block);
+      blocks.splice(index, 0, block.type === 'header' && current.title !== UNTITLED ? { ...block, title: current.title } : block);
       return { ...current, blocks };
     }, { structural: true });
     select(block.id);
@@ -170,8 +177,10 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
 
   useEffect(() => {
     if (firstRender.current) { firstRender.current = false; return; }
+    if (sentRef.current) return;
     setSaveState('saving');
     const timer = window.setTimeout(() => {
+      if (sentRef.current) return;
       try { saveDraft({ ...draft, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
     }, 500);
     return () => window.clearTimeout(timer);
@@ -201,7 +210,7 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
     return () => observer.disconnect();
   }, []);
 
-  useEffect(() => { document.title = `${draft.title || 'Namnlöst dokument'} · Redigera · signhere`; }, [draft.title]);
+  useEffect(() => { document.title = `${draft.title || UNTITLED} · Redigera · signhere`; }, [draft.title]);
 
   // A bilaga's signers come from the main document, so recipient checks do not apply.
   const issues = validate(draft).filter(issue => !attachment || issue.target?.kind !== 'recipients' || issue.message.startsWith('Tomt fält'));
@@ -213,25 +222,47 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
       return;
     }
     select(null);
-    void renderPdf();
+    if (attachment) { void useAsAttachment(); return; }
+    setSendError(''); setSheet(true);
   };
   const renderPdf = async () => {
-    if (rendering) return;
+    const { draftPdf } = await import('./pdf-export');
+    const current = latest.current;
+    const blob = await draftPdf(current);
+    if (blob.size > 10 * 1024 * 1024) throw new Error(`${attachment ? 'Bilagan' : 'Dokumentet'} blir större än 10 MB. Använd mindre bilder.`);
+    // Leaving the editor cancels the debounced save, so keep the latest edits.
+    try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
+    const name = current.title.trim().replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
+    return { file: new File([blob], `${name}.pdf`, { type: 'application/pdf' }), draft: current };
+  };
+  const useAsAttachment = async () => {
+    if (!attachment || rendering) return;
     setRendering(true); setRenderError('');
-    try {
-      const { draftPdf } = await import('./pdf-export');
-      const current = latest.current;
-      const blob = await draftPdf(current);
-      if (blob.size > 10 * 1024 * 1024) throw new Error(`${attachment ? 'Bilagan' : 'Dokumentet'} blir större än 10 MB. Använd mindre bilder.`);
-      // Leaving the editor cancels the debounced save, so keep the latest edits before handing off.
-      try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
-      const name = (current.title.trim() || (attachment ? 'Bilaga' : 'Dokument')).replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
-      onUse(new File([blob], `${name}.pdf`, { type: 'application/pdf' }), current);
-    } catch (error) { setRenderError(error instanceof Error ? error.message : 'PDF-filen kunde inte skapas.'); }
+    try { attachment.onUse((await renderPdf()).file); }
+    catch (error) { setRenderError(error instanceof Error ? error.message : 'Bilagan kunde inte skapas.'); }
     finally { setRendering(false); }
+  };
+  const send = async () => {
+    if (phase !== 'idle') return;
+    setPhase('rendering'); setSendError('');
+    try {
+      const { file, draft: sent } = await renderPdf();
+      setPhase('creating');
+      const result = await createDocument({
+        title: sent.title.trim().slice(0, 160), fileName: file.name, pdfBase64: await fileBase64(file),
+        // The server trims names; send them trimmed so the sender check compares like with like.
+        recipients: signingContacts(sent).map(contact => ({ name: contact.name.trim(), email: contact.email.trim() })),
+        includeSender: sent.settings.senderSigns,
+      }, user);
+      // The draft has become a document; nothing may save it again.
+      sentRef.current = true;
+      deleteDraft(draftId);
+      onSent(result);
+    } catch (error) { setSendError(message(error)); setPhase('idle'); }
   };
   const onIssue = (issue: Issue) => {
     if (issue.target?.kind === 'recipients') focusRecipients();
+    else if (issue.target?.kind === 'title') { const input = document.querySelector<HTMLInputElement>('.ed-title'); input?.focus(); input?.select(); }
     else if (issue.target?.kind === 'block') jump(issue.target.id);
   };
 
@@ -248,7 +279,7 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
         select(null);
         return;
       }
-      if (typing || preview) return;
+      if (typing || preview || sheet) return;
       if (mod && (key === 'z' || key === 'y')) { event.preventDefault(); travel(key === 'y' || event.shiftKey ? 'redo' : 'undo'); return; }
       if (!selectedId || selectedId === SIGNATURE_ID) return;
       if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); removeBlock(selectedId); }
@@ -257,12 +288,12 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [preview, selectedId, select, travel, removeBlock, copyBlock, moveBlock]);
+  }, [preview, sheet, selectedId, select, travel, removeBlock, copyBlock, moveBlock]);
 
   const applyTemplate = (key: TemplateKey) => {
     if (key === 'blank') { addBlock('text', 0); return; }
     const label = TEMPLATES.find(template => template.key === key)!.label;
-    update(current => ({ ...current, title: current.title === 'Namnlöst dokument' ? label : current.title, blocks: templateBlocks(key) }), { structural: true });
+    update(current => ({ ...current, title: current.title === UNTITLED ? label : current.title, blocks: templateBlocks(key) }), { structural: true });
   };
   const deselect = (event: React.MouseEvent) => { if (event.target === event.currentTarget) select(null); };
   const font = FONTS.find(([key]) => key === draft.theme.font)?.[2] ?? FONTS[0][2];
@@ -273,11 +304,11 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
       <div className="ed-topbar-inner">
         <button type="button" className="ed-logo" aria-label="Tillbaka till dokument" title="Tillbaka till dokument" onClick={onClose}><span><i /></span></button>
         <span className="ed-slash" aria-hidden="true">/</span>
-        <input className="ed-title" aria-label="Dokumentnamn" value={draft.title} placeholder="Namnlöst dokument" onChange={event => update(current => ({ ...current, title: event.target.value }))} />
+        <input className="ed-title" aria-label="Dokumentnamn" value={draft.title} placeholder={UNTITLED} onChange={event => update(current => ({ ...current, title: event.target.value }))} />
         <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <><Check size={13} strokeWidth={3} aria-hidden="true" />Sparat</>}</span>
         <div className="ed-topbar-actions">
           <button type="button" className="ed-btn large" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
-          <button type="button" className="ed-btn primary large" disabled={rendering} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
+          <button type="button" className="ed-btn primary large" disabled={rendering || phase !== 'idle'} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
         </div>
       </div>
     </header>
@@ -304,10 +335,11 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
           {draft.blocks.length > 0 && (attachment ? <p className="ed-attachment-note">Bilagan signeras av parterna du väljer i nästa steg. En signatursida läggs till automatiskt.</p> : <SignatureSection />)}
         </article>
       </div>
-      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={attachment} />}
+      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} />}
     </div>
     <UnitList />
 
+    {sheet && <SendSheet emailEnabled={emailEnabled} phase={phase} error={sendError} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
     {renderError && <div className="ed-toast-wrap"><div className="ed-toast" role="alert"><span>{renderError}</span><button type="button" onClick={() => setRenderError('')}>Stäng</button></div></div>}
     {toast && <div className="ed-toast-wrap"><div className="ed-toast" role="status"><span>{toast.message}</span>{toast.restore && <button type="button" onClick={restore}>Ångra</button>}</div></div>}
   </div></EditorContext.Provider>;

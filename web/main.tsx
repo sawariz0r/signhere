@@ -12,7 +12,7 @@ import { Sign, CompletedCopy } from './sign';
 import { Brand, BrandLockup, ErrorBox, Loading, ProfileMenu } from './ui';
 import { message, request } from './api';
 import type { Bootstrap, Brand as BrandData, SigningDocument, User } from './types';
-import { signingContacts, type Draft } from './editor/model';
+import { EditorSent, type Created } from './created';
 
 const DocumentEditor = lazy(() => import('./editor/editor').then(module => ({ default: module.DocumentEditor })));
 const draftId = () => crypto.randomUUID().replace(/-/g, '').slice(0, 16);
@@ -31,13 +31,15 @@ function App() {
   const [bootstrap, setBootstrap] = useState<Bootstrap | null>(null);
   const [error, setError] = useState('');
   const [certificate, setCertificate] = useState<SigningDocument | null>(null);
+  // A document just sent from the editor, shown at its own URL until the next navigation.
+  const [sent, setSent] = useState<Created | null>(null);
   const publicVerify = current.path === '/verify' || current.path === '/verifiera';
   const standalone = publicVerify || current.path === '/sign' || current.path === '/copy';
-  useEffect(() => { const changed = () => { setCurrent(route()); setCertificate(null); }; window.addEventListener('popstate', changed); window.addEventListener('hashchange', changed); return () => { window.removeEventListener('popstate', changed); window.removeEventListener('hashchange', changed); }; }, []);
-  const navigate = (path: string) => { history.pushState({}, '', path); setCurrent(route()); setCertificate(null); window.scrollTo(0, 0); };
+  useEffect(() => { const changed = () => { setCurrent(route()); setCertificate(null); setSent(null); }; window.addEventListener('popstate', changed); window.addEventListener('hashchange', changed); return () => { window.removeEventListener('popstate', changed); window.removeEventListener('hashchange', changed); }; }, []);
+  const navigate = (path: string) => { history.pushState({}, '', path); setCurrent(route()); setCertificate(null); setSent(null); window.scrollTo(0, 0); };
   const load = () => { setError(''); void request<Bootstrap>('/api/bootstrap').then(setBootstrap).catch(error => setError(message(error))); };
   useEffect(() => { if (!standalone) load(); }, [standalone]);
-  useEffect(() => { if (current.path.startsWith('/editor/')) return; document.title = `${current.path === '/sign' ? 'Signera' : current.path === '/verify' || current.path === '/verifiera' ? 'Verifiera dokument' : current.path.startsWith('/settings/') ? 'Inställningar' : current.path === '/new' ? 'Nytt dokument' : current.path.endsWith('/bilaga') ? 'Ny bilaga' : 'Dokument'} · signhere`; }, [current.path]);
+  useEffect(() => { if (current.path.startsWith('/editor/')) return; document.title = `${sent ? 'Skickat' : current.path === '/sign' ? 'Signera' : current.path === '/verify' || current.path === '/verifiera' ? 'Verifiera dokument' : current.path.startsWith('/settings/') ? 'Inställningar' : current.path === '/new' ? 'Nytt dokument' : current.path.endsWith('/bilaga') ? 'Ny bilaga' : 'Dokument'} · signhere`; }, [current.path, sent]);
   if (current.path === '/copy') return <CompletedCopy key={current.fragment} token={current.fragment} />;
   if (current.path === '/sign') return <Sign key={current.fragment} token={current.fragment} />;
   if (publicVerify) return <><header className="app-header public-header"><div className="header-inner"><Brand publicBrand /><a className="button secondary small" href="/">Till signhere</a></div></header><main className="main" id="main-content"><Verify /></main></>;
@@ -48,15 +50,13 @@ function App() {
   if (!user) return <Auth key={bootstrap.setupRequired ? 'setup' : 'login'} setup={bootstrap.setupRequired} onLogin={loggedIn} onVerify={() => navigate('/verify')} />;
   if (current.path.startsWith('/editor/')) {
     const id = current.path.split('/')[2];
-    // The draft continues as a PDF in the upload flow: a new document, or a bilaga of its main document.
+    // A bilaga continues as a PDF in the bilaga flow of its main document.
     const query = current.query.get('bilaga');
     const parentId = query && /^[0-9a-f-]{36}$/.test(query) ? query : null;
-    const onUse = (file: File, draft: Draft) => {
-      if (parentId) { handOff(parentId, { file, draftId: id }); navigate(`/documents/${parentId}/bilaga`); return; }
-      handOff('new', { file, draftId: id, title: draft.title.trim().slice(0, 160), recipients: signingContacts(draft).map(({ name, email }) => ({ name, email })), includeSender: draft.settings.senderSigns });
-      navigate('/new');
-    };
-    return <Suspense fallback={<main className="main"><Loading>Öppnar editorn…</Loading></main>}><DocumentEditor key={id} draftId={id} user={user} attachment={Boolean(parentId)} onUse={onUse} onClose={() => navigate(parentId ? `/documents/${parentId}/bilaga` : '/')} /></Suspense>;
+    const attachment = parentId ? { onUse: (file: File) => { handOff(parentId, { file, draftId: id }); navigate(`/documents/${parentId}/bilaga`); } } : undefined;
+    // A sent document replaces the editor's history entry, so Back skips the deleted draft and a refresh opens the document.
+    const onSent = (result: Created) => { history.replaceState({}, '', `/documents/${result.created.document.id}`); setCurrent(route()); setSent(result); window.scrollTo(0, 0); };
+    return <Suspense fallback={<main className="main"><Loading>Öppnar editorn…</Loading></main>}><DocumentEditor key={id} draftId={id} user={user} attachment={attachment} emailEnabled={Boolean(bootstrap.delivery?.email)} onSent={onSent} onClose={() => navigate(parentId ? `/documents/${parentId}/bilaga` : '/')} /></Suspense>;
   }
   const brand: BrandData = bootstrap.brand ?? { name: user.teamName, logoUrl: null, showName: true, accent: 'ink' };
   const onBrand = (brand: BrandData) => setBootstrap({ ...bootstrap, brand, user: { ...user, teamName: brand.name } });
@@ -67,7 +67,7 @@ function App() {
   const documentId = current.path.startsWith('/documents/') ? current.path.split('/')[2] : null;
   const newAttachment = documentId && current.path.split('/')[3] === 'bilaga';
   return <><header className="app-header no-print"><div className="header-inner"><a className="brand-home" href="/" aria-label={`${brand.name.trim() || 'Ditt företag'} – Dokument`} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return; event.preventDefault(); navigate('/'); }}><BrandLockup brand={brand} /></a><ProfileMenu user={user} settings={tabs.map(([key, label]) => ({ key, label, active: settingsTab === key, onSelect: () => openSettings(key) }))} onVerify={() => navigate('/verify')} onLogout={() => void request('/api/logout', {}).then(loggedOut).catch(error => window.alert(message(error)))} /></div></header><main className="main" id="main-content">
-    {settingsTab ? <Settings key={settingsTab} tab={settingsTab} user={user} brand={brand} onTab={openSettings} onBrand={onBrand} onLogout={loggedOut} /> : current.path === '/new' ? <NewDocument user={user} onCancel={() => navigate('/')} onOpen={id => navigate(`/documents/${id}`)} /> : documentId && newAttachment ? <NewAttachment key={documentId} parentId={documentId} user={user} onCancel={() => navigate(`/documents/${documentId}`)} onOpen={id => navigate(`/documents/${id}`)} onEditor={parent => navigate(`/editor/${draftId()}?bilaga=${parent.id}`)} /> : documentId ? certificate ? <Certificate doc={certificate} brand={brand} onBack={() => setCertificate(null)} onVerify={() => navigate('/verify')} /> : <DocumentDetail key={documentId} id={documentId} user={user} onBack={() => navigate('/')} onOpen={id => navigate(`/documents/${id}`)} onAddAttachment={() => navigate(`/documents/${documentId}/bilaga`)} onCertificate={doc => { setCertificate(doc); window.scrollTo(0, 0); }} /> : <Documents onOpen={id => navigate(`/documents/${id}`)} onNew={() => navigate('/new')} onCreate={() => navigate(`/editor/${draftId()}`)} onDraft={id => navigate(`/editor/${id}`)} />}
+    {sent && documentId === sent.created.document.id ? <EditorSent key={documentId} result={sent} onOpen={id => navigate(`/documents/${id}`)} /> : settingsTab ? <Settings key={settingsTab} tab={settingsTab} user={user} brand={brand} onTab={openSettings} onBrand={onBrand} onLogout={loggedOut} /> : current.path === '/new' ? <NewDocument user={user} onCancel={() => navigate('/')} onOpen={id => navigate(`/documents/${id}`)} /> : documentId && newAttachment ? <NewAttachment key={documentId} parentId={documentId} user={user} onCancel={() => navigate(`/documents/${documentId}`)} onOpen={id => navigate(`/documents/${id}`)} onEditor={parent => navigate(`/editor/${draftId()}?bilaga=${parent.id}`)} /> : documentId ? certificate ? <Certificate doc={certificate} brand={brand} onBack={() => setCertificate(null)} onVerify={() => navigate('/verify')} /> : <DocumentDetail key={documentId} id={documentId} user={user} onBack={() => navigate('/')} onOpen={id => navigate(`/documents/${id}`)} onAddAttachment={() => navigate(`/documents/${documentId}/bilaga`)} onCertificate={doc => { setCertificate(doc); window.scrollTo(0, 0); }} /> : <Documents onOpen={id => navigate(`/documents/${id}`)} onNew={() => navigate('/new')} onCreate={() => navigate(`/editor/${draftId()}`)} onDraft={id => navigate(`/editor/${id}`)} />}
   </main></>;
 }
 
