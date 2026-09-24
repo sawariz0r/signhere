@@ -32,7 +32,7 @@ Isolation protects private-key confidentiality from the sandboxed PDF processes.
 
 ## SES spec comparison
 
-See [the requirement-by-requirement cross-check](ses-spec-crosscheck.md). One deliberate difference remains: after approval, the personal signing link retains read-only receipt access for 30 days, and an exact idempotent retry returns the saved result. It cannot create a second or different signature. This is not literal raw-token invalidation; a separate receipt-capability exchange is deferred. Creation/rotation expiry is configurable from 1 to 365 days, default 7.
+See [the requirement-by-requirement cross-check](ses-spec-crosscheck.md). One deliberate difference remains: after approval, the personal signing link retains read-only receipt access while the document is pending or finalizing, and until at least 30 days after completion, and an exact idempotent retry returns the saved result. It cannot create a second or different signature. This is not literal raw-token invalidation; a separate receipt-capability exchange is deferred. Creation/rotation expiry is configurable from 1 to 365 days, default 7.
 
 Semantic audit events combine actions performed in one transaction: `document.created`, `recipient.viewed`, `recipient.signed` and `document.completed`. A viewed event means signing-session access, not proof the person read every page. V2 signature evidence explicitly includes personal-link authentication, consent acceptance/signing UTC time, recipient and document/transaction identifiers. A document ID is also the transaction/revision ID; corrections require a new document.
 

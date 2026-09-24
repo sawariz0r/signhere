@@ -33,7 +33,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 4) throw new Error('Database schema is newer than this application.');
+      if (version > 5) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -233,7 +233,28 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
           RETURN NEW; END $$;
         CREATE TRIGGER recipients_parent_valid BEFORE INSERT ON recipients FOR EACH ROW EXECUTE FUNCTION guard_recipient_parent();
       `);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      // Completed-copy e-mail outbox, written in the transaction that publishes the completed PDF.
+      if (version < 5) await client.query(`
+        CREATE TABLE email_deliveries (
+          id uuid PRIMARY KEY, document_id uuid NOT NULL REFERENCES documents(id), recipient_id uuid,
+          email text NOT NULL, name text NOT NULL, kind text NOT NULL CHECK(kind IN ('completed_copy')),
+          status text NOT NULL DEFAULT 'queued' CHECK(status IN ('queued','sending','retry','sent','failed')),
+          generation integer NOT NULL DEFAULT 0, attempts integer NOT NULL DEFAULT 0 CHECK(attempts>=0), max_attempts integer NOT NULL DEFAULT 8 CHECK(max_attempts BETWEEN 1 AND 20),
+          available_at timestamptz NOT NULL DEFAULT clock_timestamp(), lease_until timestamptz,
+          provider text, provider_message_id text, last_error_code text CHECK(last_error_code IS NULL OR last_error_code ~ '^[a-z_]{1,64}$'),
+          created_at timestamptz NOT NULL DEFAULT clock_timestamp(), updated_at timestamptz NOT NULL DEFAULT clock_timestamp(), sent_at timestamptz,
+          FOREIGN KEY(recipient_id,document_id) REFERENCES recipients(id,document_id),
+          CHECK((status='sending')=(lease_until IS NOT NULL))
+        );
+        CREATE UNIQUE INDEX email_deliveries_address ON email_deliveries(document_id,kind,lower(email));
+        CREATE INDEX email_deliveries_available ON email_deliveries(available_at) WHERE status IN ('queued','retry','sending');
+        CREATE FUNCTION guard_email_delivery() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF NOT EXISTS(SELECT 1 FROM documents WHERE id=NEW.document_id AND status='completed')
+            THEN RAISE EXCEPTION 'Completed-copy delivery requires a completed document'; END IF;
+          RETURN NEW; END $$;
+        CREATE TRIGGER email_deliveries_completed BEFORE INSERT ON email_deliveries FOR EACH ROW EXECUTE FUNCTION guard_email_delivery();
+      `);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;

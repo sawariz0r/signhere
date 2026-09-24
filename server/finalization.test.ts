@@ -199,6 +199,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
   // Reconstruct the previous storage shape in this disposable schema, preserving
   // actual legacy documents/events, then execute the real version-3 migration.
   await f.pool.query(`
+    DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
     DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
     DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();
     ALTER TABLE recipients DROP COLUMN parent_recipient_id;
@@ -253,4 +254,25 @@ test('a transient key failure retries automatically and retains its sanitized ca
   available = true;
   assert.equal((await worker.runOnce()).status, 'completed');
   assert.equal((await f.pool.query("SELECT count(*) FROM events WHERE document_id=$1 AND type='recipient.signed'", [doc.id])).rows[0].count, '1');
+});
+
+test('the publish hook runs inside the completion transaction', async t => {
+  const f = await fixture(t); const doc = await f.document();
+  await f.accept(doc.id, doc.recipientIds[0]);
+  const seen: string[] = [];
+  const worker = createFinalizationWorker(f.pool, { signingIdentity: identity, buildArtifact: async () => artifact }, {
+    now: () => Date.parse(fixedTime),
+    onPublished: async (client, documentId) => { seen.push((await client.query('SELECT status FROM documents WHERE id=$1', [documentId])).rows[0].status); },
+  });
+  t.after(() => worker.stop());
+  assert.equal((await worker.runOnce()).status, 'completed');
+  assert.deepEqual(seen, ['completed']);
+  const failing = await f.document();
+  await f.accept(failing.id, failing.recipientIds[0]);
+  const rollback = createFinalizationWorker(f.pool, { signingIdentity: identity, buildArtifact: async () => artifact }, {
+    now: () => Date.parse(fixedTime), onPublished: async () => { throw new FinalizationRetryableError('delivery_enqueue_failed'); },
+  });
+  t.after(() => rollback.stop());
+  assert.equal((await rollback.runOnce()).status, 'retry');
+  assert.equal((await status(f.pool, failing.id)).status, 'finalizing');
 });

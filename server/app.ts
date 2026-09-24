@@ -16,6 +16,8 @@ import { LOCAL_SEAL_POLICY, signingIntent, intentEvidence, freezeEvidenceCore } 
 import { verificationPackage } from './verification-package.js';
 import { createPdfReadiness } from './pdf-readiness.js';
 import { createResponseBudget } from './response-budget.js';
+import { createDeliveryWorker, enqueueCompletedCopies, listDeliveries, resendDelivery } from './delivery.js';
+import type { Mailer } from './mail.js';
 import { createNotifier, type Message, type Notifier } from './notify.js';
 
 export interface AppConfig {
@@ -27,7 +29,10 @@ export interface AppConfig {
   legacyCreation?: boolean;
   signingLinkTtlDays?: number;
   finalization?: { autoStart?: boolean; pollMs?: number };
-  /** Optional e-mail delivery. Without it, personal links are shared manually. */
+  /** Optional durable completed-copy e-mail (sealed PDF to every party). Null or absent disables it. */
+  mailer?: Mailer | null;
+  delivery?: { autoStart?: boolean; pollMs?: number; retryBaseMs?: number };
+  /** Optional best-effort e-mail of signing links. Without it, personal links are shared manually. */
   notifier?: Notifier;
 }
 const DAY = 86400000;
@@ -44,7 +49,7 @@ const toUser = (row: Row) => ({ id: row.id, name: row.name, email: row.email, ro
 const consentFor = (recipient: Row) => recipient.signing_intent ? z.object({ version: z.string().min(1).max(128), text: z.string().min(1).max(10000) }).parse(JSON.parse(recipient.signing_intent.toString('utf8')).consent) : CONSENT;
 const eventDto = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
 function requestEvidence(req: Request) { return { ip: (req.ip ?? '').slice(0, 128), userAgent: (req.get('user-agent') ?? '').slice(0, 512) }; }
-async function documentDto(db: Queryable, row: Row, publicView = false, summary = false): Promise<Row> {
+async function documentDto(db: Queryable, row: Row, publicView = false, summary = false, deliveries = false): Promise<Row> {
   const recipients = (await db.query('SELECT ' + (summary ? 'id,name,email,method_id,method_version,viewed_at,signed_at,parent_recipient_id' : '*') + ' FROM recipients WHERE document_id=$1 ORDER BY position', [row.id])).rows;
   const events = publicView || summary ? [] : (await db.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [row.id])).rows.map(eventDto);
   const created = events[0]?.data ?? (await db.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data;
@@ -70,6 +75,7 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
       ...(!publicView && recipient.evidence ? { ip: recipient.evidence.ip, userAgent: recipient.evidence.userAgent } : {}),
     })),
     events,
+    ...(deliveries && !publicView && !summary ? { deliveries: await listDeliveries(db, row.id) } : {}),
   };
   if (row.status === 'finalizing') {
     const job = (await db.query('SELECT status,last_error_code FROM finalization_jobs WHERE document_id=$1', [row.id])).rows[0];
@@ -89,6 +95,7 @@ export async function createApp(config: AppConfig) {
   const pool = await createDatabase(config.databaseUrl, config.schema, config.migrationDatabaseUrl);
   const keys = config.legacyCreation ? null : await createKeyStore(pool, { keysDir: config.keysDir ?? join(config.dataDir, 'keys'), p12File: config.sealP12File, passwordFile: config.sealPasswordFile });
   const pdfReady = createPdfReadiness();
+  const mailer = config.mailer ?? null;
   const finalization = createFinalizationWorker(pool, {
     signingIdentity: async () => { if (!keys) throw new Error('Sealing is unavailable.'); return keys.signingIdentity(); },
     buildArtifact: async snapshot => {
@@ -110,7 +117,8 @@ export async function createApp(config: AppConfig) {
       return { bytes: result.bytes, sealMetadata: { profile: result.metadata.profile, certificateFingerprint: result.metadata.certificateFingerprint, certificatePem: result.metadata.certificatePem, manifest: result.metadata.manifest, pdfHash: result.metadata.pdfHash } };
     },
     onPublished: documentId => afterCompletion(documentId),
-  }, { now, pollMs: config.finalization?.pollMs });
+  }, { now, pollMs: config.finalization?.pollMs, onPublished: mailer ? (client, documentId) => enqueueCompletedCopies(client, documentId) : undefined });
+  const delivery = mailer ? createDeliveryWorker(pool, mailer, { origin, now, pollMs: config.delivery?.pollMs, retryBaseMs: config.delivery?.retryBaseMs }) : null;
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const setupPath = join(config.dataDir, 'setup-token');
   const setupRequired = () => pool.query('SELECT EXISTS(SELECT 1 FROM users) AS exists').then(result => !result.rows[0].exists);
@@ -205,7 +213,14 @@ export async function createApp(config: AppConfig) {
     if (!found) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
     const document = (await client.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1' + (lock ? ' FOR UPDATE' : ''), [found.document_id])).rows[0];
     const recipient = (await client.query('SELECT * FROM recipients WHERE document_id=$1 AND token_hash=$2', [found.document_id, sha256(raw)])).rows[0];
-    if (!document || !recipient || Number(recipient.expires_at) <= now()) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
+    if (!document || !recipient) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
+    // An accepted link is a receipt. Keep it usable while the other parties sign and
+    // finalization runs, then for 30 days after completion, so every signer can fetch the
+    // completed PDF even when the last signature arrives long after theirs.
+    const receiptUntil = !recipient.signed_at ? Number(recipient.expires_at)
+      : document.status === 'completed' ? Math.max(Number(recipient.expires_at), Date.parse(document.completed_at) + 30 * DAY)
+      : Infinity;
+    if (receiptUntil <= now()) throw new ApiError(404, 'Signeringslänken är ogiltig eller har upphört att gälla.');
     if (document.status === 'cancelled') throw new ApiError(410, 'Dokumentet har avbrutits.');
     return { document, recipient };
   }
@@ -271,9 +286,12 @@ export async function createApp(config: AppConfig) {
       'Läs och signera bilagan här:', url, '', 'Via länken ser du också huvuddokumentet, alla bilagor och händelseloggen.', ...signature].join('\n') }
       : { to, subject: title + ' väntar på din signatur', text: ['Hej ' + name + ',', '', senderName + ' har skickat "' + title + '" till dig för signering.', '', 'Läs och signera här:', url, ...signature].join('\n') };
   }
-  /** Best effort after completion: each signer gets a fresh receipt link, the sender gets the document page. */
+  /**
+   * Best effort after completion: each signer gets a fresh receipt link, the sender gets the document page.
+   * With a mailer the durable completed-copy e-mail carries these links instead, so each address gets one message.
+   */
   async function notifyCompleted(documentId: string) {
-    if (!notifier.enabled) return;
+    if (!notifier.enabled || mailer) return;
     const row = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE id=$1', [documentId])).rows[0];
     if (row?.status !== 'completed') return;
     const created = (await pool.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data ?? {};
@@ -308,7 +326,7 @@ export async function createApp(config: AppConfig) {
   });
   app.get('/api/bootstrap', async (req, res) => {
     const user = await currentUser(req);
-    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods() });
+    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods(), delivery: { email: Boolean(mailer) } });
   });
   app.post('/api/setup', async (req, res) => {
     const input = z.object({ setupToken: z.string().min(1).max(256), name: nameSchema, email: emailSchema, password: passwordSchema, teamName: nameSchema }).strict().parse(req.body);
@@ -476,7 +494,7 @@ export async function createApp(config: AppConfig) {
   app.get('/api/documents/:id', requireUser, async (req, res) => {
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
     const attachments = row.parent_id ? [] : (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE parent_id=$1 ORDER BY attachment_number', [row.id])).rows;
-    res.json({ document: { ...await documentDto(pool, row), ...(row.parent_id ? {} : { attachments: await Promise.all(attachments.map(attachment => documentDto(pool, attachment))) }) } });
+    res.json({ document: { ...await documentDto(pool, row, false, false, Boolean(mailer)), ...(row.parent_id ? {} : { attachments: await Promise.all(attachments.map(attachment => documentDto(pool, attachment))) }) } });
   });
   app.get('/api/documents/:id/pdf', requireUser, async (req, res) => withResponse(res, 'download', res.locals.user.id, async () => {
     const version = z.enum(['original', 'completed', 'uploaded']).parse(req.query.version ?? 'original');
@@ -604,7 +622,7 @@ export async function createApp(config: AppConfig) {
       }
       const consent = consentFor(recipient);
       await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent });
-      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version } };
+      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version }, emailCopy: Boolean(mailer) };
     });
     res.json(result);
   });
@@ -671,6 +689,7 @@ export async function createApp(config: AppConfig) {
         const completedAt = at();
         finalDocument = (await client.query("UPDATE documents SET status='completed',completed=$1,completed_hash=$2,completed_at=$3,signing_checkpoint=$4 WHERE id=$5 RETURNING " + docColumns, [completed, completedHash, completedAt, checkpoint, document.id])).rows[0];
         await appendEvent(client, document.id, 'document.completed', completedAt, { originalHash: document.original_hash, completedHash, signingCheckpoint: checkpoint });
+        if (mailer) await enqueueCompletedCopies(client, document.id);
       }
       return { document: await documentDto(client, finalDocument, true), recipientId: recipient.id, completedNow: finalDocument.status === 'completed' };
     });
@@ -715,6 +734,19 @@ export async function createApp(config: AppConfig) {
       pdfResponse(res, pdf, row.id, true);
     });
   });
+  app.post('/api/documents/:id/deliveries', requireUser, async (req, res) => {
+    if (!mailer) throw new ApiError(409, 'E-postutskick är inte konfigurerat på den här installationen.');
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
+    await enqueueCompletedCopies(pool, row.id);
+    res.json({ deliveries: await listDeliveries(pool, row.id) });
+  });
+  app.post('/api/documents/:id/deliveries/:deliveryId/resend', requireUser, async (req, res) => {
+    if (!mailer) throw new ApiError(409, 'E-postutskick är inte konfigurerat på den här installationen.');
+    const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
+    if (!await resendDelivery(pool, row.id, id(req.params.deliveryId))) throw new ApiError(409, 'Utskicket pågår redan eller finns inte.');
+    res.json({ deliveries: await listDeliveries(pool, row.id) });
+  });
   app.post('/api/documents/:id/recipients/:recipientId/revoke-copy-links', requireUser, async (req, res) => {
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
     await pool.query('DELETE FROM completed_copy_access WHERE document_id=$1 AND recipient_id=$2', [row.id, id(req.params.recipientId)]);
@@ -740,7 +772,8 @@ export async function createApp(config: AppConfig) {
     res.status(500).json({ error: 'Ett serverfel uppstod. Försök igen.' });
   });
   if (config.finalization?.autoStart !== false && !config.legacyCreation) finalization.start();
-  return { app, db: pool, pool, finalization, keys, close: async () => { await finalization.stop(); await pool.end(); } };
+  if (delivery && config.delivery?.autoStart !== false) delivery.start();
+  return { app, db: pool, pool, finalization, delivery, keys, close: async () => { await finalization.stop(); await delivery?.stop(); await pool.end(); } };
 }
 
 

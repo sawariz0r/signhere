@@ -12,6 +12,16 @@ services:
       SIGNHERE_SIGNING_LINK_TTL_DAYS: ${SIGNHERE_SIGNING_LINK_TTL_DAYS:-7}
       NODE_ENV: production
       TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
+      # Optional e-mail. SMTP is the default provider; leave SMTP_HOST and SMTP_URL empty to disable.
+      SIGNHERE_MAIL_PROVIDER: ${SIGNHERE_MAIL_PROVIDER:-smtp}
+      SIGNHERE_MAIL_FROM: ${SIGNHERE_MAIL_FROM:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      # Shorthand accepted for SMTP_HOST/PORT/USER/PASSWORD and SIGNHERE_MAIL_FROM.
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-}
       DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?}@postgres:5432/signhere
