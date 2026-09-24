@@ -340,6 +340,24 @@
 .ed-accents button{width:24px;height:24px;border-radius:50%;border:0;padding:0}
 .ed-accents button.active{box-shadow:0 0 0 2px #fff,0 0 0 4px var(--ink)}
 
+/* Send sheet */
+.ed-dialog{width:calc(100% - 32px);max-width:460px;max-height:calc(100dvh - 40px);overflow:auto;border:0;background:#fff;color:var(--text);border-radius:18px;padding:24px;box-shadow:0 30px 80px -30px rgba(14,17,22,.5);animation:shRise .22s var(--ease)}
+.ed-dialog::backdrop{background:rgba(14,17,22,.36);animation:shFade .16s ease-out}
+.ed-dialog:focus{outline:none}
+.ed-dialog form{display:flex;flex-direction:column;gap:18px}
+.ed-dialog h2{margin:0 0 4px;font-size:22px;font-weight:700;letter-spacing:-.02em}
+.ed-dialog-sub{margin:0;font-size:14px;color:var(--muted);overflow-wrap:anywhere}
+.ed-send-list{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:0;padding:0;list-style:none}
+.ed-send-list>li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--inner)}
+.ed-send-list>li:last-child{border-bottom:0}
+.ed-send-list>li>div{min-width:0}
+.ed-send-list strong{display:block;font-size:14px;font-weight:600}
+.ed-send-list span:not(.ed-avatar){display:block;font-size:13px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ed-dialog-note{margin:0;font-size:13px;color:var(--muted)}
+.ed-dialog-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.ed-dialog .ed-btn.large{height:44px;padding:0 16px;border-radius:10px}
+.ed-dialog .ed-btn.primary.large{padding:0 20px;min-width:104px}
+
 /* Toast */
 .ed-toast-wrap{position:fixed;left:50%;bottom:24px;transform:translateX(-50%);z-index:60}
 .ed-toast{display:flex;align-items:center;gap:12px;height:44px;padding:0 6px 0 16px;border-radius:12px;background:var(--ink);color:#fff;font-size:14px;white-space:nowrap;box-shadow:0 16px 40px -16px rgba(14,17,22,.5);animation:shRise .2s var(--ease)}

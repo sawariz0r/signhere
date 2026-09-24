@@ -593,6 +593,8 @@ test('sender inclusion validates recipients, limits and the authenticated sender
     const response = await f.post('/api/documents', body);
     assert.equal(response.status, 400, response.text);
   }
+  const invalidEmail = await f.post('/api/documents', { ...input, includeSender: false, recipients: [{ name: 'One', email: 'a@b@c.example' }] });
+  assert.deepEqual([invalidEmail.status, invalidEmail.body.error], [400, 'Ogiltig e-postadress.']);
   assert.equal((await f.db.query('SELECT count(*) FROM documents')).rows[0].count, '0');
   const permitted = await f.post('/api/documents', {
     ...input, includeSender: true,

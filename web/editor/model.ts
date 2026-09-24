@@ -27,12 +27,13 @@ export type DocTheme = { font: 'grotesk' | 'serif'; accent: string };
 export type DocSettings = { currency: string; pricesIncludeVat: boolean; expiresInDays: number; remind: boolean; allowDecline: boolean; senderSigns: boolean };
 export type FieldDef = { key: string; label: string; group: 'customer' | 'sender' | 'document' | 'custom' };
 export type Draft = { id: string; version: 2; title: string; createdAt: string; updatedAt: string; blocks: Block[]; company: RecipientCompany | null; theme: DocTheme; settings: DocSettings; fields: Record<string, string>; customFields: FieldDef[] };
-export type IssueTarget = { kind: 'recipients' } | { kind: 'block'; id: string };
+export type IssueTarget = { kind: 'recipients' } | { kind: 'title' } | { kind: 'block'; id: string };
 export type Issue = { message: string; target?: IssueTarget };
 export type Signer = { id: string; name: string; email: string; company: string };
 
 export const uid = () => crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 export const SIGNATURE_ID = 'sig';
+export const UNTITLED = 'Namnlöst dokument';
 
 export const BUILTIN_FIELDS: FieldDef[] = [
   ['customer.name', 'Kundens namn'], ['customer.email', 'Kundens e-post'], ['customer.company', 'Kundens företag'], ['customer.orgNumber', 'Kundens org.nr'], ['customer.address', 'Kundens adress'], ['customer.zip', 'Kundens postnummer'], ['customer.city', 'Kundens ort'],
@@ -158,7 +159,7 @@ export function templateBlocks(key: TemplateKey): Block[] {
 export function createDraft(id: string, user: User): Draft {
   const now = new Date().toISOString();
   return {
-    id, version: 2, title: 'Namnlöst dokument', createdAt: now, updatedAt: now, blocks: [], company: null,
+    id, version: 2, title: UNTITLED, createdAt: now, updatedAt: now, blocks: [], company: null,
     theme: { font: 'grotesk', accent: '#0e1116' },
     settings: { currency: 'SEK', pricesIncludeVat: false, expiresInDays: 30, remind: true, allowDecline: true, senderSigns: false },
     fields: { 'sender.name': user.name, 'sender.email': user.email, 'sender.company': user.teamName }, customFields: [],
@@ -207,17 +208,21 @@ export function blockFields(block: Block) {
   return keys;
 }
 
-const EMAIL = /^\S+@\S+\.\S+$/;
+// Same rule as the upload flow; the server validates again.
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 export const validEmail = (value: string) => EMAIL.test(value.trim());
 
 export function validate(draft: Draft): Issue[] {
   const issues: Issue[] = [];
   const recipients: IssueTarget = { kind: 'recipients' };
   if (!draft.blocks.length) issues.push({ message: 'Dokumentet är tomt' });
+  const title = draft.title.trim();
+  if (!title || title === UNTITLED) issues.push({ message: 'Ge dokumentet ett namn', target: { kind: 'title' } });
   const signing = signingContacts(draft);
   if (!draft.company) issues.push({ message: 'Välj eller lägg till en mottagare', target: recipients });
   else if (!signing.length) issues.push({ message: 'Välj minst en kontaktperson som signerar', target: recipients });
   else if (signing.some(contact => !validEmail(contact.email))) issues.push({ message: 'En signerare saknar giltig e-post', target: recipients });
+  else if (new Set(signing.map(contact => contact.email.trim().toLowerCase())).size !== signing.length) issues.push({ message: 'Två signerare har samma e-post', target: recipients });
   const empty = new Map<string, string>();
   for (const block of draft.blocks) for (const key of blockFields(block)) if (!fieldValue(draft, key) && !empty.has(key)) empty.set(key, block.id);
   if (empty.size) {
