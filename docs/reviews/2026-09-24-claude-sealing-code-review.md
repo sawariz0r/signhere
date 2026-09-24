@@ -183,8 +183,8 @@ Either way, add copy-link revocation.
 ## B. Not code bugs: unexecuted tests and release gates
 
 1. **Linux launcher never run.**
-   - It needs kernel ≥ 6.2 (Landlock ABI 3), plus a Docker/Coolify seccomp profile that allows the `landlock_*` syscalls.
-   - If those syscalls are denied, the ABI probe fails closed with the misleading "ABI 3 required" message.
+   - It needs kernel ≥ 5.13 with Landlock enabled in the LSM list, plus a Docker/Coolify seccomp profile that allows the `landlock_*` syscalls. (Originally ABI 3 / kernel ≥ 6.2; ABI 1-2 are now supported with seccomp truncation denial.)
+   - Launcher failures now report the real errno, kernel release and a hint instead of a misleading "ABI 3 required" message.
    - Run `test-pdf-sandbox.mjs` in its full mode (real `/keys` and `/data` probes) in CI, on the actual image and the target host's kernel.
    - The `--startup` mode only probes sibling `/tmp` directories.
 2. **Memory and tmpfs budget.**

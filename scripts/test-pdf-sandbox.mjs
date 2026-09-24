@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
 import { spawn } from 'node:child_process';
-import { mkdtemp, writeFile, rm, open } from 'node:fs/promises';
+import { mkdtemp, writeFile, readFile, rm, open } from 'node:fs/promises';
 
 // Run inside the actual Linux image: tests the same executable and kernel
 // restrictions used by upload preparation, assembly and seal validation.
@@ -73,6 +73,19 @@ for number in (*queued_signal_calls, 424, 452, 463, 466):
     # Signal zero / null arguments are harmless even if a filter regresses.
     ctypes.set_errno(0)
     assert libc.syscall(number, ${parent}, 0, 0, 0, 0, 0) == -1 and ctypes.get_errno() == errno.EPERM
+# Landlock ABI 1-2 cannot see truncation, so the syscall filter must cover it on every host.
+blocked(lambda: os.truncate(forbidden, 0))
+probe = Path(job, 'truncate-probe')
+probe.write_text('keep')
+blocked(lambda: os.truncate(probe, 0))
+blocked(lambda: os.open(probe, os.O_RDONLY | os.O_TRUNC))
+assert probe.read_text() == 'keep'
+ctypes.set_errno(0)
+assert libc.syscall(437, -100, b'.', None, 0) == -1 and ctypes.get_errno() == errno.ENOSYS
+with open(probe, 'r+b') as handle:
+    handle.truncate(1)
+assert probe.read_bytes() == b'k'
+print('Landlock ABI', libc.syscall(444, None, 0, 1))
 assert 'DATABASE_URL' not in os.environ and 'SIGNHERE_SANDBOX_TEST_SECRET' not in os.environ
 Path(job, 'allowed-result').write_text('bounded output')
 assert Path(job, 'allowed-result').read_text() == 'bounded output'
@@ -83,6 +96,8 @@ print('Python filesystem, network, process, descriptor, and environment boundari
 `;
   const result = await child(process.env.SIGNHERE_SEAL_PYTHON, ['-c', source], { ...process.env, SIGNHERE_SANDBOX_TEST_SECRET: marker }, inherited.fd);
   assert.match(result, /boundaries passed/);
+  assert.equal(await readFile(forbidden, 'utf8'), marker, 'Sandboxed truncation reached a forbidden file.');
+  const abi = /Landlock ABI (\d+)/.exec(result)?.[1];
   const nodeResult = await child(process.execPath, ['--max-old-space-size=128', '--input-type=module', '-e', `
     import fs from 'node:fs'; import net from 'node:net';
     try { fs.readFileSync(${JSON.stringify(forbidden)}); throw Error('Read key succeeded'); } catch(error) { if(error.code !== 'EACCES' && error.code !== 'EPERM') throw error; }
@@ -90,7 +105,7 @@ print('Python filesystem, network, process, descriptor, and environment boundari
     const server = net.createServer(); server.on('error', error => { if(error.code !== 'EPERM' && error.code !== 'EACCES') throw error; console.log('Node parser runtime and network boundary passed.'); }); server.listen(0, '127.0.0.1');
   `], process.env, inherited.fd);
   assert.match(nodeResult, /boundary passed/);
-  console.log('Linux parser sandbox denies key/data reads, parent environment/ptrace, inherited secret descriptors, sockets, subprocesses, symlink/hardlink escape, and writes outside its job. Python and Node runtimes start successfully.');
+  console.log(`Linux parser sandbox (Landlock ABI ${abi}) denies key/data reads, truncation outside its job, parent environment/ptrace, inherited secret descriptors, sockets, subprocesses, symlink/hardlink escape, and writes outside its job. Python and Node runtimes start successfully.`);
 } finally {
   await inherited?.close();
   await rm(forbidden, { force: true });

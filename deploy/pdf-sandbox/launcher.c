@@ -18,15 +18,19 @@
 #include <sys/stat.h>
 #include <sys/socket.h>
 #include <sys/syscall.h>
+#include <sys/utsname.h>
 #include <unistd.h>
 
-/* Debian 12 headers can predate ABI 3; runtime support is still mandatory. */
+/* Debian 12 headers can predate ABI 3. */
 #ifndef LANDLOCK_ACCESS_FS_TRUNCATE
 #define LANDLOCK_ACCESS_FS_TRUNCATE (1ULL << 14)
 #endif
 
 /* Linux-only, unprivileged parser boundary. No setuid, capabilities or network.
- * Fail closed if the host cannot enforce Landlock ABI 3 and seccomp filters.
+ * Fail closed if the host cannot enforce Landlock (ABI 1+) and seccomp filters.
+ * ABI 1 lacks REFER: the kernel then denies every cross-directory rename/link.
+ * ABI 1-2 lack TRUNCATE: the syscall filter denies truncate(2) and read-only
+ * O_TRUNC opens instead; write opens and ftruncate stay covered by WRITE_FILE.
  * Invocation: pdf-sandbox JOB_DIRECTORY ABSOLUTE_EXECUTABLE [ARGUMENT ...]
  * Public runtime paths are image-owned; keys, data, /proc and other jobs are not
  * allowed. This is not a boundary against compromise of the parent application.
@@ -49,6 +53,20 @@ static void limit_resource(int resource, rlim_t limit) {
     if (setrlimit(resource, &value) < 0) fail("cannot enforce resource limit");
 }
 
+/* Rights this kernel's Landlock ABI understands; rules may not name any others. */
+static uint64_t supported_rights;
+
+static void landlock_unavailable(int error) {
+    struct utsname host;
+    const char *release = uname(&host) == 0 ? host.release : "unknown";
+    const char *hint = error == EOPNOTSUPP ? "Landlock is built into the kernel but disabled; add landlock to the lsm= boot parameter" :
+        error == ENOSYS ? "the kernel lacks Landlock (Linux 5.13+ with CONFIG_SECURITY_LANDLOCK) or the container seccomp profile hides it (Docker Engine 23+ allows it)" :
+        error == EPERM ? "the container seccomp profile denies landlock_* syscalls (Docker Engine 23+ allows them)" :
+        "unexpected Landlock probe failure";
+    fprintf(stderr, "PDF sandbox: Landlock is unavailable on kernel %s: %s (%s)\n", release, hint, strerror(error));
+    exit(126);
+}
+
 static void allow_path(int ruleset, const char *path, uint64_t rights, int required) {
     int descriptor = open(path, O_PATH | O_CLOEXEC);
     if (descriptor < 0) {
@@ -58,21 +76,25 @@ static void allow_path(int ruleset, const char *path, uint64_t rights, int requi
     struct stat info;
     if (fstat(descriptor, &info) < 0) fail("cannot inspect an allowed runtime path");
     if (!S_ISDIR(info.st_mode)) rights &= LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_TRUNCATE;
+    rights &= supported_rights;
     const struct landlock_path_beneath_attr rule = { .allowed_access = rights, .parent_fd = descriptor };
     if (syscall(SYS_landlock_add_rule, ruleset, LANDLOCK_RULE_PATH_BENEATH, &rule, 0) < 0) fail("cannot enforce allowed runtime path");
     if (close(descriptor) < 0) fail("cannot close runtime path descriptor");
 }
 
 static void restrict_filesystem(const char *job) {
-    const int abi = (int)syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
-    if (abi < 3) { errno = ENOTSUP; fail("Landlock ABI 3 or newer is required"); }
+    const long abi = syscall(SYS_landlock_create_ruleset, NULL, 0, LANDLOCK_CREATE_RULESET_VERSION);
+    if (abi < 1) landlock_unavailable(abi < 0 ? errno : ENOSYS);
+    supported_rights = ~0ULL;
+    if (abi < 2) supported_rights &= ~LANDLOCK_ACCESS_FS_REFER;
+    if (abi < 3) supported_rights &= ~LANDLOCK_ACCESS_FS_TRUNCATE;
     const uint64_t read_only = LANDLOCK_ACCESS_FS_EXECUTE | LANDLOCK_ACCESS_FS_READ_FILE | LANDLOCK_ACCESS_FS_READ_DIR;
     const uint64_t all_rights = read_only | LANDLOCK_ACCESS_FS_WRITE_FILE | LANDLOCK_ACCESS_FS_REMOVE_DIR |
         LANDLOCK_ACCESS_FS_REMOVE_FILE | LANDLOCK_ACCESS_FS_MAKE_CHAR | LANDLOCK_ACCESS_FS_MAKE_DIR |
         LANDLOCK_ACCESS_FS_MAKE_REG | LANDLOCK_ACCESS_FS_MAKE_SOCK | LANDLOCK_ACCESS_FS_MAKE_FIFO |
         LANDLOCK_ACCESS_FS_MAKE_BLOCK | LANDLOCK_ACCESS_FS_MAKE_SYM | LANDLOCK_ACCESS_FS_REFER |
         LANDLOCK_ACCESS_FS_TRUNCATE;
-    const struct landlock_ruleset_attr attrs = { .handled_access_fs = all_rights };
+    const struct landlock_ruleset_attr attrs = { .handled_access_fs = all_rights & supported_rights };
     int ruleset = (int)syscall(SYS_landlock_create_ruleset, &attrs, sizeof(attrs), 0);
     if (ruleset < 0) fail("cannot create filesystem rules");
     allow_path(ruleset, "/usr", read_only, 1);
@@ -181,6 +203,26 @@ static void restrict_syscalls(void) {
         BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, FIONCLEX, 1, 0),
         BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
         BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+        /* Before Landlock ABI 3, truncation is checked only through write access. A read-only
+         * O_TRUNC open still truncates, so deny that flag pair; openat2 hides its flags in memory. */
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat2, 0, 1),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | ENOSYS),
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_openat, 0, 4),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[2])),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_TRUNC, 0, 2),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_ACCMODE, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#ifdef __NR_open
+        BPF_JUMP(BPF_JMP | BPF_JEQ | BPF_K, __NR_open, 0, 4),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, args[1])),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_TRUNC, 0, 2),
+        BPF_JUMP(BPF_JMP | BPF_JSET | BPF_K, O_ACCMODE, 1, 0),
+        BPF_STMT(BPF_RET | BPF_K, SECCOMP_RET_ERRNO | EPERM),
+        BPF_STMT(BPF_LD | BPF_W | BPF_ABS, offsetof(struct seccomp_data, nr)),
+#endif
+        /* Landlock before ABI 3 does not check path truncation; parsers never use it. */
+        REJECT_SYSCALL(truncate),
         REJECT_SYSCALL(socket), REJECT_SYSCALL(connect),
         REJECT_SYSCALL(bind), REJECT_SYSCALL(listen), REJECT_SYSCALL(accept), REJECT_SYSCALL(accept4),
         REJECT_SYSCALL(ptrace), REJECT_SYSCALL(process_vm_readv), REJECT_SYSCALL(process_vm_writev),

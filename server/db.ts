@@ -211,14 +211,28 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       `);
       await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
-    if (migrationDatabaseUrl) {
-      await pool.end();
-      const runtime = new Pool({ ...poolOptions, connectionString: databaseUrl });
-      runtime.on('error', error => console.error('signhere: database connection failed', (error as Row).code ?? 'connection'));
-      return runtime;
-    }
-    return pool;
-  } catch (error) { await pool.end(); throw error; }
+  } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
+  if (!migrationDatabaseUrl) return pool;
+  await pool.end();
+  const runtime = new Pool({ ...poolOptions, connectionString: databaseUrl });
+  runtime.on('error', error => console.error('signhere: database connection failed', (error as Row).code ?? 'connection'));
+  try { await assertRestrictedRuntimeRole(runtime, schema); }
+  catch (error) { await runtime.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
+  return runtime;
+}
+const legacyUpgrade = 'A database created before separate migration and runtime roles must be upgraded with deploy/postgres/upgrade-legacy-roles.sh (docs/deployment.md).';
+function legacyRoleHint(error: unknown, migrationDatabaseUrl?: string) {
+  // 28P01 is also what PostgreSQL reports for a role that does not exist.
+  if (!migrationDatabaseUrl || !['28P01', '28000'].includes((error as Row)?.code)) return error;
+  return new Error('PostgreSQL rejected the migration or runtime login. ' + legacyUpgrade, { cause: error });
+}
+// Separate roles only protect the immutability triggers if the runtime role cannot own or alter tables.
+async function assertRestrictedRuntimeRole(runtime: Pool, schema: string) {
+  const { rows: [role] } = await runtime.query(`SELECT r.rolsuper OR r.rolcreaterole OR r.rolcreatedb OR r.rolbypassrls AS privileged,
+    has_schema_privilege(current_user, $1, 'CREATE') OR has_database_privilege(current_user, current_database(), 'CREATE') AS can_create,
+    EXISTS(SELECT 1 FROM pg_class c JOIN pg_namespace n ON n.oid=c.relnamespace WHERE n.nspname=$1 AND pg_has_role(current_user, c.relowner, 'USAGE')) AS owns
+    FROM pg_roles r WHERE r.rolname=current_user`, [schema]);
+  if (role.privileged || role.can_create || role.owns) throw new Error('DATABASE_URL must use the restricted runtime role, but it can create or own database objects. ' + legacyUpgrade);
 }
 export async function appendEvent(client: PoolClient, documentId: string, type: string, at: string, data: Row) {
   data = JSON.parse(JSON.stringify(data)) as Row;

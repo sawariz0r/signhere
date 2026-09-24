@@ -28,10 +28,12 @@ RUN python3 -m venv /opt/signhere-seal \
     && /opt/signhere-seal/bin/pip install --no-cache-dir --require-hashes -r /tmp/pdf-seal-requirements.txt \
     && rm /tmp/pdf-seal-requirements.txt
 COPY --from=sandbox-build /usr/local/bin/signhere-pdf-sandbox /usr/local/bin/signhere-pdf-sandbox
-COPY --from=build --chown=node:node /app/node_modules ./node_modules
-COPY --from=build --chown=node:node /app/dist ./dist
-COPY --chown=node:node package.json LICENSE ./
-COPY --chown=node:node scripts ./scripts
+# Code stays root-owned: the parser sandbox may read it, and must never be able to
+# truncate it, even when a deployment omits the read-only root filesystem.
+COPY --from=build /app/node_modules ./node_modules
+COPY --from=build /app/dist ./dist
+COPY package.json LICENSE ./
+COPY scripts ./scripts
 RUN install -d -o node -g node -m 0700 /data /keys
 USER node
 VOLUME ["/data", "/keys"]
