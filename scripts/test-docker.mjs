@@ -159,6 +159,13 @@ try {
   await checkRuntimePermissions(restored);
   await signFixture(restored, 'After paired restore');
   console.log('Docker fresh setup, signing, restricted runtime role, restart, identity persistence, and paired key/database restore passed.');
+} catch (error) {
+  // Surface container output before teardown; compose only reports "unhealthy".
+  for (const project of projects) {
+    console.error(`--- ${project.name} logs ---`);
+    console.error(await project.run(['logs', '--no-color', '--tail', '200']).catch(failure => redact(failure.message)).then(redact));
+  }
+  throw error;
 } finally {
   for (const project of projects.reverse()) {
     // Names are generated above; never attach this test to an existing deployment.
