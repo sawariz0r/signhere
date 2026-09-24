@@ -5,12 +5,11 @@ import '@fontsource-variable/source-serif-4';
 import { EditorContext, useEditorApi, type EditorApi } from './context';
 import { BlockFrame, BlockView, SignatureSection, UnitList } from './blocks';
 import { SidePanel } from './sidebar';
-import { SendDialog, type SendRequest } from './send';
 import {
   BLOCK_LABELS, createBlock, createDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, validate,
   type Block, type BlockType, type Draft, type Issue, type TemplateKey,
 } from './model';
-import type { ShareLink, User } from '../types';
+import type { User } from '../types';
 import './editor.css';
 
 const HISTORY_LIMIT = 100;
@@ -32,8 +31,11 @@ function Tray({ label, index, onClose }: { label: string; index: number; onClose
   </div>;
 }
 
-/** With `attachment`, the draft becomes a bilaga: it is rendered to a PDF and signed by parties chosen in the next step. */
-export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: { draftId: string; user: User; onClose: () => void; onSend?: (request: SendRequest) => Promise<ShareLink[]>; attachment?: { onUse: (file: File) => void } }) {
+/**
+ * The draft is rendered to a PDF and handed to `onUse`, which continues in the upload flow.
+ * With `attachment`, the draft becomes a bilaga signed by parties chosen in the next step.
+ */
+export function DocumentEditor({ draftId, user, onClose, onUse, attachment = false }: { draftId: string; user: User; onClose: () => void; onUse: (file: File, draft: Draft) => void; attachment?: boolean }) {
   const [draft, setDraft] = useState<Draft>(() => loadDraft(draftId) ?? createDraft(draftId, user));
   const [revision, setRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -42,7 +44,6 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
   const [fresh, setFresh] = useState<string | null>(null);
   const [paperWidth, setPaperWidth] = useState(800);
   const [toast, setToast] = useState<Toast | null>(null);
-  const [sendOpen, setSendOpen] = useState(false);
   const [flash, setFlash] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
   const [rendering, setRendering] = useState(false);
@@ -212,19 +213,21 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
       return;
     }
     select(null);
-    if (attachment) { void useAsAttachment(); return; }
-    setSendOpen(true);
+    void renderPdf();
   };
-  const useAsAttachment = async () => {
-    if (!attachment || rendering) return;
+  const renderPdf = async () => {
+    if (rendering) return;
     setRendering(true); setRenderError('');
     try {
       const { draftPdf } = await import('./pdf-export');
-      const blob = await draftPdf(latest.current);
-      if (blob.size > 10 * 1024 * 1024) throw new Error('Bilagan blir större än 10 MB. Använd mindre bilder.');
-      const name = (latest.current.title.trim() || 'Bilaga').replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
-      attachment.onUse(new File([blob], `${name}.pdf`, { type: 'application/pdf' }));
-    } catch (error) { setRenderError(error instanceof Error ? error.message : 'Bilagan kunde inte skapas.'); }
+      const current = latest.current;
+      const blob = await draftPdf(current);
+      if (blob.size > 10 * 1024 * 1024) throw new Error(`${attachment ? 'Bilagan' : 'Dokumentet'} blir större än 10 MB. Använd mindre bilder.`);
+      // Leaving the editor cancels the debounced save, so keep the latest edits before handing off.
+      try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
+      const name = (current.title.trim() || (attachment ? 'Bilaga' : 'Dokument')).replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
+      onUse(new File([blob], `${name}.pdf`, { type: 'application/pdf' }), current);
+    } catch (error) { setRenderError(error instanceof Error ? error.message : 'PDF-filen kunde inte skapas.'); }
     finally { setRendering(false); }
   };
   const onIssue = (issue: Issue) => {
@@ -241,11 +244,11 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
       if (mod && key === 's') { event.preventDefault(); try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); } return; }
       if (event.key === 'Escape') {
         if (event.defaultPrevented) return;
-        if (sendOpen) setSendOpen(false);
-        else { if (typing) target.blur(); select(null); }
+        if (typing) target.blur();
+        select(null);
         return;
       }
-      if (typing || preview || sendOpen) return;
+      if (typing || preview) return;
       if (mod && (key === 'z' || key === 'y')) { event.preventDefault(); travel(key === 'y' || event.shiftKey ? 'redo' : 'undo'); return; }
       if (!selectedId || selectedId === SIGNATURE_ID) return;
       if (event.key === 'Delete' || event.key === 'Backspace') { event.preventDefault(); removeBlock(selectedId); }
@@ -254,7 +257,7 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [preview, sendOpen, selectedId, select, travel, removeBlock, copyBlock, moveBlock]);
+  }, [preview, selectedId, select, travel, removeBlock, copyBlock, moveBlock]);
 
   const applyTemplate = (key: TemplateKey) => {
     if (key === 'blank') { addBlock('text', 0); return; }
@@ -274,7 +277,7 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
         <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <><Check size={13} strokeWidth={3} aria-hidden="true" />Sparat</>}</span>
         <div className="ed-topbar-actions">
           <button type="button" className="ed-btn large" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
-          <button type="button" className="ed-btn primary large" disabled={rendering} onClick={openSend}>{attachment ? (rendering ? 'Skapar PDF…' : 'Använd som bilaga') : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
+          <button type="button" className="ed-btn primary large" disabled={rendering} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
         </div>
       </div>
     </header>
@@ -301,11 +304,10 @@ export function DocumentEditor({ draftId, user, onClose, onSend, attachment }: {
           {draft.blocks.length > 0 && (attachment ? <p className="ed-attachment-note">Bilagan signeras av parterna du väljer i nästa steg. En signatursida läggs till automatiskt.</p> : <SignatureSection />)}
         </article>
       </div>
-      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} />}
+      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={attachment} />}
     </div>
     <UnitList />
 
-    {sendOpen && <SendDialog onClose={() => setSendOpen(false)} onSend={onSend} />}
     {renderError && <div className="ed-toast-wrap"><div className="ed-toast" role="alert"><span>{renderError}</span><button type="button" onClick={() => setRenderError('')}>Stäng</button></div></div>}
     {toast && <div className="ed-toast-wrap"><div className="ed-toast" role="status"><span>{toast.message}</span>{toast.restore && <button type="button" onClick={restore}>Ångra</button>}</div></div>}
   </div></EditorContext.Provider>;

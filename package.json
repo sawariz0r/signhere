@@ -16,7 +16,7 @@
     "backup": "node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env scripts/backup.mjs",
     "verify:evidence": "node scripts/verify-evidence.mjs",
     "setup:env": "node scripts/setup-env.mjs",
-    "test:browser": "node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-smoke.mjs && node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-bilaga.mjs",
+    "test:browser": "node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-smoke.mjs && node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-bilaga.mjs && node --env-file-if-exists=.env --env-file-if-exists=.local/postgres.env tests/browser-editor-send.mjs",
     "db:status": "node scripts/postgres-local.mjs status",
     "db:start": "node scripts/postgres-local.mjs start",
     "db:stop": "node scripts/postgres-local.mjs stop",
