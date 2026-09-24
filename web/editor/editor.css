@@ -317,7 +317,6 @@
 .ed-contact{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid var(--inner);cursor:pointer}
 .ed-contact input[type=checkbox]{width:18px;height:18px}
 .ed-avatar{width:28px;height:28px;border-radius:50%;background:var(--inner);display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0}
-.ed-avatar.large{width:32px;height:32px;font-size:12px}
 .ed-contact-text{flex:1;min-width:0;display:flex;flex-direction:column}
 .ed-contact-text strong{font-size:14px;font-weight:600}
 .ed-contact-text span{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}

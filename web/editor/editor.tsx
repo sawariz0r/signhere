@@ -224,7 +224,7 @@ export function DocumentEditor({ draftId, user, onClose, onUse, attachment = fal
       const blob = await draftPdf(current);
       if (blob.size > 10 * 1024 * 1024) throw new Error(`${attachment ? 'Bilagan' : 'Dokumentet'} blir större än 10 MB. Använd mindre bilder.`);
       // Leaving the editor cancels the debounced save, so keep the latest edits before handing off.
-      try { saveDraft({ ...current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
+      try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
       const name = (current.title.trim() || (attachment ? 'Bilaga' : 'Dokument')).replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
       onUse(new File([blob], `${name}.pdf`, { type: 'application/pdf' }), current);
     } catch (error) { setRenderError(error instanceof Error ? error.message : 'PDF-filen kunde inte skapas.'); }

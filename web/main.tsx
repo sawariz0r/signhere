@@ -47,7 +47,7 @@ function App() {
     const parentId = query && /^[0-9a-f-]{36}$/.test(query) ? query : null;
     const onUse = (file: File, draft: Draft) => {
       if (parentId) { handOff(parentId, { file, draftId: id }); navigate(`/documents/${parentId}/bilaga`); return; }
-      handOff('new', { file, draftId: id, title: draft.title.trim(), recipients: signingContacts(draft).map(({ name, email }) => ({ name, email })), includeSender: draft.settings.senderSigns });
+      handOff('new', { file, draftId: id, title: draft.title.trim().slice(0, 160), recipients: signingContacts(draft).map(({ name, email }) => ({ name, email })), includeSender: draft.settings.senderSigns });
       navigate('/new');
     };
     return <Suspense fallback={<main className="main"><Loading>Öppnar editorn…</Loading></main>}><DocumentEditor key={id} draftId={id} user={user} attachment={Boolean(parentId)} onUse={onUse} onClose={() => navigate(parentId ? `/documents/${parentId}/bilaga` : '/')} /></Suspense>;

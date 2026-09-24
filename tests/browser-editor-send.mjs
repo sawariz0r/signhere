@@ -38,7 +38,7 @@ try {
   await page.getByRole('button', { name: /Tomt dokument/ }).click();
   await page.locator('.ProseMirror').first().click();
   await page.keyboard.type('Leverantören sköter service av anläggningen under 2027.');
-  await page.waitForTimeout(700);
+  await expect(page.locator('.ed-save')).toHaveText(/Sparat/);
   // Choose the signing party as the recipients panel would, and have the sender sign too.
   await page.evaluate(id => {
     const key = 'signhere.drafts.v1.' + id;
