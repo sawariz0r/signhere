@@ -43,7 +43,10 @@ async function provision(samePassword = false) {
 }
 function connectAs(user, password) {
   const url = new URL(databaseUrl); url.username = user; url.password = password; url.pathname = '/' + fixture;
-  return new pg.Pool({ connectionString: url.href });
+  const pool = new pg.Pool({ connectionString: url.href });
+  // pool.end() resolves before sockets close; DROP ... WITH (FORCE) then terminates them (57P01).
+  pool.on('error', error => { if (error.code !== '57P01') console.error(error); });
+  return pool;
 }
 try {
   await admin.query(`CREATE DATABASE "${fixture}"`);
