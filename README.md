@@ -165,6 +165,8 @@ Personal links are credentials. Signing consumes the ability to change that reci
 
 Before real production use, complete independent security and legal review, actual Linux container/isolation tests, reader interoperability checks, retention/erasure procedures, paired restore drills, and measured storage/concurrency limits. These are release requirements, not promises made by the interface.
 
+- [Planned signhere.se central-service architecture](docs/central-service-plan.md)
+- [Central-service implementation backlog](docs/backlog/signhere-central/README.md)
 - [How signing is sealed and secured](docs/signing-security.md)
 - [Architecture](docs/architecture.md)
 - [Sealing implementation status and review dispositions](docs/sealing-implementation.md)
