@@ -1,6 +1,6 @@
 import { useRef, useState, type InputHTMLAttributes, type ReactNode } from 'react';
 import { initials } from './api';
-import type { SigningDocument, Strokes } from './types';
+import type { Central, SigningDocument, Strokes } from './types';
 
 export function Brand({ publicBrand = false }: { publicBrand?: boolean }) {
   return <div className="brand" aria-label="signhere"><span className="brand-icon"><i /></span><span>signhere{publicBrand && <span className="brand-suffix">.se</span>}</span></div>;
@@ -29,4 +29,10 @@ export function Dropzone({ onFile, title, subtitle, verify = false, disabled = f
   const input = useRef<HTMLInputElement>(null);
   const [drag, setDrag] = useState(false);
   return <><input ref={input} type="file" accept="application/pdf,.pdf" className="visually-hidden" tabIndex={-1} aria-hidden="true" onChange={e => { const file = e.target.files?.[0]; if (file) onFile(file); e.target.value = ''; }} /><button type="button" disabled={disabled} className={`dropzone${drag ? ' dragging' : ''}`} onClick={() => input.current?.click()} onDragOver={e => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={e => { e.preventDefault(); setDrag(false); const file = e.dataTransfer.files[0]; if (file && !disabled) onFile(file); }}><span className={`circle${verify ? ' outlined' : ''}`}>{verify ? '↑' : '+'}</span><strong>{title}</strong><span>{subtitle}</span></button></>;
+}
+/** Opt-in per document; only rendered when the installation has a central service configured. */
+export function IndependentApprovalOption({ central, checked, onChange, disabled = false }: { central?: Central; checked: boolean; onChange: (value: boolean) => void; disabled?: boolean }) {
+  if (!central?.independentApproval) return null;
+  const host = new URL(central.service).host;
+  return <label className="checkbox independent-option"><input type="checkbox" checked={checked} disabled={disabled} onChange={event => onChange(event.target.checked)} /><span><strong>Kräv oberoende bekräftelse via {host}</strong><span className="muted text-small"> Varje mottagare bekräftar sin e-postadress och godkänner dokumentet hos {host}, fristående från den här servern. Dokumentet skickas aldrig dit. Bekräftar inte identitet.</span></span></label>;
 }

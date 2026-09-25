@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent, type PointerEvent, type FormEvent } from 'react';
 import { attachmentLabel, date, dateTime, download, fetchPdf, message, pages, request } from './api';
 import { PdfPreview } from './pdf';
-import type { Dossier as DossierData, PartyDocument, PartyEvent, SignSession, SigningDocument, Strokes } from './types';
+import type { Dossier as DossierData, IndependentApprovalState, PartyDocument, PartyEvent, SignSession, SigningDocument, Strokes } from './types';
 import { Brand, ErrorBox, Field, Loading, PdfIcon, Signature } from './ui';
 
 function DrawSignature({ onChange }: { onChange: (strokes: Strokes) => void }) {
@@ -70,6 +70,37 @@ function SignatureModal({ session, token, documentId, hash, onClose, onComplete 
   return <dialog ref={modal} className="signature-modal" aria-labelledby="sign-title" onCancel={event => { event.preventDefault(); if (!busy) onClose(); }}><form onSubmit={submit} className="stack"><div className="actions between"><h2 id="sign-title">Signera</h2><button type="button" className="text-button" disabled={busy} onClick={onClose}>Avbryt</button></div><Field label="Ditt fullständiga namn" autoComplete="name" value={name} onChange={event => setName(event.target.value)} required maxLength={160} disabled={busy} /><DrawSignature onChange={setStrokes} /><label className="checkbox consent"><input type="checkbox" checked={accepted} onChange={event => setAccepted(event.target.checked)} disabled={busy} />{session.consent.text}</label><ErrorBox error={error} /><button className="button sign-submit" disabled={busy || !accepted || length < 0.15 || !name.trim()}>{busy ? 'Signerar…' : 'Signera dokumentet'}</button><p className="muted text-tiny center">Tidpunkt, IP-adress och enhet sparas som bevis för din signatur.</p></form></dialog>;
 }
 
+/**
+ * Independent approval at the configured central service, before the drawn signature.
+ * The service's page opens in a new tab; this page polls until the verified receipt is stored.
+ */
+function IndependentApprovalStep({ target, title, onState }: { target: { token: string; documentId?: string }; title: string; onState: (state: IndependentApprovalState) => void }) {
+  const [state, setState] = useState<IndependentApprovalState | null>(null);
+  const [error, setError] = useState('');
+  const refresh = async () => {
+    try { const next = await request<IndependentApprovalState>('/api/sign/independent-approval', target); setState(next); onState(next); setError(''); }
+    catch (error) { setError(message(error)); }
+  };
+  useEffect(() => {
+    void refresh();
+    const timer = setInterval(() => { if (document.visibilityState === 'visible') void refresh(); }, 5000);
+    const focus = () => void refresh();
+    window.addEventListener('focus', focus);
+    return () => { clearInterval(timer); window.removeEventListener('focus', focus); };
+  }, []);
+  if (!state?.required) return error ? <ErrorBox error={error} /> : null;
+  const host = new URL(state.service).host;
+  return <section className="independent-step" aria-live="polite">
+    <div className="eyebrow">STEG 1 · OBEROENDE BEKRÄFTELSE</div>
+    {state.status === 'verified' ? <p>✓ Du har bekräftat din e-postadress och godkänt dokumentet via {host}. Signera nu dokumentet nedan.</p> : <>
+      <p>Avsändaren kräver att du först bekräftar din e-postadress och godkänner dokumentet hos <strong>{host}</strong>, en tjänst som är fristående från den här servern. Dokumentet skickas inte dit – din webbläsare visar det direkt.</p>
+      {state.status === 'pending' ? <div className="actions"><a className="button" href={state.url} target="_blank" rel="noopener noreferrer">Bekräfta via {host}</a><button className="button secondary small" onClick={() => void download('/api/sign/pdf', `${title}.pdf`, target).catch(error => setError(message(error)))}>Ladda ner PDF-filen</button></div> : <ErrorBox error={state.reason} />}
+      <p className="muted text-tiny">När du är klar där, kom tillbaka hit. Sidan uppdateras automatiskt.</p>
+    </>}
+    <ErrorBox error={error} />
+  </section>;
+}
+
 export function Sign({ token, documentId, embedded = false, autoOpen = false, onBack, onSigned }: {
   token: string;
   /** Another document in the same party's set: the main document or a bilaga, opened through this link. */
@@ -89,6 +120,7 @@ export function Sign({ token, documentId, embedded = false, autoOpen = false, on
   const [sheet, setSheet] = useState(false);
   const [busy, setBusy] = useState(false);
   const [related, setRelated] = useState('');
+  const [approval, setApproval] = useState<IndependentApprovalState | null>(null);
   const target = documentId ? { token, documentId } : { token };
   const loadSession = async () => { const result = await request<SignSession>('/api/sign/session', target); setSession(result); return result; };
   useEffect(() => {
@@ -113,11 +145,11 @@ export function Sign({ token, documentId, embedded = false, autoOpen = false, on
   const recipient = session?.document.recipients.find(r => r.id === session.recipientId);
   const doc = session?.document;
   useEffect(() => {
-    if (autoOpen && !autoOpened.current && doc?.status === 'pending' && recipient && !recipient.signedAt && hash && pdf && pdfReady && !pdfError) {
+    if (autoOpen && !autoOpened.current && doc?.status === 'pending' && recipient && !recipient.signedAt && hash && pdf && pdfReady && !pdfError && (!session?.independentApproval?.required || (approval?.required && approval.status === 'verified'))) {
       autoOpened.current = true;
       setSheet(true);
     }
-  }, [autoOpen, doc?.status, recipient, hash, pdf, pdfReady, pdfError]);
+  }, [autoOpen, doc?.status, recipient, hash, pdf, pdfReady, pdfError, approval]);
   useEffect(() => {
     if (doc?.status !== 'finalizing') return;
     const timer = setInterval(() => { void loadSession().catch(() => {}); }, 2000);
@@ -126,7 +158,7 @@ export function Sign({ token, documentId, embedded = false, autoOpen = false, on
   const action = async (fn: () => Promise<unknown>) => { setBusy(true); setError(''); try { await fn(); } catch (error) { setError(message(error)); } finally { setBusy(false); } };
   if (related) return <Sign key={related} token={token} documentId={related} embedded onBack={() => { setRelated(''); void loadSession().catch(() => {}); window.scrollTo(0, 0); }} />;
   const dossier = !embedded || documentId ? <Dossier token={token} currentId={doc?.id} onOpen={id => { setRelated(id); window.scrollTo(0, 0); }} compact={!recipient?.signedAt} /> : null;
-  return <div className={`sign-screen${embedded ? ' sign-embedded' : ''}`}>{embedded ? <div className="sign-back"><button className="text-button" onClick={onBack}>← Tillbaka</button></div> : <header className="sign-header"><div><Brand /></div></header>}{!doc || !recipient ? <main className="sign-main"><ErrorBox error={error} />{!error && <Loading>Öppnar dokument…</Loading>}</main> : doc.status === 'cancelled' && !recipient.signedAt ? <div className="sign-done"><h1>Signeringen är avbruten</h1><p>Kontakta {doc.sender.name} om du har frågor.</p></div> : recipient.signedAt ? <div className="sign-done"><span className="circle large">✓</span><h1>Signerat</h1><p>Du har signerat <strong>{doc.title}</strong>.</p><p className="muted text-small">{doc.status === 'completed' ? `Alla parter har signerat. Du kan ladda ner den signerade PDF-filen.${session?.emailCopy ? ' En kopia skickas också till din e-post.' : ''}` : doc.status === 'finalizing' ? `Alla parter har signerat. PDF-filen färdigställs – din underskrift är sparad.${session?.emailCopy ? ' Den signerade PDF-filen skickas till din e-post när den är klar.' : ''}` : doc.status === 'cancelled' ? 'Avsändaren har avbrutit den återstående signeringen.' : session?.emailCopy ? 'Väntar på resterande parter. Den signerade PDF-filen skickas till din e-post när alla har signerat.' : 'Väntar på resterande parter. Återvänd till den här länken för att hämta dokumentet när alla har signerat.'}</p><div className="signed-receipt"><Signature strokes={recipient.signature?.strokes} /><div><strong>{recipient.signedName || recipient.name}</strong><div className="mono">{dateTime(recipient.signedAt)}</div><div className="mono">{doc.id}</div></div></div><ErrorBox error={error} />{doc.status === 'completed' ? <div className="stack"><button className="button" disabled={busy} onClick={() => void action(() => download('/api/sign/download', `${doc.title}_signerat.pdf`, target))}>Ladda ner signerad PDF</button></div> : doc.status !== 'cancelled' && <div className="stack small-gap"><button className="button secondary" disabled={busy} onClick={() => void action(() => download('/api/sign/pdf', `${doc.title}.pdf`, target))}>Ladda ner dokumentet du signerade</button>{doc.status === 'pending' && <button className="button secondary" disabled={busy} onClick={() => void action(loadSession)}>{busy ? 'Kontrollerar…' : 'Kontrollera status'}</button>}<p className="muted text-tiny">Samma PDF som du läste och signerade. Kontrollsumma {doc.originalHash.slice(0, 16)}…</p></div>}{dossier}</div> : <><main className="sign-main"><p className="muted sender-line">{doc.sender.name} · {doc.sender.teamName}</p>{doc.attachmentOf && <p className="attachment-of">{attachmentLabel(doc.attachmentOf)} till {doc.attachmentOf.title}</p>}<h1>{doc.title}</h1><p className="sign-intro">Hej {recipient.name.split(' ')[0]}, läs igenom dokumentet och signera längst ned.</p><ErrorBox error={error} /><ErrorBox error={pdfError} />{pdf ? <PdfPreview source={pdf} onReady={() => setPdfReady(true)} onError={text => { setPdfReady(false); setPdfError(text); }} /> : !pdfError && <Loading>Kontrollerar och öppnar PDF…</Loading>}<section className="sign-signatures"><div className="eyebrow">SIGNATURER</div><div>{doc.recipients.map(r => <div key={r.id}><div className="signature-line"><Signature strokes={r.signature?.strokes} /></div><strong>{r.signedName || r.name}</strong><p className="muted text-small">{r.signedAt ? dateTime(r.signedAt) : 'Väntar på signatur'}</p></div>)}</div></section><details className="document-fingerprint"><summary>Dokumentets fingeravtryck (SHA-256)</summary><p className="mono hash">{doc.originalHash}</p></details>{dossier}</main><footer className="sign-footer"><div><div className="grow"><strong>{recipient.name}</strong><p>{pages(doc.pages)}</p></div><button className="button" disabled={!hash || !pdf || !pdfReady || Boolean(pdfError)} onClick={() => setSheet(true)}>Signera</button></div></footer>{sheet && session && <SignatureModal session={session} token={token} documentId={documentId} hash={hash} onClose={() => setSheet(false)} onComplete={document => { setSession({ ...session, document }); setSheet(false); window.scrollTo(0, 0); onSigned?.(document); }} />}</>}</div>;
+  return <div className={`sign-screen${embedded ? ' sign-embedded' : ''}`}>{embedded ? <div className="sign-back"><button className="text-button" onClick={onBack}>← Tillbaka</button></div> : <header className="sign-header"><div><Brand /></div></header>}{!doc || !recipient ? <main className="sign-main"><ErrorBox error={error} />{!error && <Loading>Öppnar dokument…</Loading>}</main> : doc.status === 'cancelled' && !recipient.signedAt ? <div className="sign-done"><h1>Signeringen är avbruten</h1><p>Kontakta {doc.sender.name} om du har frågor.</p></div> : recipient.signedAt ? <div className="sign-done"><span className="circle large">✓</span><h1>Signerat</h1><p>Du har signerat <strong>{doc.title}</strong>.</p><p className="muted text-small">{doc.status === 'completed' ? `Alla parter har signerat. Du kan ladda ner den signerade PDF-filen.${session?.emailCopy ? ' En kopia skickas också till din e-post.' : ''}` : doc.status === 'finalizing' ? `Alla parter har signerat. PDF-filen färdigställs – din underskrift är sparad.${session?.emailCopy ? ' Den signerade PDF-filen skickas till din e-post när den är klar.' : ''}` : doc.status === 'cancelled' ? 'Avsändaren har avbrutit den återstående signeringen.' : session?.emailCopy ? 'Väntar på resterande parter. Den signerade PDF-filen skickas till din e-post när alla har signerat.' : 'Väntar på resterande parter. Återvänd till den här länken för att hämta dokumentet när alla har signerat.'}</p><div className="signed-receipt"><Signature strokes={recipient.signature?.strokes} /><div><strong>{recipient.signedName || recipient.name}</strong><div className="mono">{dateTime(recipient.signedAt)}</div><div className="mono">{doc.id}</div></div></div><ErrorBox error={error} />{doc.status === 'completed' ? <div className="stack"><button className="button" disabled={busy} onClick={() => void action(() => download('/api/sign/download', `${doc.title}_signerat.pdf`, target))}>Ladda ner signerad PDF</button>{recipient.independentApproval && <button className="button secondary" disabled={busy} onClick={() => void action(() => download('/api/sign/evidence-package', `${doc.title}_bevis.zip`, target))}>Ladda ner ditt bevispaket</button>}</div> : doc.status !== 'cancelled' && <div className="stack small-gap"><button className="button secondary" disabled={busy} onClick={() => void action(() => download('/api/sign/pdf', `${doc.title}.pdf`, target))}>Ladda ner dokumentet du signerade</button>{doc.status === 'pending' && <button className="button secondary" disabled={busy} onClick={() => void action(loadSession)}>{busy ? 'Kontrollerar…' : 'Kontrollera status'}</button>}<p className="muted text-tiny">Samma PDF som du läste och signerade. Kontrollsumma {doc.originalHash.slice(0, 16)}…</p></div>}{dossier}</div> : <><main className="sign-main"><p className="muted sender-line">{doc.sender.name} · {doc.sender.teamName}</p>{doc.attachmentOf && <p className="attachment-of">{attachmentLabel(doc.attachmentOf)} till {doc.attachmentOf.title}</p>}<h1>{doc.title}</h1><p className="sign-intro">Hej {recipient.name.split(' ')[0]}, läs igenom dokumentet och signera längst ned.</p><ErrorBox error={error} /><ErrorBox error={pdfError} />{session?.independentApproval?.required && <IndependentApprovalStep target={target} title={doc.title} onState={setApproval} />}{pdf ? <PdfPreview source={pdf} onReady={() => setPdfReady(true)} onError={text => { setPdfReady(false); setPdfError(text); }} /> : !pdfError && <Loading>Kontrollerar och öppnar PDF…</Loading>}<section className="sign-signatures"><div className="eyebrow">SIGNATURER</div><div>{doc.recipients.map(r => <div key={r.id}><div className="signature-line"><Signature strokes={r.signature?.strokes} /></div><strong>{r.signedName || r.name}</strong><p className="muted text-small">{r.signedAt ? dateTime(r.signedAt) : 'Väntar på signatur'}</p></div>)}</div></section><details className="document-fingerprint"><summary>Dokumentets fingeravtryck (SHA-256)</summary><p className="mono hash">{doc.originalHash}</p></details>{dossier}</main><footer className="sign-footer"><div><div className="grow"><strong>{recipient.name}</strong><p>{pages(doc.pages)}</p></div><button className="button" disabled={!hash || !pdf || !pdfReady || Boolean(pdfError) || Boolean(session?.independentApproval?.required && !(approval?.required && approval.status === 'verified'))} onClick={() => setSheet(true)}>Signera</button></div></footer>{sheet && session && <SignatureModal session={session} token={token} documentId={documentId} hash={hash} onClose={() => setSheet(false)} onComplete={document => { setSession({ ...session, document }); setSheet(false); window.scrollTo(0, 0); onSigned?.(document); }} />}</>}</div>;
 }
 
 export function CompletedCopy({ token }: { token: string }) {

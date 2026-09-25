@@ -29,7 +29,7 @@ export function hasExpectedSenderAssignment(result: CreatedDocument, user: User,
 export const SENDER_UNCONFIRMED = 'Det gick inte att bekräfta dig som separat undertecknare. Dokumentet är skapat, men ingen signering har öppnats. Öppna dokumentet för att kontrollera parterna.';
 
 /** Creates a main document. The sender's signing only opens when the server confirms the exact assignment. */
-export async function createDocument(fields: { title: string; fileName: string; pdfBase64: string; recipients: Party[]; includeSender: boolean }, user: User): Promise<Created> {
+export async function createDocument(fields: { title: string; fileName: string; pdfBase64: string; recipients: Party[]; includeSender: boolean; independentApproval?: boolean }, user: User): Promise<Created> {
   const created = await request<CreatedDocument>('/api/documents', { ...fields, methodId: 'draw' });
   const valid = !fields.includeSender || hasExpectedSenderAssignment(created, user, fields.recipients);
   return { created, senderSigning: fields.includeSender && valid, creationError: valid ? '' : SENDER_UNCONFIRMED };

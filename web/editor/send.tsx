@@ -1,6 +1,8 @@
 import { useEffect, useRef, type FormEvent } from 'react';
 import { useEditorApi } from './context';
 import { initials, signingContacts } from './model';
+import { IndependentApprovalOption } from '../ui';
+import type { Central } from '../types';
 
 export type SendPhase = 'idle' | 'rendering' | 'creating';
 
@@ -8,7 +10,7 @@ export type SendPhase = 'idle' | 'rendering' | 'creating';
  * Confirms sending a main document. Signers were chosen in the editor, so this only
  * summarises them; it also shows progress and any error without leaving the editor.
  */
-export function SendSheet({ emailEnabled, phase, error, onConfirm, onClose }: { emailEnabled: boolean; phase: SendPhase; error: string; onConfirm: () => void; onClose: () => void }) {
+export function SendSheet({ emailEnabled, central, independent = false, onIndependent, phase, error, onConfirm, onClose }: { emailEnabled: boolean; central?: Central; independent?: boolean; onIndependent?: (value: boolean) => void; phase: SendPhase; error: string; onConfirm: () => void; onClose: () => void }) {
   const { draft, user } = useEditorApi();
   const dialog = useRef<HTMLDialogElement>(null);
   const busy = phase !== 'idle';
@@ -37,6 +39,7 @@ export function SendSheet({ emailEnabled, phase, error, onConfirm, onClose }: { 
         </ul>
       </div>
       <p className="ed-dialog-note">{emailEnabled ? 'Varje mottagare får sin personliga länk via e-post.' : 'Inga e-postmeddelanden skickas. Du får en personlig länk per mottagare att dela.'} En signatursida läggs till automatiskt sist i dokumentet.</p>
+      {onIndependent && <IndependentApprovalOption central={central} checked={independent} onChange={onIndependent} disabled={busy} />}
       {sharesSenderEmail && <p className="ed-dialog-note">Du och mottagaren signerar var för sig, även när ni använder samma e-postadress.</p>}
       {busy && <p className="ed-dialog-note" role="status">{phase === 'rendering' ? 'Skapar PDF av dokumentet…' : 'Skickar dokumentet…'}</p>}
       {error && <p className="ed-error" role="alert">{error}</p>}

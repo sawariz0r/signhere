@@ -12,7 +12,7 @@ import {
   BLOCK_LABELS, createBlock, createDraft, deleteDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, UNTITLED, signingContacts, validate,
   type Block, type BlockType, type Draft, type Issue, type TemplateKey,
 } from './model';
-import type { User } from '../types';
+import type { Central, User } from '../types';
 import './editor.css';
 
 const HISTORY_LIMIT = 100;
@@ -38,7 +38,8 @@ function Tray({ label, index, onClose }: { label: string; index: number; onClose
  * Skicka confirms the signers chosen here, renders the draft to a PDF, creates the document and hands it to `onSent`.
  * With `attachment`, the draft becomes a bilaga: its PDF goes to `attachment.onUse`, where the parties are chosen.
  */
-export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = false, attachment }: { draftId: string; user: User; onClose: () => void; onSent: (result: Created) => void; emailEnabled?: boolean; attachment?: { onUse: (file: File) => void } }) {
+export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = false, attachment, central }: { draftId: string; user: User; onClose: () => void; onSent: (result: Created) => void; emailEnabled?: boolean; attachment?: { onUse: (file: File) => void }; central?: Central }) {
+  const [independent, setIndependent] = useState(false);
   const [draft, setDraft] = useState<Draft>(() => loadDraft(draftId) ?? createDraft(draftId, user));
   const [revision, setRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -253,6 +254,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
         // The server trims names; send them trimmed so the sender check compares like with like.
         recipients: signingContacts(sent).map(contact => ({ name: contact.name.trim(), email: contact.email.trim() })),
         includeSender: sent.settings.senderSigns,
+        ...(independent ? { independentApproval: true } : {}),
       }, user);
       // The draft has become a document; nothing may save it again.
       sentRef.current = true;
@@ -339,7 +341,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
     </div>
     <UnitList />
 
-    {sheet && <SendSheet emailEnabled={emailEnabled} phase={phase} error={sendError} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
+    {sheet && <SendSheet emailEnabled={emailEnabled} central={central} independent={independent} onIndependent={setIndependent} phase={phase} error={sendError} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
     {renderError && <div className="ed-toast-wrap"><div className="ed-toast" role="alert"><span>{renderError}</span><button type="button" onClick={() => setRenderError('')}>Stäng</button></div></div>}
     {toast && <div className="ed-toast-wrap"><div className="ed-toast" role="status"><span>{toast.message}</span>{toast.restore && <button type="button" onClick={restore}>Ångra</button>}</div></div>}
   </div></EditorContext.Provider>;

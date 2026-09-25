@@ -155,6 +155,12 @@ test('independent approval end to end: browser transfer, email code, receipt, se
   const recipientId = detail.recipients[0].id;
   assert.equal(Buffer.from(zip['approvals/' + recipientId + '.receipt.jws']).toString(), receipt);
   const bundle = verifyBundle(Buffer.from(zip['approvals/' + recipientId + '.trust-bundle.jws']).toString(), service.trust.root.publicKey);
+  // The participant's own package: their receipt, no other party's data.
+  const own = unzipSync((await f.post('/api/sign/evidence-package', { token }, f.outsider).buffer(true).parse(binary)).body);
+  assert.equal(Buffer.from(own['approval/receipt.jws']).toString(), receipt);
+  assert.equal(sha256(Buffer.from(own['original.pdf'])), document.originalHash);
+  assert.ok(own['completed.pdf'] && own['verify-approval.mjs']);
+  assert.ok(!Object.keys(own).some(name => name.includes('evidence')));
   // A/B: the receipt is for A. A different visible document B is never reported as approved.
   const b = await PDFDocument.create(); b.addPage().drawText('Different document B');
   const bBytes = Buffer.from(await b.save());

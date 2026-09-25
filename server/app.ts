@@ -13,7 +13,7 @@ import { createFinalizationWorker, enqueueFinalization, retryFinalization, Final
 import { createKeyStore } from './key-store.js';
 import { signPdf, preflightSealPdf, SealInputError, type SealManifest } from './seal.js';
 import { LOCAL_SEAL_POLICY, signingIntent, intentEvidence, freezeEvidenceCore } from './evidence.js';
-import { verificationPackage } from './verification-package.js';
+import { participantPackage, verificationPackage } from './verification-package.js';
 import { createPdfReadiness } from './pdf-readiness.js';
 import { createResponseBudget } from './response-budget.js';
 import { createDeliveryWorker, enqueueCompletedCopies, listDeliveries, resendDelivery } from './delivery.js';
@@ -768,6 +768,19 @@ export async function createApp(config: AppConfig) {
     });
   });
 
+  /** The party's own evidence: prepared PDF, completed PDF when ready, and their own approval receipt. */
+  app.post('/api/sign/evidence-package', async (req, res) => {
+    const { token: raw, documentId } = partyInput.parse(req.body);
+    const own = await partyCredential(pool, raw);
+    const { document, recipient } = !documentId || documentId === own.document.id ? own : await relatedTarget(pool, own, documentId);
+    const approval = (await independent.approvalsFor(pool, document.id)).find(row => row.recipient_id === recipient.id) ?? null;
+    if (!recipient.signed_at && !approval) throw new ApiError(409, 'Det finns inget bevis att hämta ännu.');
+    await withResponse(res, 'download', recipient.id, async () => {
+      const bytes = (await pool.query('SELECT original,completed FROM documents WHERE id=$1', [document.id])).rows[0];
+      const archive = await participantPackage({ documentId: document.id, recipientId: recipient.id, original: bytes.original, completed: document.status === 'completed' ? bytes.completed : null, approval });
+      res.type('application/zip').set('Content-Disposition', 'attachment; filename="signhere-' + document.id + '-bevis.zip"').send(archive);
+    });
+  });
   app.post('/api/documents/:id/recipients/:recipientId/copy-link', requireUser, async (req, res) => {
     const row = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
     if (row.status !== 'completed') throw new ApiError(409, 'Dokumentet är inte färdigsignerat.');
