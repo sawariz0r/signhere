@@ -95,6 +95,9 @@ No real participant data or production credentials belong in the evidence bundle
 
 - Select provider/region, mail and timestamp contracts, availability/recovery
   targets, key-service deployment, and operational ownership before launch.
+- Plan the interim host (`signhere.prpl.se`) and later move to `signhere.se`:
+  receipts and trust material issued under the interim host stay verifiable after
+  the move, and the interim domain is kept or redirected rather than abandoned.
 - Decide independent publication channels for keys, releases, and incident notices
   with CEN-006/CEN-008, including domain loss and service closure.
 - Provisioning paid production infrastructure, purchasing domains/certificates,

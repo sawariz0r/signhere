@@ -16,6 +16,17 @@ People holding a Signhere document should be able to check its supported cryptog
 
 Self-hosted operation stays available without central enrollment. Central protections are opt-in for new transactions and frozen before invitations. Required protections cannot silently downgrade during an outage. Local-only transactions remain supported.
 
+## Optional by design
+
+The central service is an add-on for installations that want it, not a dependency of Signhere. A self-hosted installation must install, sign, seal, deliver and verify documents with no central configuration, account or network access.
+
+- **Off by default.** No central endpoint is configured in a fresh installation. With it unset, the instance makes no outbound requests to signhere.se (no telemetry, key fetches, update checks or "phone home"), shows no central controls, and behaves exactly as today.
+- **Explicit administrator opt-in.** An administrator enables central features by setting a central base URL and scoped credentials. Each capability (timestamp, independent approval) is enabled separately; enabling one does not enable the other.
+- **Configurable endpoint.** The base URL and trust anchors are configuration, not hard-coded. This allows an interim host (e.g. `signhere.prpl.se` before `signhere.se` exists), a staging server, or an organisation running its own compatible trust service. Receipts record which service and key issued them; changing the URL never re-trusts old receipts.
+- **Not needed with a strong signing method.** Independent email approval exists for participants who lack BankID or a comparable method. When a transaction uses BankID, Freja or another provider whose signed response already comes from a party independent of the operator, that response is the independent evidence; the instance neither offers nor requires central approval for that participant. Timestamping remains separately selectable either way.
+- **Per-transaction, frozen choice.** Where enabled, protections are chosen before invitations and frozen (see below). Disabling central features later affects only new transactions; it never strands or downgrades pending ones, and never invalidates completed evidence.
+- **Verification without the service.** The offline verifier and published trust material work without contacting the central service. Documents that never used it verify exactly as they do today, with no "missing central receipt" warning.
+
 The service does not store customer PDFs, drawings or full private audit bundles. It is not a document archive, public document directory, BankID substitute, qualified-signature service or automatic compliance certification. Passkeys, issuer recognition and archival renewal are separate later tasks.
 
 ## Current starting point
@@ -130,6 +141,7 @@ Work can run in parallel after task prerequisites. Release gates do not prevent 
 
 ## Decisions still to make
 
+- Configuration names for the central base URL, credentials and trust anchors, and the interim-to-final host migration (e.g. `signhere.prpl.se` to `signhere.se`) without re-trusting or stranding existing receipts.
 - Service origins, hosting region/provider, operational ownership, load assumptions, budgets and recovery objectives.
 - Receipt/enrollment format, maintained browser validation engine, proof inclusion and compatibility transitions.
 - Admission/quotas, email provider, challenge/retrieval/log/backup retention periods.

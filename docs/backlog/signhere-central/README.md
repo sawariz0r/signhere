@@ -54,6 +54,8 @@ Do not replace explicit open decisions with guessed production values. Provider/
 
 ## Scope boundaries to preserve
 
+- Central features are off by default and opt-in per installation and per capability. Without configuration, an installation makes no central requests and works as today. The endpoint is configurable (interim host, staging or self-run) rather than hard-coded.
+- Independent email approval targets participants without BankID or a comparable independent provider; installations using such providers do not need it.
 - Local verification is available without central enrollment. Independent email approval and timestamping are separately selectable protections.
 - API admission, issuer recognition, email access, credential control and civil identity are distinct claims.
 - Central servers never need PDF bodies, drawings or full private audit exports for this scope; email confirmation does require address/context processing.

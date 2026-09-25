@@ -26,6 +26,14 @@ separate; operator-authored commitments alone do not prove that relationship.
 
 ## Scope and deliverables
 
+- Central integration is off by default. Add administrator configuration for the
+  central base URL, scoped credentials and trust anchors, with each capability enabled
+  separately. With no base URL set, make no outbound central requests and hide central
+  controls. Never hard-code the production host; interim or self-run compatible
+  services must work through configuration alone.
+- Do not offer or require central approval for a participant whose signing method
+  (BankID, Freja or another independent provider) already yields a provider-signed
+  response. Record which evidence satisfied each participant.
 - Add separate pre-invitation controls for independent approval and timestamping.
   Explain processed metadata, actual protections and identity limits in Swedish.
 - Freeze selected protection policy, service/provider trust, participant context,
@@ -66,6 +74,16 @@ separate; operator-authored commitments alone do not prove that relationship.
 
 ## Acceptance criteria
 
+- [ ] A fresh installation with no central configuration signs, seals, delivers and
+  verifies documents unchanged; a network trace shows zero requests to any central host
+  and the UI shows no central controls or "missing receipt" warnings.
+- [ ] Pointing the base URL at a different compatible service (interim host, staging,
+  self-run) works without code changes; old receipts keep their original issuer/trust
+  and are not re-trusted or invalidated by the change.
+- [ ] A BankID/Freja participant completes without any central approval request, and
+  the transaction evidence names the provider response as that participant's evidence.
+- [ ] Disabling central features after invitations leaves pending transactions on their
+  frozen policy (completing or visibly blocked) and affects only new transactions.
 - [ ] Timestamp-only integration completes and verifies without any CEN-004 email or
   receipt infrastructure. Disabled timestamp mode retains ordinary signing behavior.
 - [ ] Wrong imprint/policy/provider, invalid token, overflow, timeout or restart leaves
