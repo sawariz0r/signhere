@@ -260,24 +260,25 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
         CREATE TABLE central_approvals (
           document_id uuid NOT NULL, recipient_id uuid NOT NULL, service text NOT NULL,
           instance_id text, approval_id text,
-          -- The participant capability is useless without the participant's mailbox (email code at the service).
+          -- An approval at the service that was replaced (expired, cancelled, or link rotated); cancelled there first.
+          previous_approval_id text,
+          -- The participant capability is useless without the participant's mailbox and browser (code + browser key at the service).
           participant_capability text NOT NULL CHECK(participant_capability ~ '^[A-Za-z0-9_-]{43}$'),
+          -- Read-only, short-lived access to the prepared PDF for the participant's browser on the service page.
+          transfer_token text CHECK(transfer_token IS NULL OR transfer_token ~ '^[A-Za-z0-9_-]{43}$'),
           transfer_token_hash text CHECK(transfer_token_hash IS NULL OR transfer_token_hash ~ '^[a-f0-9]{64}$'),
           transfer_expires_at bigint, expires_at bigint NOT NULL,
           status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','verified','cancelled')),
           receipt text, receipt_sha256 text, trust_bundle text, verified_at text, created_at text NOT NULL,
           PRIMARY KEY(document_id,recipient_id),
           FOREIGN KEY(recipient_id,document_id) REFERENCES recipients(id,document_id),
+          CHECK((transfer_token IS NULL)=(transfer_token_hash IS NULL)),
           CHECK((status='verified')=(receipt IS NOT NULL AND receipt_sha256 IS NOT NULL AND trust_bundle IS NOT NULL AND verified_at IS NOT NULL AND approval_id IS NOT NULL AND instance_id IS NOT NULL))
         );
         CREATE UNIQUE INDEX central_approvals_transfer ON central_approvals(transfer_token_hash) WHERE transfer_token_hash IS NOT NULL;
         CREATE FUNCTION guard_central_approval() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
-          IF OLD.status IN ('verified','cancelled') AND ROW(OLD.document_id,OLD.recipient_id,OLD.service,OLD.instance_id,OLD.approval_id,OLD.participant_capability,OLD.status,OLD.receipt,OLD.receipt_sha256,OLD.trust_bundle,OLD.verified_at)
-            IS DISTINCT FROM ROW(NEW.document_id,NEW.recipient_id,NEW.service,NEW.instance_id,NEW.approval_id,NEW.participant_capability,NEW.status,NEW.receipt,NEW.receipt_sha256,NEW.trust_bundle,NEW.verified_at)
-            THEN RAISE EXCEPTION 'Verified independent approval is immutable'; END IF;
-          IF ROW(OLD.document_id,OLD.recipient_id,OLD.service,OLD.participant_capability,OLD.expires_at) IS DISTINCT FROM ROW(NEW.document_id,NEW.recipient_id,NEW.service,NEW.participant_capability,NEW.expires_at)
-            OR (OLD.approval_id IS NOT NULL AND OLD.approval_id IS DISTINCT FROM NEW.approval_id)
-            OR (OLD.instance_id IS NOT NULL AND OLD.instance_id IS DISTINCT FROM NEW.instance_id)
+          IF OLD.status IN ('verified','cancelled') AND OLD IS DISTINCT FROM NEW THEN RAISE EXCEPTION 'Closed independent approval is immutable'; END IF;
+          IF ROW(OLD.document_id,OLD.recipient_id,OLD.service) IS DISTINCT FROM ROW(NEW.document_id,NEW.recipient_id,NEW.service)
             THEN RAISE EXCEPTION 'Independent approval binding is immutable'; END IF;
           RETURN NEW; END $$;
         CREATE TRIGGER central_approvals_immutable BEFORE UPDATE ON central_approvals FOR EACH ROW EXECUTE FUNCTION guard_central_approval();

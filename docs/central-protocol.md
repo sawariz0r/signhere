@@ -22,7 +22,8 @@ A verifier must report these separately. In particular it never reports "documen
 | Actor | Can | Cannot (by design) |
 | --- | --- | --- |
 | Dishonest installation operator | Choose recipient addresses (including its own), lie in titles/names, refuse to finalize, reseal different content, strip the policy from its own records | Mint or alter a receipt; confirm a mailbox it does not control; reuse a receipt for another recipient/document/revision/installation; make a verifier with an independently obtained root accept a forged receipt |
-| Stolen participant capability (URL fragment) | View the approval context, request codes | Confirm email or approve without the code from the participant's mailbox |
+| Dishonest installation holding the participant capability | View the approval context, request codes to the participant's address | Confirm or approve: the code is bound to a key generated in the requesting browser, confirmation records that key's hash, and approval requires the key. Getting a receipt needs the participant's emailed code *and* a browser the installation controls, i.e. phishing the code (the email says to enter it only on the service origin) |
+| Stolen participant capability (URL fragment) | Same as above | Same as above |
 | Compromised mailbox | Confirm and approve as that address | — (inherent limit; documented in the receipt semantics) |
 | Hostile PDF | Attack the browser's PDF renderer | Reach the service backend (it never receives PDFs) |
 | Compromised central frontend | Mislead users during approval | Change issued receipts; forge receipts without the receipt key |
@@ -71,9 +72,11 @@ Payload `signhere-trust-bundle-v1`: `service` (origin), `sequence`, `issuedAt`, 
 `pending` → (code sent; resend invalidates the previous code) → `email_confirmed` → `approved` (receipt issued). Terminal: `approved`, `cancelled`. `expired` is derived from `expires_at` for open approvals.
 
 - GET requests and link opening never change state. Email confirmation and approval are separate POSTs; approval requires an explicit `accepted: true` with the current consent version and the browser-computed digest.
-- Codes: 8 digits, 15 minutes, 5 wrong attempts per code, 5 sends per approval, 30 s between sends. Attempt counters commit even when the response is an error.
+- Browser binding: the service page generates a random 32-byte key per approval (kept in `sessionStorage`). `code` registers its SHA-256; `confirm` must present the key with the code and stores the hash on the approval; `approve` must present the key again. Confirming from another browser requires a new code, which replaces the key.
+- Codes: 8 digits, 15 minutes, 5 wrong attempts per code, 5 sends per approval, 30 s between sends. Attempt counters commit even when the response is an error. A database trigger allows only `pending→email_confirmed(→email_confirmed)→approved` and `open→cancelled`.
 - Approval runs in one transaction that locks the row, checks `email_confirmed`, signs, and stores the receipt. Concurrent approvals yield one receipt; retries return the stored bytes. A database trigger makes approved/cancelled rows immutable.
-- Approval validity is at most 30 days (installation default: 30 days from first use). Expiry of the workflow never affects an issued receipt.
+- Approval validity is at most 30 days (installations request 29 days to tolerate clock skew). An expired or cancelled approval without a receipt can be replaced for the same assignment; the installation does so automatically, and also when a signing link is rotated (old service session and PDF transfer are revoked). Expiry never affects an issued receipt.
+- The service refuses to sign with a key whose `validUntil` has passed. `keys rotate` keeps the previous key valid for a grace period (default 24 h) until the service restarts with the new key.
 
 ## API
 
@@ -91,7 +94,7 @@ The installation generates the participant capability and sends only its hash; i
 
 ## Prepared-PDF transfer
 
-The participant's browser fetches `documentUrl` with a short-lived (2 h) read-only transfer token, rotated on each signing-page load and retired when the receipt is verified. The installation allows CORS only from the frozen service origin. If the fetch fails (private network, CORS), the participant can choose the PDF downloaded from the signing page; the digest check is identical. The same byte buffer is hashed and rendered with pdf.js.
+The participant's browser fetches `documentUrl` with a short-lived (2 h) read-only transfer token, reused while more than 30 minutes remain, replaced when the signing link is rotated, and retired when the receipt is verified. The installation allows CORS only from the frozen service origin. If the fetch fails (private network, CORS), the participant can choose the PDF downloaded from the signing page; the digest check is identical. The same byte buffer is hashed and rendered with pdf.js.
 
 ## Installation integration
 
@@ -108,8 +111,10 @@ A receipt approves the prepared bytes. The completed PDF is a different file (si
 
 ```
 node verify-approval.mjs receipt.jws trust-bundle.jws --trust-root KEY --prepared original.pdf
-node verify-sealed-evidence.mjs evidence.json original.pdf completed.pdf --central-trust-root KEY
+node verify-sealed-evidence.mjs evidence.json original.pdf completed.pdf --central-trust-root KEY [--central-bundle current-bundle.jws]
 ```
+
+Without `--central-bundle` the bundle stored with the evidence is used, which cannot reflect later revocations; supply a current bundle (verified with the same root; the higher sequence wins).
 
 `verify-approval.mjs` is a separate implementation (`node:crypto`) from the shared TypeScript module, and both are exercised against the same receipts in tests.
 

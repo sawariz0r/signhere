@@ -83,7 +83,7 @@ docker compose run --rm central node dist/server/central/admin.js keys revoke <k
 docker compose restart central
 ```
 
-Rotation retires the current receipt key and activates a new one; installations pick up the new bundle automatically. Revocation is for a suspected key compromise: receipts from that key stop being trusted by anyone using the new bundle, so tell affected installations. Remove `root.pem` from the server again afterwards.
+Rotation retires the current receipt key after a grace period (`--grace-hours`, default 24) and activates a new one; restart the service within that period. Installations pick up the new bundle automatically. Revocation is for a suspected key compromise: receipts from that key stop being trusted by anyone using the new bundle, so tell affected installations. Remove `root.pem` from the server again afterwards.
 
 ## 6. Moving from signhere.prpl.se to signhere.se
 

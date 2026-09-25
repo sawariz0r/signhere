@@ -123,7 +123,7 @@ class EngineAdversarialTests(unittest.TestCase):
         e.check_manifest({**base,'policy':{'timestamp':'off'}})
         e.check_manifest({**base,'policy':independent,'approvalReceipts':[receipt]})
         for manifest in ({**base,'policy':{'timestamp':'off'},'approvalReceipts':[receipt]}, {**base,'policy':independent},
-                         {**base,'policy':independent,'approvalReceipts':[]}, {**base,'policy':independent,'approvalReceipts':[receipt,receipt]},
+                         {**base,'policy':independent,'approvalReceipts':{}}, {**base,'policy':independent,'approvalReceipts':[receipt,receipt]},
                          {**base,'policy':independent,'approvalReceipts':[{**receipt,'extra':1}]}, {**base,'policy':{'timestamp':'off'},'unknown':1},
                          {**base,'policy':{'timestamp':'off','independentApproval':'passkey'},'approvalReceipts':[receipt]}):
             with self.subTest(manifest=manifest),self.assertRaises(ValueError):

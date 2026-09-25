@@ -1,6 +1,7 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { createServer, type RequestListener } from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +14,7 @@ import { sha256 } from './pdf.js';
 import { createCentralApp, createInstance } from './central/app.js';
 import { trustFixture, captureMailer, lastCode, databaseUrl } from './central/test-support.js';
 import { CENTRAL_CONSENT, RECEIPT_TYP, parseJws } from './central/protocol.js';
-import { generateSigner, signJws } from './central/keys.js';
+import { generateSigner, newBundle, signJws, signTrustBundle } from './central/keys.js';
 import { createCentralClient, type CentralFetch } from './central-client.js';
 // @ts-expect-error standalone verifier distributed with exports
 import { verifySealedEvidence } from '../scripts/verify-sealed-evidence.mjs';
@@ -61,9 +62,10 @@ async function participantApproves(service: Awaited<ReturnType<typeof centralSer
     const response = await fetch(service.url + path, { method, headers: { authorization: 'Capability ' + approvalId + '.' + capability, origin: service.url, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
     return { status: response.status, body: await response.json() };
   };
-  assert.equal((await call('POST', '/v1/participant/code', {})).status, 200);
-  assert.equal((await call('POST', '/v1/participant/confirm', { code: lastCode(service.mailer) })).status, 200);
-  const approved = await call('POST', '/v1/participant/approve', { preparedSha256: sha256(pdf), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: source });
+  const browserKey = randomBytes(32).toString('base64url');
+  assert.equal((await call('POST', '/v1/participant/code', { browserKeySha256: sha256(browserKey) })).status, 200);
+  assert.equal((await call('POST', '/v1/participant/confirm', { code: lastCode(service.mailer), browserKey })).status, 200);
+  const approved = await call('POST', '/v1/participant/approve', { preparedSha256: sha256(pdf), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: source, browserKey });
   assert.equal(approved.status, 200, JSON.stringify(approved.body));
   return approved.body.receipt as string;
 }
@@ -109,6 +111,8 @@ test('independent approval end to end: browser transfer, email code, receipt, se
   assert.equal((await f.post('/api/sign/complete', complete, f.outsider)).status, 409);
   const pending = (await f.post('/api/sign/independent-approval', { token }, f.outsider)).body;
   assert.equal(pending.status, 'pending');
+  // Polling keeps the same link, so an open service page keeps its PDF access.
+  assert.equal((await f.post('/api/sign/independent-approval', { token }, f.outsider)).body.url, pending.url);
   assert.ok(pending.url.startsWith(service.url + '/bekrafta#apr_'));
   const [, , transfer] = new URL(pending.url).hash.slice(1).split('.');
   // Browser transfer: CORS only for the frozen service origin; bytes are the prepared PDF.
@@ -148,6 +152,11 @@ test('independent approval end to end: browser transfer, email code, receipt, se
   assert.equal(withRoot.independentApproval.participants[0].preparedPdf, 'matched');
   assert.equal(withRoot.independentApproval.trustRoot, 'supplied-matches-frozen');
   const attacker = await generateSigner();
+  // A newer bundle that revokes the receipt key overrides the bundle stored with the evidence.
+  const revoked = await signTrustBundle(service.trust.root, newBundle(service.url, 2, service.trust.trustBundle.bundle.keys.map(key => ({ ...key, status: 'revoked' as const, revokedAt: new Date().toISOString() }))));
+  const withRevocation = await verifySealedEvidence(evidence, f.original, completed, undefined, undefined, service.trust.root.publicKey, revoked);
+  assert.equal(withRevocation.independentApproval.participants[0].keyTrust, 'revoked');
+  assert.equal(withRevocation.independentApproval.participants[0].trustBundle.source, 'supplied');
   const wrongRoot = await verifySealedEvidence(evidence, f.original, completed, undefined, undefined, attacker.signer.publicKey).catch((error: Error) => error);
   assert.match(String(wrongRoot), /bundle_root_mismatch/);
   // Portable package contains the exact receipt and bundle.
@@ -202,11 +211,22 @@ test('a forged or mismatched receipt is rejected and a changed configuration nev
     const blocked = await changed.post('/api/sign/complete', { token: tokenB, documentHash: created.document.originalHash, consentVersion: session.consent.version, signingIntentHash: session.signingIntentHash, accepted: true, name: 'Bo', payload: { strokes } }, changed.outsider);
     assert.equal(blocked.status, 409);
   }
+  // Rotating B's signing link replaces its service session and PDF access.
+  const before = (await f.post('/api/sign/independent-approval', { token: tokenB }, f.outsider)).body;
+  assert.equal(before.status, 'pending');
+  const rotated = await f.post('/api/documents/' + created.document.id + '/recipients/' + created.links[1].recipientId + '/link', {});
+  assert.equal(rotated.status, 200);
+  const newTokenB = new URL(rotated.body.url).hash.slice(1);
+  const oldTransfer = new URL(before.url).hash.slice(1).split('.')[2];
+  assert.equal((await f.outsider.get('/api/central/prepared/' + created.document.id).set('Authorization', 'Bearer ' + oldTransfer)).status, 404);
+  const after = (await f.post('/api/sign/independent-approval', { token: newTokenB }, f.outsider)).body;
+  assert.equal(after.status, 'pending', JSON.stringify(after));
+  assert.notEqual(new URL(after.url).hash.split('.')[0], new URL(before.url).hash.split('.')[0]);
   // Cancellation reaches the service best-effort and closes the local requirement.
   assert.equal((await f.post('/api/documents/' + created.document.id + '/cancel', {})).status, 200);
   await new Promise(resolve => setTimeout(resolve, 200));
   const states = (await service.central.pool.query('SELECT status FROM approvals ORDER BY created_at')).rows.map(row => row.status);
-  assert.deepEqual(states.sort(), ['approved', 'cancelled']);
+  assert.deepEqual(states.sort(), ['approved', 'cancelled', 'cancelled']);
 });
 
 /** A second app over the same database schema, as after a restart with different configuration. */

@@ -575,6 +575,7 @@ export async function createApp(config: AppConfig) {
       const raw = token();
       await client.query('UPDATE recipients SET token_hash=$1,expires_at=$2 WHERE id=$3', [sha256(raw), now() + linkTtlDays * DAY, recipient.id]);
       await appendEvent(client, row.id, 'link.rotated', at(), { recipientId: recipient.id, actorId: res.locals.user.id, ...requestEvidence(req) });
+      await independent.linkRotated(client, row.id, recipient.id);
       return { url: origin + '/sign#' + raw };
     });
     res.json(result);

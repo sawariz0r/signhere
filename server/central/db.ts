@@ -38,15 +38,20 @@ export async function createCentralDatabase(databaseUrl: string, schema = 'centr
           status text NOT NULL CHECK(status IN ('pending','email_confirmed','approved','cancelled')),
           created_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
           email_confirmed_at timestamptz, approved_at timestamptz, receipt text, receipt_id uuid,
-          UNIQUE(instance_id,document_id,revision_id,recipient_id),
+          -- Set at confirmation: hash of a key generated in the participant's browser. The installation
+          -- knows the capability but never this key, so it cannot approve on the participant's behalf.
+          browser_key_hash text CHECK(browser_key_hash IS NULL OR browser_key_hash ~ '^[a-f0-9]{64}$'),
           CHECK((status='approved')=(receipt IS NOT NULL AND receipt_id IS NOT NULL AND approved_at IS NOT NULL)),
-          CHECK(status IN ('pending','cancelled') OR email_confirmed_at IS NOT NULL)
+          CHECK(status IN ('pending','cancelled') OR (email_confirmed_at IS NOT NULL AND browser_key_hash IS NOT NULL))
         );
+        -- One live approval per assignment; a cancelled or expired one can be replaced.
+        CREATE UNIQUE INDEX approvals_assignment ON approvals(instance_id,document_id,revision_id,recipient_id) WHERE status<>'cancelled';
         CREATE INDEX approvals_open ON approvals(instance_id) WHERE status IN ('pending','email_confirmed');
         CREATE INDEX approvals_expiry ON approvals(expires_at);
         CREATE TABLE email_challenges (
           approval_id text PRIMARY KEY REFERENCES approvals(id) ON DELETE CASCADE,
           code_hash text NOT NULL, sent_at timestamptz NOT NULL, expires_at timestamptz NOT NULL,
+          browser_key_hash text NOT NULL CHECK(browser_key_hash ~ '^[a-f0-9]{64}$'),
           attempts integer NOT NULL DEFAULT 0 CHECK(attempts>=0), sends integer NOT NULL DEFAULT 1 CHECK(sends>=1)
         );
         -- An issued receipt is final: it cannot be altered, replaced or reopened (deletion by retention only).
@@ -55,7 +60,12 @@ export async function createCentralDatabase(databaseUrl: string, schema = 'centr
           IF ROW(OLD.id,OLD.instance_id,OLD.document_id,OLD.revision_id,OLD.recipient_id,OLD.email,OLD.claimed_name,OLD.title,OLD.prepared_sha256,OLD.prepared_size,OLD.intent_sha256,OLD.policy_sha256,OLD.document_url,OLD.return_url,OLD.request_fingerprint,OLD.capability_hash,OLD.created_at,OLD.expires_at)
             IS DISTINCT FROM ROW(NEW.id,NEW.instance_id,NEW.document_id,NEW.revision_id,NEW.recipient_id,NEW.email,NEW.claimed_name,NEW.title,NEW.prepared_sha256,NEW.prepared_size,NEW.intent_sha256,NEW.policy_sha256,NEW.document_url,NEW.return_url,NEW.request_fingerprint,NEW.capability_hash,NEW.created_at,NEW.expires_at)
             THEN RAISE EXCEPTION 'Approval context is immutable'; END IF;
-          IF OLD.status='email_confirmed' AND NEW.status='pending' THEN RAISE EXCEPTION 'Confirmation cannot be undone'; END IF;
+          IF NOT ((OLD.status=NEW.status AND ROW(OLD.email_confirmed_at,OLD.browser_key_hash,OLD.approved_at,OLD.receipt,OLD.receipt_id) IS NOT DISTINCT FROM ROW(NEW.email_confirmed_at,NEW.browser_key_hash,NEW.approved_at,NEW.receipt,NEW.receipt_id))
+            -- Confirming again (e.g. from another browser) needs a new emailed code and replaces the browser key.
+            OR (OLD.status IN ('pending','email_confirmed') AND NEW.status='email_confirmed' AND NEW.approved_at IS NULL AND NEW.receipt IS NULL)
+            OR (OLD.status='email_confirmed' AND NEW.status='approved' AND ROW(OLD.email_confirmed_at,OLD.browser_key_hash) IS NOT DISTINCT FROM ROW(NEW.email_confirmed_at,NEW.browser_key_hash))
+            OR (OLD.status IN ('pending','email_confirmed') AND NEW.status='cancelled' AND ROW(OLD.email_confirmed_at,OLD.browser_key_hash,OLD.approved_at,OLD.receipt,OLD.receipt_id) IS NOT DISTINCT FROM ROW(NEW.email_confirmed_at,NEW.browser_key_hash,NEW.approved_at,NEW.receipt,NEW.receipt_id)))
+            THEN RAISE EXCEPTION 'Invalid approval state transition'; END IF;
           RETURN NEW; END $$;
         CREATE TRIGGER approvals_immutable BEFORE UPDATE ON approvals FOR EACH ROW EXECUTE FUNCTION guard_approval();
       `);

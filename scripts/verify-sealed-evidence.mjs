@@ -52,18 +52,24 @@ async function validatePdf(request) {
  * Receipts are verified only against a central trust root supplied by the verifying party. The root
  * frozen in the document policy was chosen by the installation and is reported, not trusted.
  */
-function verifyCommittedReceipts(core, policy, original, centralTrustRoot) {
+function verifyCommittedReceipts(core, policy, original, centralTrustRoot, centralBundle) {
+  // A newer bundle supplied by the verifier (e.g. with a revoked key) takes precedence over the stored one.
+  const supplied = centralTrustRoot && centralBundle ? verifyBundle(centralBundle, centralTrustRoot) : undefined;
   const participants = core.recipients.filter(recipient => recipient.independentApproval).map(recipient => {
     const approval = recipient.independentApproval;
     if (!centralTrustRoot) return { recipientId: recipient.id, receiptSha256: approval.receiptSha256, sealCommitment: 'included', receiptSignature: 'not-checked' };
-    const result = verifyApprovalReceipt(approval.receipt, verifyBundle(approval.trustBundle, centralTrustRoot), { prepared: original });
+    const stored = verifyBundle(approval.trustBundle, centralTrustRoot);
+    if (supplied && supplied.service !== stored.service) throw new Error('The supplied trust bundle is for another service.');
+    const bundle = supplied && supplied.sequence >= stored.sequence ? supplied : stored;
+    const result = verifyApprovalReceipt(approval.receipt, bundle, { prepared: original });
     return { recipientId: recipient.id, receiptSha256: approval.receiptSha256, sealCommitment: 'included', receiptSignature: result.signature, keyTrust: result.keyTrust,
-      emailAccess: result.emailAccess.address, preparedPdf: result.preparedPdf };
+      emailAccess: result.emailAccess.address, preparedPdf: result.preparedPdf,
+      trustBundle: { source: bundle === stored ? 'stored-with-evidence' : 'supplied', sequence: bundle.sequence, ...(bundle === stored ? { note: 'Supply a current bundle with --central-bundle to take later revocations into account.' } : {}) } };
   });
   return { service: policy.service, frozenTrustRoot: policy.trustRoot, trustRoot: centralTrustRoot ? (centralTrustRoot === policy.trustRoot ? 'supplied-matches-frozen' : 'supplied-differs-from-frozen') : 'not-supplied',
     participants, approvedContent: 'prepared-original', completedContentRelationship: 'unverified' };
 }
-export async function verifySealedEvidence(manifest, original, completed, uploaded, trustedFingerprint, centralTrustRoot) {
+export async function verifySealedEvidence(manifest, original, completed, uploaded, trustedFingerprint, centralTrustRoot, centralBundle) {
   if (!manifest || manifest.schemaVersion !== 2) throw new Error('This verifier requires sealed schema-v2 evidence.');
   for (const bytes of [original, completed, ...(uploaded === undefined ? [] : [uploaded])]) if (!Buffer.isBuffer(bytes) || bytes.length < 8 || bytes.length > MAX_PDF_BYTES) throw new Error('PDF input is missing or oversized.');
   if (trustedFingerprint !== undefined) trustedFingerprint = normalizeFingerprint(trustedFingerprint);
@@ -87,7 +93,7 @@ export async function verifySealedEvidence(manifest, original, completed, upload
     const frozenIndependent = core.events[0].data.protectionPolicy.independentApproval;
     const committed = core.recipients.filter(recipient => recipient.independentApproval).map(recipient => ({ recipientId: recipient.id, receiptSha256: recipient.independentApproval.receiptSha256 }));
     if (Boolean(frozenIndependent) !== (seal.manifest.policy.independentApproval === 'email') || canonical(seal.manifest.approvalReceipts ?? null) !== canonical(frozenIndependent ? committed : null)) throw new Error('Seal and independent approval commitments disagree.');
-    const approvals = frozenIndependent ? verifyCommittedReceipts(core, frozenIndependent, original, centralTrustRoot) : undefined;
+    const approvals = frozenIndependent ? verifyCommittedReceipts(core, frozenIndependent, original, centralTrustRoot, centralBundle) : undefined;
     if (manifest.document.seal?.fingerprintSha256 !== seal.certificateFingerprint || manifest.seal?.certificateFingerprint !== seal.certificateFingerprint) throw new Error('Exported seal identity differs from the PDF.');
     return { documentId: manifest.document.id, signatures: consistency.signatures, pdfHash: hash(completed), evidenceCoreHash: hash(coreBytes),
       integrity: seal.integrity, coverage: seal.coverage, profile: seal.profile, evidence: 'complete', completionMetadata: 'unsealed-consistency-only', issuerTrust: seal.issuerTrust,
@@ -100,15 +106,19 @@ if (process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1]
   const args = process.argv.slice(2);
   const centralIndex = args.indexOf('--central-trust-root');
   const centralTrustRoot = centralIndex >= 0 ? args.splice(centralIndex, 2)[1] : undefined;
+  const bundleIndex = args.indexOf('--central-bundle');
+  const centralBundleFile = bundleIndex >= 0 ? args.splice(bundleIndex, 2)[1] : undefined;
   const trustIndex = args.indexOf('--trust-fingerprint');
   const trustInput = trustIndex >= 0 ? args.splice(trustIndex, 2)[1] : undefined;
   try {
     if (centralIndex >= 0 && !/^[A-Za-z0-9_-]{43}$/.test(centralTrustRoot ?? '')) throw new Error('--central-trust-root must be the 43-character central trust root public key.');
     const trustedFingerprint = trustIndex >= 0 ? normalizeFingerprint(trustInput) : undefined;
-    if (args.length < 3 || args.length > 4 || (trustIndex >= 0 && !/^[a-f0-9]{64}$/.test(trustedFingerprint ?? ''))) throw new Error('Usage: node verify-sealed-evidence.mjs evidence.json original.pdf completed.pdf [uploaded.pdf] [--trust-fingerprint HEX] [--central-trust-root KEY]');
+    if (args.length < 3 || args.length > 4 || (trustIndex >= 0 && !/^[a-f0-9]{64}$/.test(trustedFingerprint ?? ''))) throw new Error('Usage: node verify-sealed-evidence.mjs evidence.json original.pdf completed.pdf [uploaded.pdf] [--trust-fingerprint HEX] [--central-trust-root KEY [--central-bundle trust-bundle.jws]]');
     const manifest = parseEvidenceJson(readBoundedFile(args[0], MAX_EVIDENCE_JSON_BYTES));
     const [original, completed, uploaded] = args.slice(1).map(file => readBoundedFile(file, MAX_PDF_BYTES));
-    const result = await verifySealedEvidence(manifest, original, completed, uploaded, trustedFingerprint, centralTrustRoot);
+    if (centralBundleFile && !centralTrustRoot) throw new Error('--central-bundle requires --central-trust-root.');
+    const centralBundle = centralBundleFile ? readBoundedFile(centralBundleFile, 64 * 1024).toString('utf8').trim() : undefined;
+    const result = await verifySealedEvidence(manifest, original, completed, uploaded, trustedFingerprint, centralTrustRoot, centralBundle);
     if (result.independentApproval?.participants.some(item => item.receiptSignature && item.receiptSignature !== 'not-checked' && (item.receiptSignature !== 'valid' || item.keyTrust !== 'trusted' || item.preparedPdf !== 'matched'))) throw new Error('An independent approval receipt is not trusted: ' + JSON.stringify(result.independentApproval.participants));
     console.log(JSON.stringify(result, null, 2));
     process.exitCode = result.issuerTrust === 'unknown' ? 3 : 0;

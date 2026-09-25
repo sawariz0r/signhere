@@ -21,7 +21,7 @@ const bundleFile = join(keysDir, 'trust-bundle.jws');
 const rootFile = option('root') ?? join(keysDir, 'root.pem');
 const usage = `Usage:
   keys init --service <origin>        Create trust root, first receipt key and trust bundle
-  keys rotate                         New receipt key; previous active key becomes retired (needs root.pem)
+  keys rotate [--grace-hours 24]      New receipt key; the previous key stays valid for the grace period (needs root.pem)
   keys revoke <kid> [--at <iso time>] Mark a receipt key compromised from a time (needs root.pem)
   keys show                           Print the bundle and root public key
   instance create --name <name> --origin <origin>
@@ -63,10 +63,14 @@ then move ${rootFile} to offline storage. The running service does not need it.`
     const { bundle } = await currentBundle();
     const receipt = await generateSigner();
     const at = new Date().toISOString();
+    // Until the service restarts it still signs with the old key; keep that key valid meanwhile.
+    const grace = Number(option('grace-hours') ?? 24);
+    if (!Number.isFinite(grace) || grace < 0 || grace > 24 * 30) throw new Error('--grace-hours must be between 0 and 720.');
+    const until = new Date(Date.now() + grace * 3600000).toISOString();
     await writeKeyFile(keysDir, 'receipt-' + receipt.signer.kid + '.pem', receipt.pem);
-    const keys = bundle.keys.map(key => key.status === 'active' ? { ...key, status: 'retired' as const, validUntil: at } : key);
+    const keys = bundle.keys.map(key => key.status === 'active' ? { ...key, status: 'retired' as const, validUntil: until } : key);
     await publish(newBundle(bundle.service, bundle.sequence + 1, [...keys, trustKey(receipt.signer, at)], at));
-    console.log('New receipt key ' + receipt.signer.kid + '. Retired keys stay listed so old receipts keep verifying.');
+    console.log('New receipt key ' + receipt.signer.kid + '. Restart the service within ' + grace + ' hours. Retired keys stay listed so old receipts keep verifying.');
     return;
   }
   if (command === 'revoke') {

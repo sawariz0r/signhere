@@ -6,6 +6,8 @@ import { CENTRAL_CONSENT, RECEIPT_TYP, base64url, fromBase64url, parseJws, recei
 import { generateSigner, newBundle, signJws, signTrustBundle, trustKey } from './keys.js';
 
 const instanceOrigin = 'http://localhost:3000';
+const browserKey = capabilityToken();
+const codeBody = { browserKeySha256: sha256(browserKey) };
 function approvalBody(overrides: Record<string, unknown> = {}, capability = capabilityToken()) {
   return {
     body: {
@@ -69,7 +71,7 @@ test('an installation cannot mint, alter or reuse approval evidence', async t =>
   // The installation key cannot drive participant steps: the capability hash is all it gave us.
   assert.equal((await request(f.app).post('/v1/participant/approve').set('Authorization', 'Bearer ' + f.instance.apiKey).set('Origin', centralOrigin).send({})).status, 401);
   // Approval requires a confirmed email first.
-  const approve = { preparedSha256: 'a'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'installation-transfer' };
+  const approve = { preparedSha256: 'a'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'installation-transfer', browserKey };
   assert.equal((await f.participant('post', '/v1/participant/approve', id, capability, approve)).status, 409);
   // Another tenant sees nothing.
   const other = await registerInstance(f.pool, 'http://localhost:4000');
@@ -88,24 +90,30 @@ test('email confirmation and approval are separate, bounded, and produce one sta
   assert.equal(session.body.email, 'anna@example.test');
   assert.equal(session.body.installation.verifiedOrganisation, false);
   // Cross-origin POSTs are refused.
-  assert.equal((await request(f.app).post('/v1/participant/code').set('Authorization', 'Capability ' + id + '.' + capability).set('Origin', 'https://evil.example').send({})).status, 403);
-  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, {})).status, 200);
+  assert.equal((await request(f.app).post('/v1/participant/code').set('Authorization', 'Capability ' + id + '.' + capability).set('Origin', 'https://evil.example').send(codeBody)).status, 403);
+  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, codeBody)).status, 200);
   assert.equal(f.mailer.sent.length, 1);
   assert.equal(f.mailer.sent[0].to, 'anna@example.test');
   // Cooldown before a new code.
-  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, {})).status, 429);
+  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, codeBody)).status, 429);
   const code = lastCode(f.mailer);
   const wrong = code === '00000000' ? '11111111' : '00000000';
-  for (let i = 0; i < 5; i++) assert.equal((await f.participant('post', '/v1/participant/confirm', id, capability, { code: wrong })).status, 400);
+  for (let i = 0; i < 5; i++) assert.equal((await f.participant('post', '/v1/participant/confirm', id, capability, { code: wrong, browserKey })).status, 400);
   // The attempt limit also blocks the right code; a new code is needed.
-  assert.equal((await f.participant('post', '/v1/participant/confirm', id, capability, { code })).status, 429);
+  assert.equal((await f.participant('post', '/v1/participant/confirm', id, capability, { code, browserKey })).status, 429);
   await f.pool.query('UPDATE email_challenges SET sent_at=sent_at - interval \'1 minute\'');
-  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, {})).status, 200);
-  const confirmed = await f.participant('post', '/v1/participant/confirm', id, capability, { code: lastCode(f.mailer) });
+  assert.equal((await f.participant('post', '/v1/participant/code', id, capability, codeBody)).status, 200);
+  const confirmed = await f.participant('post', '/v1/participant/confirm', id, capability, { code: lastCode(f.mailer), browserKey });
   assert.equal(confirmed.status, 200, confirmed.text);
   assert.equal(confirmed.body.status, 'email_confirmed');
+  // The installation knows the capability but not the participant's browser key: it cannot approve,
+  // even with a forged Origin, and a code confirmed elsewhere is useless to it.
+  const installationKey = capabilityToken();
+  const forged = await f.participant('post', '/v1/participant/approve', id, capability, { preparedSha256: 'a'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'installation-transfer', browserKey: installationKey });
+  assert.equal(forged.status, 409);
+  assert.equal(forged.body.error, 'other_browser');
   // Approval binds the digest the participant's browser computed.
-  const approve = { preparedSha256: 'e'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'installation-transfer' };
+  const approve = { preparedSha256: 'e'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'installation-transfer', browserKey };
   assert.equal((await f.participant('post', '/v1/participant/approve', id, capability, approve)).status, 409);
   const results = await Promise.all([1, 2, 3].map(() => f.participant('post', '/v1/participant/approve', id, capability, { ...approve, preparedSha256: 'a'.repeat(64) })));
   for (const result of results) assert.equal(result.status, 200, result.text);
@@ -137,9 +145,9 @@ test('receipts from unknown, retired-after, revoked or other-service keys are no
   const f = await setup(t);
   const { body, capability } = approvalBody();
   const id = (await f.api('post', '/v1/approvals', body)).body.approvalId;
-  await f.participant('post', '/v1/participant/code', id, capability, {});
-  await f.participant('post', '/v1/participant/confirm', id, capability, { code: lastCode(f.mailer) });
-  const receipt = (await f.participant('post', '/v1/participant/approve', id, capability, { preparedSha256: 'a'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'local-file' })).body.receipt;
+  await f.participant('post', '/v1/participant/code', id, capability, codeBody);
+  await f.participant('post', '/v1/participant/confirm', id, capability, { code: lastCode(f.mailer), browserKey });
+  const receipt = (await f.participant('post', '/v1/participant/approve', id, capability, { preparedSha256: 'a'.repeat(64), consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: 'local-file', browserKey })).body.receipt;
   const bundle = f.trust.trustBundle.bundle;
   assert.equal((await verifyReceipt(receipt, { ...bundle, keys: [] })).keyTrust, 'unknown-key');
   assert.equal((await verifyReceipt(receipt, { ...bundle, service: 'https://other.example' })).keyTrust, 'wrong-service');
@@ -167,13 +175,19 @@ test('expiry, cancellation, suspension and retention', async t => {
     : request(f.app).post(path).set('Authorization', 'Capability ' + id + '.' + capability).set('Origin', centralOrigin).send(payload);
   clock += 2 * 3600000;
   assert.equal((await participant('/v1/participant/session')).body.status, 'expired');
-  assert.equal((await participant('/v1/participant/code', {})).status, 410);
+  assert.equal((await participant('/v1/participant/code', codeBody)).status, 410);
+  // The state machine is enforced below the application too.
+  await assert.rejects(f.pool.query("UPDATE approvals SET status='approved',approved_at=now(),receipt='x',receipt_id=gen_random_uuid() WHERE id=$1", [id]), /transition/);
+  // An expired approval (no receipt) can be replaced for the same assignment.
+  const renewed = await request(f.app).post('/v1/approvals').set('Authorization', 'Bearer ' + instance.apiKey).send(approvalBody({ expiresAt: new Date(clock + 3600000).toISOString() }).body);
+  assert.equal(renewed.status, 201, renewed.text);
+  assert.notEqual(renewed.body.approvalId, id);
   // Suspension blocks new use.
   const { setInstanceStatus } = await import('./app.js');
   await setInstanceStatus(f.pool, instance.instanceId, 'suspended');
   assert.equal((await request(f.app).post('/v1/approvals').set('Authorization', 'Bearer ' + instance.apiKey).send(approvalBody({ recipientId: 'r9', expiresAt: new Date(clock + 3600000).toISOString() }).body)).status, 403);
   clock += 31 * 86400000;
-  assert.equal(await f.cleanup(), 1);
+  assert.equal(await f.cleanup(), 2);
   assert.equal((await participant('/v1/participant/session')).status, 404);
 });
 

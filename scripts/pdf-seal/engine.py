@@ -195,7 +195,8 @@ def check_manifest(manifest):
     elif policy == {'timestamp': 'off', 'independentApproval': 'email'}:
         # The seal commits to each participant's central approval receipt (SHA-256 of the exact JWS).
         receipts = manifest.get('approvalReceipts')
-        if not isinstance(receipts, list) or not 1 <= len(receipts) <= 100:
+        # Empty when every participant used an identity-verifying method instead.
+        if not isinstance(receipts, list) or len(receipts) > 100:
             fail('Invalid approval receipt commitments')
         seen = set()
         for item in receipts:

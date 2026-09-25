@@ -12,7 +12,7 @@ type Session = {
   approvalId: string; status: 'pending' | 'email_confirmed' | 'approved' | 'cancelled' | 'expired'; expiresAt: string;
   title: string; claimedName: string; email: string; preparedSha256: string; preparedSize: number; documentUrl: string;
   installation: { name: string; origin: string; verifiedOrganisation: false };
-  consent: { version: string; text: string }; code?: { sentAt: string; expiresAt: string; resendAfter: string }; receipt?: string;
+  consent: { version: string; text: string }; code?: { sentAt: string; expiresAt: string; resendAfter: string }; receipt?: string; confirmedBrowserKeySha256?: string;
 };
 const message = (error: unknown) => error instanceof Error ? error.message : 'Något gick fel. Försök igen.';
 const MAX_PDF = 64 * 1024 * 1024;
@@ -30,6 +30,19 @@ async function readLimited(response: Response, limit: number) {
   const bytes = new Uint8Array(await response.arrayBuffer());
   if (bytes.length > limit) throw new Error('Dokumentet är större än väntat.');
   return bytes;
+}
+
+/**
+ * A secret that exists only in this browser tab. The code is bound to it and approval requires it,
+ * so the sender's installation, which knows the link, cannot confirm or approve on the participant's behalf.
+ */
+function browserKeyFor(approvalId: string) {
+  const name = 'signhere-browser-key:' + approvalId;
+  try { const stored = sessionStorage.getItem(name); if (stored && /^[A-Za-z0-9_-]{43}$/.test(stored)) return stored; } catch { /* storage unavailable */ }
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  const key = btoa(String.fromCharCode(...bytes)).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  try { sessionStorage.setItem(name, key); } catch { /* the key then lives until reload */ }
+  return key;
 }
 
 /** Capability and transfer token come from the URL fragment, never from a query string or cookie. */
@@ -50,6 +63,9 @@ function Approve() {
   const [code, setCode] = useState('');
   const [accepted, setAccepted] = useState(false);
   const [busy, setBusy] = useState('');
+  const browserKey = useMemo(() => link ? browserKeyFor(link.approvalId) : '', [link]);
+  const [browserKeyHash, setBrowserKeyHash] = useState('');
+  useEffect(() => { if (browserKey) void sha256(new TextEncoder().encode(browserKey)).then(digest => setBrowserKeyHash(hex(digest))); }, [browserKey]);
   const api = async <T,>(method: string, path: string, body?: unknown): Promise<T> => {
     const response = await fetch(path, { method, credentials: 'omit', headers: { authorization: 'Capability ' + link!.approvalId + '.' + link!.capability, ...(body ? { 'content-type': 'application/json' } : {}) }, body: body ? JSON.stringify(body) : undefined });
     const data = await response.json().catch(() => ({}));
@@ -90,12 +106,13 @@ function Approve() {
   if (!session) return <main className="sign-main"><ErrorBox error={error} />{!error && <Loading>Öppnar bekräftelsen…</Loading>}</main>;
   const expired = session.status === 'expired' || session.status === 'cancelled';
   if (session.status === 'approved' && session.receipt) return <Approved session={session} pdf={pdf?.bytes} />;
-  const confirmed = session.status === 'email_confirmed';
+  const confirmedElsewhere = session.status === 'email_confirmed' && Boolean(browserKeyHash) && session.confirmedBrowserKeySha256 !== browserKeyHash;
+  const confirmed = session.status === 'email_confirmed' && !confirmedElsewhere && Boolean(browserKeyHash);
   const resendAfter = session.code ? Date.parse(session.code.resendAfter) : 0;
-  const sendCode = () => act('code', async () => { setSession(await api<Session>('POST', '/v1/participant/code', {})); setCode(''); });
-  const confirm = (event: FormEvent) => { event.preventDefault(); void act('confirm', async () => { setSession(await api<Session>('POST', '/v1/participant/confirm', { code: code.replace(/\s/g, '') })); }); };
+  const sendCode = () => act('code', async () => { setSession(await api<Session>('POST', '/v1/participant/code', { browserKeySha256: browserKeyHash })); setCode(''); });
+  const confirm = (event: FormEvent) => { event.preventDefault(); void act('confirm', async () => { setSession(await api<Session>('POST', '/v1/participant/confirm', { code: code.replace(/\s/g, ''), browserKey })); }); };
   const approve = () => act('approve', async () => {
-    const result = await api<Session>('POST', '/v1/participant/approve', { preparedSha256: session.preparedSha256, consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: pdf!.source });
+    const result = await api<Session>('POST', '/v1/participant/approve', { preparedSha256: session.preparedSha256, consentVersion: CENTRAL_CONSENT.version, accepted: true, documentSource: pdf!.source, browserKey });
     setSession(result);
   });
   return <main className="sign-main central-main">
@@ -116,8 +133,9 @@ function Approve() {
         <div className={`central-step${confirmed ? ' done' : ''}`}>
           <h2><span className="step-number">1</span>Bekräfta din e-postadress</h2>
           {confirmed ? <p>✓ {session.email} är bekräftad.</p> : <>
+            {confirmedElsewhere && <p className="text-small">E-postadressen bekräftades i en annan webbläsare. Begär en ny kod för att fortsätta här.</p>}
             <p className="muted text-small">Vi skickar en kod till {session.email}. Koden visar bara att du har tillgång till e-posten – den godkänner inte dokumentet.</p>
-            <button className="button secondary" disabled={Boolean(busy) || (session.code && Date.now() < resendAfter)} onClick={() => void sendCode()}>{busy === 'code' ? 'Skickar…' : session.code ? 'Skicka en ny kod' : 'Skicka kod'}</button>
+            <button className="button secondary" disabled={Boolean(busy) || !browserKeyHash || (session.code && Date.now() < resendAfter)} onClick={() => void sendCode()}>{busy === 'code' ? 'Skickar…' : session.code ? 'Skicka en ny kod' : 'Skicka kod'}</button>
             {session.code && <form className="central-code" onSubmit={confirm}><label className="field"><span>Kod från e-postmeddelandet</span><input inputMode="numeric" autoComplete="one-time-code" maxLength={9} value={code} onChange={event => setCode(event.target.value)} placeholder="1234 5678" /></label><button className="button" disabled={Boolean(busy) || code.replace(/\s/g, '').length !== 8}>{busy === 'confirm' ? 'Kontrollerar…' : 'Bekräfta'}</button></form>}
           </>}
         </div>
@@ -180,7 +198,8 @@ function VerifyReceipt() {
           : { label: 'Dokument', state: 'info', text: 'Välj PDF-filen för att kontrollera att den är det godkända dokumentet (' + r.document.preparedSha256.slice(0, 16) + '…).' },
         { label: 'Färdigt dokument', state: 'info', text: 'Kvittot gäller det förberedda originalet. Att ett färdigsignerat dokument visar samma innehåll kontrolleras inte här.' },
       ];
-      setChecks(list);
+      // Claims in an untrusted receipt are unauthenticated; do not present them as facts.
+      setChecks(result.keyTrust === 'trusted' ? list : [list[0], { label: 'Innehåll', state: 'info', text: 'Uppgifterna i kvittot visas inte eftersom kvittot inte kunde verifieras med rotnyckeln.' }]);
     } catch (error) { setError('Kontrollen misslyckades: ' + message(error)); }
   };
   useEffect(() => { void loadPublished(); }, []);

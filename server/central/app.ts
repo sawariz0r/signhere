@@ -42,6 +42,7 @@ const opaque = (prefix: string) => prefix + randomBytes(16).toString('base64url'
 const digest = z.string().regex(/^[a-f0-9]{64}$/);
 const identifier = z.string().regex(/^[A-Za-z0-9_-]{1,80}$/);
 const plain = (max: number) => z.string().trim().min(1).max(max).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'control characters');
+const browserKey = z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'Ladda om sidan och försök igen.');
 const capabilityPattern = /^(apr_[A-Za-z0-9_-]{22})\.([A-Za-z0-9_-]{43})$/;
 const iso = (ms: number) => new Date(ms).toISOString();
 /** A URL on the installation's registered origin; never fetched by this server. */
@@ -130,11 +131,16 @@ export async function createCentralApp(config: CentralConfig) {
     const instance = res.locals.instance;
     const input = approvalRequest(instance.origin).parse(req.body);
     const expiresAt = Date.parse(input.expiresAt);
-    if (expiresAt <= now() || expiresAt > now() + MAX_APPROVAL_TTL) throw new HttpError(400, 'expiry', 'Ogiltig giltighetstid.');
+    if (expiresAt <= now() || expiresAt > now() + MAX_APPROVAL_TTL + DAY) throw new HttpError(400, 'expiry', 'Ogiltig giltighetstid.');
     const fingerprint = sha256(canonicalJson({ ...input, email: normalizeEmail(input.email) }));
     const result = await transaction(pool, async client => {
-      const existing = (await client.query('SELECT * FROM approvals WHERE instance_id=$1 AND document_id=$2 AND revision_id=$3 AND recipient_id=$4 FOR UPDATE',
+      let existing = (await client.query("SELECT * FROM approvals WHERE instance_id=$1 AND document_id=$2 AND revision_id=$3 AND recipient_id=$4 AND status<>'cancelled' FOR UPDATE",
         [instance.id, input.documentId, input.revisionId, input.recipientId])).rows[0];
+      // An expired approval never produced a receipt; close it so the assignment can start over.
+      if (existing && effectiveStatus(existing) === 'expired' && existing.request_fingerprint !== fingerprint) {
+        await client.query("UPDATE approvals SET status='cancelled' WHERE id=$1", [existing.id]);
+        existing = undefined;
+      }
       if (existing) {
         // Identical retries are idempotent; any change needs a new document revision.
         if (existing.request_fingerprint !== fingerprint) throw new HttpError(409, 'conflict', 'En annan begäran finns redan för samma mottagare och version.');
@@ -186,6 +192,7 @@ export async function createCentralApp(config: CentralConfig) {
     installation: { name: row.instance_name, origin: row.instance_origin, verifiedOrganisation: false },
     consent: CENTRAL_CONSENT,
     ...(challenge ? { code: { sentAt: iso(challenge.sent_at.getTime()), expiresAt: iso(challenge.expires_at.getTime()), resendAfter: iso(challenge.sent_at.getTime() + CODE_COOLDOWN) } } : {}),
+    ...(row.browser_key_hash ? { confirmedBrowserKeySha256: row.browser_key_hash } : {}),
     ...(row.status === 'approved' ? { receipt: row.receipt } : {}),
   });
   function requireOpen(row: Record<string, any>) {
@@ -201,19 +208,20 @@ export async function createCentralApp(config: CentralConfig) {
   });
   app.post('/v1/participant/code', async (req, res) => {
     await requireOrigin(req);
-    z.object({}).strict().parse(req.body ?? {});
+    const { browserKeySha256 } = z.object({ browserKeySha256: digest }).strict().parse(req.body ?? {});
     const code = String(randomInt(0, 100_000_000)).padStart(8, '0');
     const row = await transaction(pool, async client => {
       const row = await participant(req, true, client);
       requireOpen(row);
-      if (row.status !== 'pending') throw new HttpError(409, 'already_confirmed', 'E-postadressen är redan bekräftad.');
+      if (row.status === 'approved') throw new HttpError(409, 'already_approved', 'Dokumentet är redan godkänt.');
       const previous = (await client.query('SELECT * FROM email_challenges WHERE approval_id=$1 FOR UPDATE', [row.id])).rows[0];
       if (previous && previous.sent_at.getTime() + CODE_COOLDOWN > now()) throw new HttpError(429, 'cooldown', 'Vänta en stund innan du begär en ny kod.');
       if (previous && previous.sends >= CODE_SENDS) throw new HttpError(429, 'send_limit', 'Du har begärt för många koder. Be avsändaren om en ny länk.');
       // A new code replaces the previous one; its attempt counter starts over.
-      await client.query(`INSERT INTO email_challenges(approval_id,code_hash,sent_at,expires_at,attempts,sends) VALUES($1,$2,$3,$4,0,1)
-        ON CONFLICT(approval_id) DO UPDATE SET code_hash=EXCLUDED.code_hash,sent_at=EXCLUDED.sent_at,expires_at=EXCLUDED.expires_at,attempts=0,sends=email_challenges.sends+1`,
-      [row.id, sha256(row.id + ':' + code), new Date(now()), new Date(now() + CODE_TTL)]);
+      // The code is bound to the requesting browser's key: only that browser can use it.
+      await client.query(`INSERT INTO email_challenges(approval_id,code_hash,sent_at,expires_at,attempts,sends,browser_key_hash) VALUES($1,$2,$3,$4,0,1,$5)
+        ON CONFLICT(approval_id) DO UPDATE SET code_hash=EXCLUDED.code_hash,sent_at=EXCLUDED.sent_at,expires_at=EXCLUDED.expires_at,attempts=0,sends=email_challenges.sends+1,browser_key_hash=EXCLUDED.browser_key_hash`,
+      [row.id, sha256(row.id + ':' + code), new Date(now()), new Date(now() + CODE_TTL), browserKeySha256]);
       return row;
     });
     try {
@@ -221,6 +229,7 @@ export async function createCentralApp(config: CentralConfig) {
         'Din kod för att bekräfta e-postadressen hos signhere är:', '', code.slice(0, 4) + ' ' + code.slice(4), '',
         'Koden gäller i 15 minuter. Ange den på bekräftelsesidan (' + config.origin + '/bekrafta).',
         'Koden visar bara att du har tillgång till den här e-posten. Du godkänner dokumentet i ett separat steg.', '',
+        'Ange koden endast på ' + config.origin + '. Ingen annan webbplats, avsändaren inräknad, ska be dig om den.',
         'Har du inte begärt koden kan du ignorera meddelandet. Dela aldrig koden med någon.', '', '– signhere',
       ].join('\n') });
     } catch {
@@ -232,22 +241,23 @@ export async function createCentralApp(config: CentralConfig) {
   });
   app.post('/v1/participant/confirm', async (req, res) => {
     await requireOrigin(req);
-    const { code } = z.object({ code: z.string().regex(/^\d{4} ?\d{4}$/, 'Koden består av 8 siffror.') }).strict().parse(req.body);
+    const { code, browserKey: key } = z.object({ code: z.string().regex(/^\d{4} ?\d{4}$/, 'Koden består av 8 siffror.'), browserKey }).strict().parse(req.body);
     const outcome = await transaction(pool, async client => {
       const row = await participant(req, true, client);
       requireOpen(row);
-      if (row.status !== 'pending') return { row, ok: true };
+      if (row.status === 'approved') return { row, ok: true };
       const challenge = (await client.query('SELECT * FROM email_challenges WHERE approval_id=$1 FOR UPDATE', [row.id])).rows[0];
       if (!challenge) throw new HttpError(409, 'no_code', 'Begär en kod först.');
       if (challenge.expires_at.getTime() <= now()) throw new HttpError(410, 'code_expired', 'Koden har gått ut. Begär en ny kod.');
       if (challenge.attempts >= CODE_ATTEMPTS) throw new HttpError(429, 'attempts', 'För många felaktiga försök. Begär en ny kod.');
-      const match = timingSafeEqual(Buffer.from(challenge.code_hash, 'hex'), Buffer.from(sha256(row.id + ':' + code.replace(' ', '')), 'hex'));
+      const match = timingSafeEqual(Buffer.from(challenge.code_hash, 'hex'), Buffer.from(sha256(row.id + ':' + code.replace(' ', '')), 'hex'))
+        && timingSafeEqual(Buffer.from(challenge.browser_key_hash, 'hex'), Buffer.from(sha256(key), 'hex'));
       if (!match) {
         await client.query('UPDATE email_challenges SET attempts=attempts+1 WHERE approval_id=$1', [row.id]);
         return { row, ok: false };
       }
       await client.query('DELETE FROM email_challenges WHERE approval_id=$1', [row.id]);
-      return { row: (await client.query("UPDATE approvals SET status='email_confirmed',email_confirmed_at=$2 WHERE id=$1 RETURNING *", [row.id, new Date(now())])).rows[0], ok: true };
+      return { row: (await client.query("UPDATE approvals SET status='email_confirmed',email_confirmed_at=$2,browser_key_hash=$3 WHERE id=$1 RETURNING *", [row.id, new Date(now()), sha256(key)])).rows[0], ok: true };
     });
     // Committed attempt counters must survive the failed response.
     if (!outcome.ok) throw new HttpError(400, 'wrong_code', 'Fel kod. Kontrollera koden i e-postmeddelandet.');
@@ -258,7 +268,7 @@ export async function createCentralApp(config: CentralConfig) {
     await requireOrigin(req);
     const input = z.object({
       preparedSha256: digest, consentVersion: z.literal(CENTRAL_CONSENT.version, 'Samtycket stämmer inte. Ladda om sidan.'),
-      accepted: z.literal(true), documentSource: z.enum(['installation-transfer', 'local-file']),
+      accepted: z.literal(true), documentSource: z.enum(['installation-transfer', 'local-file']), browserKey,
     }).strict().parse(req.body);
     const row = await transaction(pool, async client => {
       const row = await participant(req, true, client);
@@ -268,6 +278,9 @@ export async function createCentralApp(config: CentralConfig) {
       }
       requireOpen(row);
       if (row.status !== 'email_confirmed') throw new HttpError(409, 'email_unconfirmed', 'Bekräfta e-postadressen först.');
+      if (!timingSafeEqual(Buffer.from(row.browser_key_hash, 'hex'), Buffer.from(sha256(input.browserKey), 'hex'))) throw new HttpError(409, 'other_browser', 'E-postadressen bekräftades i en annan webbläsare. Begär en ny kod här.');
+      // Never sign with a key the published bundle no longer considers valid (e.g. rotated but not restarted).
+      if (active.validUntil !== null && iso(now()) > active.validUntil) throw new HttpError(503, 'key_retired', 'Tjänsten byter nycklar. Försök igen om en stund.');
       if (row.prepared_sha256 !== input.preparedSha256) throw new HttpError(409, 'mismatch', 'Dokumentet du har öppnat är inte det som ska godkännas. Kontakta avsändaren.');
       const approvedAt = iso(now());
       const payload: ApprovalReceipt = receiptSchema.parse({
