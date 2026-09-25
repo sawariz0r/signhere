@@ -1,0 +1,69 @@
+# Optional central trust service (independent email approval receipts).
+# Self-hosted installations do not need this. See docs/central-deployment.md.
+#
+#   cd deploy/central && cp .env.example .env   # fill in values
+#   docker compose run --rm central node dist/server/central/admin.js keys init --service "$CENTRAL_ORIGIN"
+#   docker compose up -d
+services:
+  central:
+    build:
+      context: ../..
+      target: central
+    restart: unless-stopped
+    ports:
+      - "${BIND_ADDRESS:-127.0.0.1}:${PORT:-3100}:3100"
+    environment:
+      NODE_ENV: production
+      CENTRAL_ORIGIN: ${CENTRAL_ORIGIN:?Set the public origin, e.g. https://signhere.prpl.se}
+      # Empty during `keys init`; set it to the printed root key before `up`.
+      CENTRAL_TRUST_ROOT: ${CENTRAL_TRUST_ROOT:-}
+      CENTRAL_DATABASE_URL: postgresql://central:${CENTRAL_DATABASE_PASSWORD:?}@postgres:5432/central
+      CENTRAL_KEYS_DIR: /keys
+      CENTRAL_RETENTION_DAYS: ${CENTRAL_RETENTION_DAYS:-30}
+      TRUST_PROXY: ${TRUST_PROXY:-uniquelocal}
+      # Email for confirmation codes (required). Same variables as an installation, with a CENTRAL_MAIL_ prefix.
+      CENTRAL_MAIL_SIGNHERE_MAIL_PROVIDER: ${CENTRAL_MAIL_SIGNHERE_MAIL_PROVIDER:-smtp}
+      CENTRAL_MAIL_SIGNHERE_MAIL_FROM: ${CENTRAL_MAIL_SIGNHERE_MAIL_FROM:-}
+      CENTRAL_MAIL_SMTP_URL: ${CENTRAL_MAIL_SMTP_URL:-}
+      CENTRAL_MAIL_SMTP_HOST: ${CENTRAL_MAIL_SMTP_HOST:-}
+      CENTRAL_MAIL_SMTP_PORT: ${CENTRAL_MAIL_SMTP_PORT:-587}
+      CENTRAL_MAIL_SMTP_USER: ${CENTRAL_MAIL_SMTP_USER:-}
+      CENTRAL_MAIL_SMTP_PASSWORD: ${CENTRAL_MAIL_SMTP_PASSWORD:-}
+      CENTRAL_MAIL_RESEND_API_KEY: ${CENTRAL_MAIL_RESEND_API_KEY:-}
+    volumes:
+      - central-keys:/keys
+    init: true
+    read_only: true
+    tmpfs:
+      - /tmp:size=32m,noexec,nosuid
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 384m
+    cpus: 1
+    pids_limit: 64
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17-bookworm
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: central
+      POSTGRES_DB: central
+      POSTGRES_PASSWORD: ${CENTRAL_DATABASE_PASSWORD:?}
+    volumes:
+      - central-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U central -d central']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  central-keys:
+  central-postgres:

@@ -1,6 +1,6 @@
 # signhere.se central-service backlog
 
-Status: all tasks are Backlog. Updated: 2026-09-25. This is a planning backlog, not implemented functionality or a deployment commitment.
+Status: independent email approval is implemented as a beta (see each task's Progress section and [central-protocol.md](../../central-protocol.md)); timestamping, KMS custody, external review and later capabilities remain open. Updated: 2026-09-25. The service is optional: installations without `SIGNHERE_CENTRAL_URL` never contact it.
 
 Read the [architecture and delivery plan](../../central-service-plan.md) first. The [review assessment](../../reviews/2026-09-24-fable-trust-dispositions.md) supplies the accepted trust boundaries; the [raw Fable review](../../reviews/2026-09-24-fable-non-bankid-trust.md) is retained with its limitations and corrections.
 

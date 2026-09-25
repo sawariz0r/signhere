@@ -1,7 +1,7 @@
 # CEN-009: Participant evidence that survives either service shutting down
 
 - ID: CEN-009
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Independent approval beta
 - Owner: Evidence/export engineering (unassigned)
@@ -106,3 +106,9 @@ A final PDF alone must not be described as the complete evidence record.
 - Indefinite central storage, recovery of documents from hashes, and complete audit disclosure.
 - Automatic legal-retention compliance or indefinite cryptographic validity.
 - Claims that a participant's package proves all other participants' identities or approvals.
+
+## Progress (2026-09-25)
+
+Implemented: participant package (`POST /api/sign/evidence-package`) with the exact approved `original.pdf`, `completed.pdf` when ready, the participant's own receipt and trust bundle, the offline verifier and a Swedish/English README; no other participant's data. The service page offers immediate receipt and PDF download.
+
+Still open: participant disclosure proofs for private evidence, availability promises aligned with CEN-010.

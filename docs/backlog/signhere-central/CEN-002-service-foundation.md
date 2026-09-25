@@ -1,7 +1,7 @@
 # CEN-002: Central service foundation and isolation
 
 - ID: CEN-002
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Foundation
 - Owner: Backend/platform engineer (unassigned)
@@ -96,3 +96,9 @@ cannot set independently verified fields or consume a participant challenge.
   CEN-001 and CEN-010 before coding; a literally stateless witness is not promised.
 - Billing, public document search, general file storage, organisation verification,
   and participant civil-identity verification are outside this foundation.
+
+## Progress (2026-09-25)
+
+Implemented: separate Node/PostgreSQL service (`server/central/`), own schema and entry point, scoped hashed API keys with rotation/suspension via the admin CLI, tenant-derived scoping, idempotent approval creation with request fingerprints, explicit states with an immutability trigger, capability hashes, rate limits and an open-approval quota, no document upload or URL fetching, strict CSP/frame-ancestors, redacted logs, health endpoint and retention cleanup. Tests cover cross-tenant access, idempotency, concurrency and expiry.
+
+Still open: separate administration boundary beyond the CLI, restricted runtime database role/RLS, a durable outbox for code emails (sent in-request today; failure returns 503 and the participant can retry), and crash-injection tests.

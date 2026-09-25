@@ -24,6 +24,11 @@ services:
       # Shorthand accepted for SMTP_HOST/PORT/USER/PASSWORD and SIGNHERE_MAIL_FROM.
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-}
+      # Optional independent approval through a central service (e.g. https://signhere.prpl.se).
+      # Leave SIGNHERE_CENTRAL_URL empty (the default) and nothing is ever sent to a central service.
+      SIGNHERE_CENTRAL_URL: ${SIGNHERE_CENTRAL_URL:-}
+      SIGNHERE_CENTRAL_TRUST_ROOT: ${SIGNHERE_CENTRAL_TRUST_ROOT:-}
+      SIGNHERE_CENTRAL_API_KEY: ${SIGNHERE_CENTRAL_API_KEY:-}
       DATABASE_URL: postgresql://signhere:${APP_DATABASE_PASSWORD:?}@postgres:5432/signhere
       MIGRATION_DATABASE_URL: postgresql://signhere_migrator:${POSTGRES_PASSWORD:?}@postgres:5432/signhere
     volumes:

@@ -1,7 +1,7 @@
 # CEN-005: Self-hosted integration and frozen protection policy
 
 - ID: CEN-005
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Portable verification beta (timestamp slice); Independent approval beta
 - Owner: Self-hosted application/backend engineering (unassigned)
@@ -122,3 +122,9 @@ and compatibility review of schema, finalization state and participant bindings.
 - Define recovery after key compromise; never silently repin an untrusted key.
 - Exclude central document/team-account hosting, civil-identity claims, retroactive
   approval and claims that integration code constrains a malicious operator's server.
+
+## Progress (2026-09-25)
+
+Approval slice implemented (`server/independent-approval.ts`): off unless `SIGNHERE_CENTRAL_URL` is set, per-document opt-in, frozen policy with service and trust root, identity-verifying methods exempt, receipt verification against every frozen field, immutable storage, evidence-core freezing, seal manifest commitments (`approvalReceipts`), no downgrade or redirect on configuration change, best-effort cancellation. Covered by `server/independent-approval.test.ts` (including zero network requests when unconfigured).
+
+Still open: the timestamp slice (depends on CEN-007).

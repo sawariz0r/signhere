@@ -1,7 +1,7 @@
 # CEN-006 — Receipt key custody and independent trust distribution
 
 - ID: CEN-006
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Foundation
 - Owner: Security/cryptography engineering (unassigned)
@@ -87,3 +87,9 @@ key carried by an artifact must never make its own issuer trusted.
 
 - [Fable review dispositions](../../reviews/2026-09-24-fable-trust-dispositions.md)
 - [RFC 3161 feasibility checkpoint](../../rfc3161-feasibility.md)
+
+## Progress (2026-09-25)
+
+Implemented: separate trust-root and receipt-key roles, signed versioned trust bundle with key purposes, validity and revocation, root never listed as a service key, rotation/revocation commands, service startup check of its own bundle against the pinned root, installations storing the exact bundle with each receipt.
+
+Still open: KMS/HSM custody and dual control, independent second distribution route and signed releases for the root, documented compromise-cutoff procedure with independent time.

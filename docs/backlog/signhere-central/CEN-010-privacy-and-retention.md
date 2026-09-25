@@ -1,7 +1,7 @@
 # CEN-010: Privacy inventory, retention, and deletion
 
 - ID: CEN-010
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Foundation
 - Owner: Privacy engineer and service owner (unassigned)
@@ -98,3 +98,9 @@ with an owner rather than using a general compliance badge.
   verifiable representation; document disclosure and dictionary-attack limits.
 - Central document archiving, unlimited receipt recovery, a public registry, and
   a guaranteed statutory retention period are excluded from the first service.
+
+## Progress (2026-09-25)
+
+Implemented baseline: data inventory in [central-deployment.md](../../central-deployment.md); configurable retention (`CENTRAL_RETENTION_DAYS`, default 30) with automatic deletion; no PDFs or audit data at the service; redacted logs.
+
+Still open: legal/provider review, backup aging policy, documented purposes per field.

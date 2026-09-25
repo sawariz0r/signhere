@@ -1,7 +1,7 @@
 # CEN-011: Deployment, recovery, and service exit
 
 - ID: CEN-011
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Production operations
 - Owner: Platform engineer and incident lead (unassigned)
@@ -102,3 +102,9 @@ No real participant data or production credentials belong in the evidence bundle
   with CEN-006/CEN-008, including domain loss and service closure.
 - Provisioning paid production infrastructure, purchasing domains/certificates,
   and sending announcements are separate implementation/launch actions.
+
+## Progress (2026-09-25)
+
+Implemented: `central` Docker target, `deploy/central/docker-compose.yaml`, and the [deployment guide](../../central-deployment.md) for signhere.prpl.se including key handling and the move to signhere.se.
+
+Still open: the image build was not exercised in CI yet, restore/key-incident/shutdown drills, monitoring and backups of the service database.

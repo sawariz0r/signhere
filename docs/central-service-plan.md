@@ -1,6 +1,6 @@
 # signhere.se central service: proposed architecture and delivery plan
 
-Status: planning only. Updated: 2026-09-25. No service, deployment, signing method or retention promise is introduced by this document.
+Status: independent email approval implemented as a beta; see [central-protocol.md](central-protocol.md) and [central-deployment.md](central-deployment.md). Updated: 2026-09-25. Timestamping and production-readiness items remain open in the backlog.
 
 Start with the [delivery backlog](backlog/signhere-central/README.md). The [Fable review](reviews/2026-09-24-fable-non-bankid-trust.md) and [assessment](reviews/2026-09-24-fable-trust-dispositions.md) explain the decisions; the assessment qualifies its claims about passkeys, deceptive viewers, certificate expiry and stateless receipts.
 

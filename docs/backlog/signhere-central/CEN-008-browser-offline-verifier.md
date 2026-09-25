@@ -1,7 +1,7 @@
 # CEN-008 — Browser and offline cryptographic verifier
 
 - ID: CEN-008
-- Status: Backlog
+- Status: In progress
 - Priority: P1
 - Milestone: Portable verification beta
 - Owner: Browser/cryptography engineering (unassigned)
@@ -102,3 +102,9 @@ issuer recognition, trusted time, independent approval, and evidence availabilit
 
 - [Fable review dispositions](../../reviews/2026-09-24-fable-trust-dispositions.md)
 - [RFC 3161 feasibility checkpoint](../../rfc3161-feasibility.md)
+
+## Progress (2026-09-25)
+
+Implemented: receipt verification in the browser (`/verifiera`, WebCrypto, no uploads) and offline (`scripts/verify-approval.mjs`, an independent `node:crypto` implementation), and receipt commitment checks in `verify-sealed-evidence.mjs --central-trust-root`. Results are per claim; completed-content relationship is always `unverified`.
+
+Still open: browser/offline PDF CMS seal validation without Python, authenticated offline releases, timestamp token checks (CEN-007).

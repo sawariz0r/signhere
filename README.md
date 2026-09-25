@@ -14,6 +14,7 @@ Simple, self-hosted document signing. Swedish interface based on the supplied Si
 - Bilagor (attachments) on a completed document: upload a PDF or create one in the editor. By default the main document's parties sign it; parties can be deselected or added. Each bilaga is its own sealed signing document, bound to the exact signed main document by ID and hash, with its own audit chain and evidence. The main document's closed audit trail is never modified.
 - Parties who return through any of their links (signing link or receipt) see the main document, every bilaga they sign and one combined event log with who opened and signed what and when, without other parties' addresses, IPs or devices. They can download completed PDFs and sign pending bilagor from there.
 - Optional e-mail via SMTP (default) or Resend: personal signing links are sent when a document or bilaga is created, and when it is fully signed every party and the sender get the sealed PDF by e-mail, with a link back to their documents and event log. Completed-copy delivery status and resending are on the document page. Without e-mail, links are shared manually as before.
+- Optional independent approval (beta): when an installation is connected to a central signhere service, a sender can require participants without BankID to confirm their email and approve the exact PDF at that independent service before signing. The participant gets a signed receipt that verifies offline. Off unless `SIGNHERE_CENTRAL_URL` is configured; see [central-deployment.md](docs/central-deployment.md).
 - Public `/verify` page: anyone can check a completed PDF without an account, uploading its contents, or revealing recipient details.
 - A versioned internal draw signing adapter, with provider integration boundaries documented for later work.
 - Block-based document editor (preview) at `/editor/…`. It has a cover, parties, pricing packages with VAT, rich text with dynamic `@` fields, image, terms and signature blocks, plus theming and a desktop/mobile preview. Drafts are saved in the browser for now. *Skicka* confirms the signers chosen in the editor in one sheet, renders the draft to a PDF in the browser and creates the document; the sender then signs (if they chose to) and gets the links to share. *Använd som bilaga* renders the draft and continues in the bilaga flow, where the parties are chosen. The editor's signing deadline, reminder and decline settings are not applied yet.
@@ -164,7 +165,7 @@ Personal links are credentials. Signing consumes the ability to change that reci
 
 Before real production use, complete independent security and legal review, actual Linux container/isolation tests, reader interoperability checks, retention/erasure procedures, paired restore drills, and measured storage/concurrency limits. These are release requirements, not promises made by the interface.
 
-- [Planned signhere.se central-service architecture](docs/central-service-plan.md)
+- [signhere.se central-service architecture](docs/central-service-plan.md), [protocol](docs/central-protocol.md) and [deployment](docs/central-deployment.md)
 - [Central-service implementation backlog](docs/backlog/signhere-central/README.md)
 - [How signing is sealed and secured](docs/signing-security.md)
 - [Architecture](docs/architecture.md)

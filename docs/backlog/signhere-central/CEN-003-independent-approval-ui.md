@@ -1,7 +1,7 @@
 # CEN-003: Independent approval interface on signhere.se
 
 - ID: CEN-003
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Independent approval beta
 - Owner: Frontend/security engineering (unassigned)
@@ -91,3 +91,9 @@ but never the PDF content. Independent review and confirmed email access are dis
 - BankID, civil-identity proofing, passkey enrollment and proof that content was understood.
 - Central document storage, PDF delivery from the central server and final PDF composition.
 - A claim that an independent origin protects a compromised device, mailbox or signhere.se.
+
+## Progress (2026-09-25)
+
+Implemented: `/bekrafta` on the service origin (`web/central/main.tsx`): capability and transfer token from the URL fragment, direct browser fetch from the installation (CORS limited to the frozen service origin) with a local-file fallback, one byte buffer hashed and rendered with pdf.js, unverified name/organisation labels, separate email and approval steps, receipt and PDF download. A Playwright flow covers both origins (`tests/browser-independent-approval.mjs`).
+
+Still open: accepted-PDF-subset checks in the browser (active content, encryption), accessibility and supported-browser review, documented renderer residuals.

@@ -1,7 +1,7 @@
 # CEN-004: Independent email confirmation and signed approval receipts
 
 - ID: CEN-004
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Independent approval beta
 - Owner: Backend/security engineering (unassigned)
@@ -94,3 +94,9 @@ approval at the service, not verified civil identity or independent proof of a p
 - Civil-identity proofing, mailbox ownership claims beyond observed access, and BankID.
 - Storage or delivery of PDF content by signhere.se; perpetual receipt recovery.
 - Backdating old approvals or interpreting central service time as an independent TSA time.
+
+## Progress (2026-09-25)
+
+Implemented: 8-digit email codes with expiry, attempt/send limits and cooldown; confirmation separate from approval; atomic single receipt per approval with stored exact bytes; service-owned consent; receipts carry `nameVerified: false` and `civilIdentityVerified: false`; direct participant delivery and authenticated installation polling.
+
+Still open: failure injection around signing/commit/response loss beyond the concurrency test, mail provider data-handling decision, participant disclosure subsets.

@@ -1,7 +1,7 @@
 # CEN-001: Define the central protocol and threat model
 
 - ID: CEN-001
-- Status: Backlog
+- Status: In review
 - Priority: P0
 - Milestone: Foundation
 - Owner: Security and protocol engineering (unassigned)
@@ -55,3 +55,9 @@ Envelope/algorithms, inclusion commitments or selective proofs, instance identit
 ## Exclusions
 
 No deployment/implementation, legal classification, universal verified badge, public document registry or custom timestamp authority.
+
+## Progress (2026-09-25)
+
+Protocol v1 is specified in [central-protocol.md](../../central-protocol.md) and implemented in `server/central/protocol.ts`: claim table, threat model summary, Ed25519 compact JWS envelope with exact headers and canonical payloads, receipt and trust-bundle schemas, state machine, API, transfer, and the approved-original/completed-content rule (always `unverified` in v1). Positive/negative vectors are exercised in `server/central/central.test.ts` and `server/independent-approval.test.ts`, including the A-approved/B-final fixture.
+
+Still open: a supported completed-content relationship profile, formal state/dataflow diagrams for review, and the external review mapped in CEN-012.

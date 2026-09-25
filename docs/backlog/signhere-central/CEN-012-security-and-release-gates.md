@@ -1,7 +1,7 @@
 # CEN-012: Adversarial review and phased release gates
 
 - ID: CEN-012
-- Status: Backlog
+- Status: In progress
 - Priority: P0
 - Milestone: Production release
 - Owner: Security reviewer and release owner (unassigned)
@@ -105,3 +105,9 @@ and the phase release record. Redact secrets and personal data from all artifact
   authorised to accept lower-severity residual risks before implementation ends.
 - This gate does not certify legal compliance or advanced/qualified signature
   status; any such future claim needs separately established requirements.
+
+## Progress (2026-09-25)
+
+Adversarial tests exist for forged/replayed receipts, wrong roots, cross-tenant access, code guessing, concurrency, configuration downgrade and the A/B fixture.
+
+Still open: independent security review and the phase release matrix.
