@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { PDFArray, PDFDict, PDFDocument, PDFName, PDFRawStream, PDFRef, PDFNull, PDFString, PDFHexString, PDFNumber, PDFPage, rgb, grayscale, cmyk, pushGraphicsState, popGraphicsState, concatTransformationMatrix, drawObject } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
-import type { PdfSigner, AuditCheckpoint, PdfPreparation, PdfAttachmentOf } from './pdf.js';
+import type { PdfSigner, AuditCheckpoint, PdfPreparation, PdfAttachmentOf, PdfBrand } from './pdf.js';
 const hash = (value: Uint8Array) => createHash('sha256').update(value).digest('hex');
 
 async function inspectPdfBytes(bytes: Buffer, options: { allowForms?: boolean; flat?: boolean } = {}) {
@@ -368,12 +368,15 @@ export async function preparePdfBytes(bytes: Buffer) {
   const preparation: PdfPreparation = { kind: 'flatten', engine: 'mupdf', engineVersion, sourceHash: checked.hash, sourceSize: bytes.length, annotationCount, formFieldCount, noteCount: notes.length };
   return { bytes: flattened, pages: result.pages, hash: result.hash, preparation };
 }
-export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf) {
+export async function createCompletedPdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], checkpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf | null, brand?: PdfBrand | null) {
   if (hash(original) !== originalHash) throw new Error('Originalfilens fingeravtryck stämmer inte.');
   const pdf = await PDFDocument.load(original, { updateMetadata: false });
   pdf.registerFontkit(fontkit);
   const font = await pdf.embedFont(readFileSync(new URL('./assets/NotoSans-Regular.ttf', import.meta.url)), { subset: true });
   const color = rgb(0.055, 0.067, 0.086);
+  const accent = /^#[0-9a-f]{6}$/i.test(brand?.accent ?? '') ? rgb(...[1, 3, 5].map(i => parseInt(brand!.accent.slice(i, i + 2), 16) / 255) as [number, number, number]) : color;
+  // The logo is presentation only. An image the sandbox cannot decode falls back to the name.
+  const logo = brand?.logoPngBase64 ? await pdf.embedPng(Buffer.from(brand.logoPngBase64, 'base64')).catch(() => null) : null;
   for (const [index, signer] of signers.entries()) {
     const signerConsent = signer.consent ?? consent;
     let page = pdf.addPage([595.28, 841.89]);
@@ -391,7 +394,15 @@ export async function createCompletedPdf(original: Uint8Array, title: string, do
       }
       if (current) line(current, size);
     };
-    line('signhere / signeringsbevis', 22); y -= 12;
+    if (brand) {
+      // The team's accent bar and logo and/or name; the seal and footer still name signhere.
+      page.drawRectangle({ x: 44, y: 812, width: 505, height: 5, color: accent });
+      let x = 44;
+      if (logo) { const scale = Math.min(26 / logo.height, 140 / logo.width); page.drawImage(logo, { x, y: y - 6, width: logo.width * scale, height: logo.height * scale }); x += logo.width * scale + 10; }
+      if (!logo || brand.showName) { let name = brand.name.replace(/[\r\n\t]/g, ' '); while (name.length > 1 && font.widthOfTextAtSize(name, 13) > 549 - x) name = name.slice(0, -2) + '…'; page.drawText(name, { x, y: y + 2, size: 13, font, color }); }
+      y -= 44;
+      line('Signeringsbevis', 22); y -= 12;
+    } else { line('signhere / signeringsbevis', 22); y -= 12; }
     wrap(title, 14); y -= 8;
     line(`Dokument: ${documentId}`, 9);
     if (attachmentOf) {

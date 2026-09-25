@@ -1,6 +1,6 @@
 import test, { type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { loadEnvFile } from 'node:process';
@@ -352,6 +352,7 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
   // Reconstruct the prior schema in this disposable test database only.
   await f.db.query(`
     DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
+    ALTER TABLE teams DROP COLUMN logo, DROP COLUMN logo_hash, DROP COLUMN logo_show_name, DROP COLUMN accent;
     DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
     DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();
     ALTER TABLE recipients DROP COLUMN parent_recipient_id;
@@ -372,7 +373,7 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
     assert.deepEqual((await upgraded.query('SELECT original,completed,original_hash,completed_hash,status FROM documents WHERE id=$1', [document.id])).rows[0], before);
     assert.deepEqual((await upgraded.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows, events);
     assert.deepEqual((await upgraded.query('SELECT uploaded,preparation FROM documents WHERE id=$1', [document.id])).rows[0], { uploaded: null, preparation: null });
-    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 5);
+    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 6);
     const constraint = (await upgraded.query("SELECT oid FROM pg_constraint WHERE conrelid='documents'::regclass AND conname='documents_preparation_pair'")).rows[0].oid;
     const reopened = await createDatabase(databaseUrl!, schema);
     try {
@@ -603,4 +604,52 @@ test('sender inclusion validates recipients, limits and the authenticated sender
   assert.equal(permitted.status, 201, permitted.text);
   assert.equal(permitted.body.document.recipients.length, 25);
   assert.equal(permitted.body.document.recipients[24].email, owner.email);
+});
+
+test('team brand: owners set name, accent and a PNG logo; recipients see it without a session', async t => {
+  const f = await fixture(t);
+  const png = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==', 'base64');
+  const put = (body: unknown, client: any = f.agent) => client.put('/api/team/logo').set('Origin', origin).send(body);
+  const patch = (body: unknown, client: any = f.agent) => client.patch('/api/team').set('Origin', origin).send(body);
+  assert.deepEqual((await f.agent.get('/api/bootstrap')).body.brand, { name: 'Testteam', logoUrl: null, showName: true, accent: 'ink' });
+  const invitation = await f.post('/api/team/invitations', { email: 'member@example.test' });
+  const member = request.agent(f.app);
+  assert.equal((await f.post('/api/invitations/accept', { token: new URL(invitation.body.url).hash.slice(1), name: 'Member', password }, member)).status, 201);
+  assert.equal((await patch({ accent: 'blue' }, member)).status, 403);
+  assert.equal((await put({ pngBase64: png.toString('base64') }, member)).status, 403);
+  assert.equal((await member.get('/api/instance')).status, 403);
+  assert.equal((await patch({})).status, 400);
+  assert.equal((await patch({ accent: 'pink' })).status, 400);
+  assert.deepEqual((await patch({ accent: 'green', logoShowName: false })).body.brand, { name: 'Testteam', logoUrl: null, showName: false, accent: 'green' });
+  assert.equal((await patch({ name: 'Lind & Co AB' })).body.brand.accent, 'green');
+  // Only PNGs of bounded dimensions; the browser converts other formats before upload.
+  assert.match((await put({ pngBase64: Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"/>').toString('base64') })).body.error, /PNG/);
+  const huge = Buffer.from(png); huge.writeUInt32BE(5000, 16);
+  assert.match((await put({ pngBase64: huge.toString('base64') })).body.error, /2048/);
+  const oversize = await put({ pngBase64: Buffer.alloc(800 * 1024).toString('base64') });
+  assert.equal(oversize.status, 413); assert.match(oversize.body.error, /500 kB/);
+  assert.equal((await request(f.app).put('/api/team/logo').set('Origin', origin).send({ pngBase64: png.toString('base64') })).status, 401);
+  const uploaded = await put({ pngBase64: png.toString('base64') });
+  assert.equal(uploaded.status, 200, uploaded.text);
+  assert.equal(uploaded.body.brand.logoUrl, '/api/logos/' + sha256(png));
+  const logo = await request(f.app).get(uploaded.body.brand.logoUrl).buffer(true).parse(binary);
+  assert.equal(logo.status, 200); assert.equal(logo.type, 'image/png'); assert.match(logo.headers['cache-control'], /immutable/); assert.deepEqual(logo.body, png);
+  assert.equal((await request(f.app).get('/api/logos/' + '0'.repeat(64))).status, 404);
+  assert.equal((await request(f.app).get('/api/logos/not-a-hash')).status, 404);
+  const expected = { name: 'Lind & Co AB', logoUrl: '/api/logos/' + sha256(png), showName: false, accent: 'green' };
+  assert.deepEqual((await member.get('/api/bootstrap')).body.brand, expected);
+  assert.deepEqual((await f.agent.get('/api/team')).body.brand, expected);
+  const { document, tokens } = await createDocument(f);
+  assert.deepEqual((await f.post('/api/sign/session', { token: tokens[0] }, request(f.app))).body.brand, expected);
+  assert.equal((await f.post('/api/sign/complete', completeBody(document, tokens[0]), request(f.app))).status, 200);
+  assert.deepEqual((await f.post('/api/sign/dossier', { token: tokens[0] }, request(f.app))).body.brand, expected);
+  // The completed PDF's signature page embeds the logo.
+  const completed = await PDFDocument.load((await f.db.query('SELECT completed FROM documents WHERE id=$1', [document.id])).rows[0].completed);
+  assert.ok(completed.getPage(completed.getPageCount() - 1).node.Resources()?.get(PDFName.of('XObject')));
+  const removed = await f.agent.delete('/api/team/logo').set('Origin', origin).send({});
+  assert.equal(removed.body.brand.logoUrl, null);
+  assert.equal((await request(f.app).get(expected.logoUrl)).status, 404);
+  const instance = await f.agent.get('/api/instance');
+  assert.equal(instance.status, 200);
+  assert.deepEqual(instance.body, { version: JSON.parse(await readFile('package.json', 'utf8')).version, email: null, sealing: null });
 });

@@ -200,6 +200,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
   // actual legacy documents/events, then execute the real version-3 migration.
   await f.pool.query(`
     DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
+    ALTER TABLE teams DROP COLUMN logo, DROP COLUMN logo_hash, DROP COLUMN logo_show_name, DROP COLUMN accent;
     DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
     DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();
     ALTER TABLE recipients DROP COLUMN parent_recipient_id;

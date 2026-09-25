@@ -33,7 +33,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 5) throw new Error('Database schema is newer than this application.');
+      if (version > 6) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -254,7 +254,13 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
           RETURN NEW; END $$;
         CREATE TRIGGER email_deliveries_completed BEFORE INSERT ON email_deliveries FOR EACH ROW EXECUTE FUNCTION guard_email_delivery();
       `);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      // Whitelabeling: the logo is a PNG, content-addressed by logo_hash; accent is a palette key (server/brand.ts).
+      if (version < 6) await client.query(`
+        ALTER TABLE teams ADD COLUMN logo bytea, ADD COLUMN logo_hash text, ADD COLUMN logo_show_name boolean NOT NULL DEFAULT true, ADD COLUMN accent text NOT NULL DEFAULT 'ink';
+        ALTER TABLE teams ADD CONSTRAINT teams_logo_pair CHECK((logo IS NULL)=(logo_hash IS NULL));
+        CREATE INDEX teams_logo_hash ON teams(logo_hash) WHERE logo_hash IS NOT NULL;
+      `);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;
