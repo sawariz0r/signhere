@@ -169,9 +169,33 @@ function verifyV2Consistency(manifest, original, completed, uploaded) {
     check(intent.installationId === core.installationId && intent.documentId === doc.id && intent.revisionId === doc.id && intent.recipientId === recipient.id && intent.preparedHash === digest(original), 'Intent is bound to another document or recipient.');
     check(canonical(intent.attachmentOf ?? null) === canonical(core.document.attachmentOf ?? null), 'Intent is bound to another main document.');
     check(canonical(intent.consent) === canonical(signed.data.consent) && canonical(intent.method) === canonical(signed.data.method) && validNonce(intent.nonce), 'Intent consent/method/nonce mismatch.');
+    checkIndependentApproval(created.data.protectionPolicy, core, doc, recipient, signed, original);
   }
   check(manifest.events.at(-1).data.evidenceCoreHash === digest(bytes), 'Completion does not bind exact evidence.');
-  return { ...result, evidenceVersion: 2, evidenceCoreHash: digest(bytes), cryptographicPdfSeal: 'not-checked', issuerTrust: 'not-checked' };
+  const independentApprovals = core.recipients.filter(recipient => recipient.independentApproval).length;
+  return { ...result, evidenceVersion: 2, evidenceCoreHash: digest(bytes), cryptographicPdfSeal: 'not-checked', issuerTrust: 'not-checked',
+    ...(created.data.protectionPolicy.independentApproval ? { independentApproval: { receipts: independentApprovals, bindings: 'consistent', receiptSignatures: 'not-checked' } } : {}) };
+}
+const SELF_ASSERTED_METHODS = new Set(['draw']);
+/** Structural binding of a central approval receipt to this record. Signatures are checked by verify-approval.mjs with an independently obtained trust root. */
+function checkIndependentApproval(policy, core, doc, recipient, signed, original) {
+  const independent = policy.independentApproval;
+  const approval = recipient.independentApproval;
+  check(Object.keys(policy).every(key => ['profile', 'timestamp', 'independentApproval'].includes(key)), 'Unsupported frozen protection policy.');
+  if (!independent) { check(approval === undefined && signed.data.independentApproval === undefined, 'Unexpected independent approval evidence.'); return; }
+  check(object(independent) && Object.keys(independent).sort().join() === 'mode,service,trustRoot' && independent.mode === 'email' && /^[A-Za-z0-9_-]{43}$/.test(independent.trustRoot), 'Unsupported independent approval policy.');
+  if (!approval) { check(!SELF_ASSERTED_METHODS.has(recipient.methodId) && signed.data.independentApproval === undefined, 'A required independent approval is missing.'); return; }
+  check(object(approval) && Object.keys(approval).sort().join() === 'approvalId,instanceId,receipt,receiptSha256,service,trustBundle' && approval.service === independent.service, 'Invalid independent approval evidence.');
+  check(digest(Buffer.from(approval.receipt, 'utf8')) === approval.receiptSha256, 'Changed approval receipt bytes.');
+  check(canonical(signed.data.independentApproval) === canonical({ service: approval.service, instanceId: approval.instanceId, approvalId: approval.approvalId, receiptSha256: approval.receiptSha256 }), 'Approval receipt is not bound to the accepted signature.');
+  const parts = approval.receipt.split('.');
+  check(parts.length === 3, 'Invalid approval receipt.');
+  const receipt = parseEvidenceJson(Buffer.from(parts[1], 'base64url'));
+  check(receipt.schema === 'signhere-approval-receipt-v1' && receipt.service === approval.service && receipt.instance?.id === approval.instanceId, 'Approval receipt names another service or installation.');
+  check(receipt.transaction?.documentId === doc.id && receipt.transaction?.revisionId === doc.id && receipt.transaction?.recipientId === recipient.id, 'Approval receipt is bound to another document or recipient.');
+  check(receipt.document?.preparedSha256 === digest(original) && receipt.document?.preparedSize === original.length, 'Approval receipt is for another prepared PDF.');
+  check(receipt.intentSha256 === recipient.intent.sha256 && receipt.policySha256 === digest(Buffer.from(canonical(policy), 'utf8')), 'Approval receipt is bound to another intent or policy.');
+  check(receipt.email?.address === String(recipient.email).trim().toLowerCase(), 'Approval receipt confirms another email address.');
 }
 async function runCli() {
   const args = process.argv.slice(2);

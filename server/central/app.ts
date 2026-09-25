@@ -120,7 +120,7 @@ export async function createCentralApp(config: CentralConfig) {
     expiresAt: z.iso.datetime(),
   }).strict();
   const approvalStatus = (row: Record<string, any>) => ({
-    approvalId: row.id, status: effectiveStatus(row), expiresAt: iso(row.expires_at.getTime()),
+    approvalId: row.id, instanceId: row.instance_id, status: effectiveStatus(row), expiresAt: iso(row.expires_at.getTime()),
     ...(row.status === 'approved' ? { receipt: row.receipt } : {}),
   });
   function effectiveStatus(row: Record<string, any>) {

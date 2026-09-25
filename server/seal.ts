@@ -20,7 +20,9 @@ export interface SealManifest {
   preparedHash: string;
   checkpoint: { sequence: number; hash: string };
   certificateFingerprint: string;
-  policy: { timestamp: 'off' };
+  policy: { timestamp: 'off'; independentApproval?: 'email' };
+  /** Present exactly when policy.independentApproval is set: the receipts this seal commits to. */
+  approvalReceipts?: Array<{ recipientId: string; receiptSha256: string }>;
 }
 export interface SealIdentity {
   fingerprintSha256: string;

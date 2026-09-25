@@ -116,6 +116,18 @@ class EngineAdversarialTests(unittest.TestCase):
         for value in (b'\xef\xbb\xbf{}',b'{"a":1,"a":2}',b'{"a":"\\ud800"}',b'{"a":NaN}',b'{"a":Infinity}'):
             with self.subTest(value=value),self.assertRaises((ValueError,UnicodeError)):
                 e.strict_json(value)
+    def test_manifest_approval_receipt_commitments_are_strict(self):
+        base={'schema':e.PROFILE,'evidenceSchema':2,'installationId':'i','documentId':'d','evidenceDigest':'a'*64,'preparedHash':'b'*64,'checkpoint':{'sequence':3,'hash':'c'*64},'certificateFingerprint':'d'*64}
+        independent={'timestamp':'off','independentApproval':'email'}
+        receipt={'recipientId':'r-1','receiptSha256':'e'*64}
+        e.check_manifest({**base,'policy':{'timestamp':'off'}})
+        e.check_manifest({**base,'policy':independent,'approvalReceipts':[receipt]})
+        for manifest in ({**base,'policy':{'timestamp':'off'},'approvalReceipts':[receipt]}, {**base,'policy':independent},
+                         {**base,'policy':independent,'approvalReceipts':[]}, {**base,'policy':independent,'approvalReceipts':[receipt,receipt]},
+                         {**base,'policy':independent,'approvalReceipts':[{**receipt,'extra':1}]}, {**base,'policy':{'timestamp':'off'},'unknown':1},
+                         {**base,'policy':{'timestamp':'off','independentApproval':'passkey'},'approvalReceipts':[receipt]}):
+            with self.subTest(manifest=manifest),self.assertRaises(ValueError):
+                e.check_manifest(manifest)
 
 if __name__=='__main__':
     unittest.main()

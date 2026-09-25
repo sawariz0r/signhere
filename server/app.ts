@@ -19,6 +19,8 @@ import { createResponseBudget } from './response-budget.js';
 import { createDeliveryWorker, enqueueCompletedCopies, listDeliveries, resendDelivery } from './delivery.js';
 import type { Mailer } from './mail.js';
 import { createNotifier, type Message, type Notifier } from './notify.js';
+import type { CentralClient } from './central-client.js';
+import { approvalRequired, createIndependentApprovals, policyOf } from './independent-approval.js';
 
 export interface AppConfig {
   databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
@@ -34,6 +36,8 @@ export interface AppConfig {
   delivery?: { autoStart?: boolean; pollMs?: number; retryBaseMs?: number };
   /** Optional best-effort e-mail of signing links. Without it, personal links are shared manually. */
   notifier?: Notifier;
+  /** Optional central service for independent approval. Null or absent: no central requests, no central controls. */
+  central?: CentralClient | null;
 }
 const DAY = 86400000;
 const nameSchema = z.string().trim().min(1).max(160).refine(value => !/[\u0000-\u001f\u007f]/.test(value), 'Ogiltiga tecken i namnet.');
@@ -55,6 +59,8 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
   const created = events[0]?.data ?? (await db.query('SELECT data FROM events WHERE document_id=$1 AND sequence=1', [row.id])).rows[0]?.data;
   // New documents explicitly distinguish the sender assignment from other parties,
   // including parties who share the same email address. Older snapshots did not.
+  const independentPolicy = row.protection_policy?.independentApproval;
+  const approvals = independentPolicy ? (await db.query('SELECT recipient_id,status,verified_at,receipt_sha256 FROM central_approvals WHERE document_id=$1', [row.id])).rows : [];
   const legacySenderMatches = recipients.filter(recipient => recipient.email === row.sender.email && recipient.name === row.sender.name);
   const senderRecipientId = created && Object.hasOwn(created, 'senderRecipientId')
     ? created.senderRecipientId
@@ -67,11 +73,13 @@ async function documentDto(db: Queryable, row: Row, publicView = false, summary 
     ...(created?.attachmentOf ? { attachmentOf: created.attachmentOf } : {}),
     ...(row.seal_metadata ? { seal: { profile: row.seal_metadata.profile, fingerprintSha256: row.seal_metadata.certificateFingerprint, cryptographicPdfSeal: true, trustedTimestamp: false, identityVerified: false } } : {}),
     ...(row.preparation ? { preparation: row.preparation } : {}),
+    ...(independentPolicy ? { independentApproval: { service: independentPolicy.service, method: 'email' } } : {}),
     recipients: recipients.map((recipient: Row) => ({
       id: recipient.id, name: recipient.name, ...(publicView ? {} : { email: recipient.email }),
       methodId: recipient.method_id, methodVersion: recipient.method_version, viewedAt: recipient.viewed_at, signedAt: recipient.signed_at,
       ...(!publicView && recipient.parent_recipient_id ? { parentRecipientId: recipient.parent_recipient_id } : {}),
       ...(recipient.signature ? { signature: recipient.signature, signedName: recipient.claimed_name } : {}),
+      ...(independentPolicy ? { independentApproval: (() => { const found = approvals.find(item => item.recipient_id === recipient.id); return found?.status === 'verified' ? { status: 'verified', at: found.verified_at, receiptSha256: found.receipt_sha256 } : { status: found?.status ?? 'not-started' }; })() } : {}),
       ...(!publicView && recipient.evidence ? { ip: recipient.evidence.ip, userAgent: recipient.evidence.userAgent } : {}),
     })),
     events,
@@ -109,15 +117,22 @@ export async function createApp(config: AppConfig) {
         return { name: recipient.name, signedName: recipient.signedName, email: recipient.email, signedAt: recipient.signedAt,
           strokes: event.data.signature?.strokes ?? [], methodId: recipient.methodId, methodVersion: recipient.methodVersion, consent: event.data.consent };
       });
+      // Independent approval receipts are committed in the protected seal manifest, so a
+      // participant can check inclusion of their own receipt without the private evidence core.
+      const independentPolicy = policyOf(document);
+      const approvalReceipts = core.recipients.filter((recipient: Row) => recipient.independentApproval).map((recipient: Row) => ({ recipientId: recipient.id, receiptSha256: recipient.independentApproval.receiptSha256 }));
+      if (independentPolicy && core.recipients.some((recipient: Row) => approvalRequired(document, { method_id: recipient.methodId }) && !recipient.independentApproval)) throw new FinalizationActionRequiredError('independent_approval_missing');
       const candidate = await (config.pdfFinalizer ?? finalizePdf)(document.original, core.document.title, core.document.id, core.document.originalHash, frozenSigners[0].consent, frozenSigners, checkpoint, true, core.document.attachmentOf);
       const manifest: SealManifest = { schema: 'signhere-seal-v1', evidenceSchema: 2, installationId: identity.installationId,
         documentId: document.id, evidenceDigest: sha256(evidenceCore), preparedHash: document.original_hash,
-        checkpoint, certificateFingerprint: identity.fingerprintSha256, policy: { timestamp: 'off' } };
+        checkpoint, certificateFingerprint: identity.fingerprintSha256,
+        ...(independentPolicy ? { policy: { timestamp: 'off', independentApproval: 'email' }, approvalReceipts } : { policy: { timestamp: 'off' } }) };
       const result = await signPdf(candidate, manifest, await keys.keyFor(identity.fingerprintSha256));
       return { bytes: result.bytes, sealMetadata: { profile: result.metadata.profile, certificateFingerprint: result.metadata.certificateFingerprint, certificatePem: result.metadata.certificatePem, manifest: result.metadata.manifest, pdfHash: result.metadata.pdfHash } };
     },
     onPublished: documentId => afterCompletion(documentId),
   }, { now, pollMs: config.finalization?.pollMs, onPublished: mailer ? (client, documentId) => enqueueCompletedCopies(client, documentId) : undefined });
+  const independent = createIndependentApprovals(pool, { client: config.central ?? null, origin, now });
   const delivery = mailer ? createDeliveryWorker(pool, mailer, { origin, now, pollMs: config.delivery?.pollMs, retryBaseMs: config.delivery?.retryBaseMs }) : null;
   await mkdir(config.dataDir, { recursive: true, mode: 0o700 });
   const setupPath = join(config.dataDir, 'setup-token');
@@ -326,7 +341,8 @@ export async function createApp(config: AppConfig) {
   });
   app.get('/api/bootstrap', async (req, res) => {
     const user = await currentUser(req);
-    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods(), delivery: { email: Boolean(mailer) } });
+    res.json({ setupRequired: await setupRequired(), user: user ? toUser(user) : null, methods: listMethods(), delivery: { email: Boolean(mailer) },
+      ...(config.central && user ? { central: { service: config.central.settings.url, independentApproval: true } } : {}) });
   });
   app.post('/api/setup', async (req, res) => {
     const input = z.object({ setupToken: z.string().min(1).max(256), name: nameSchema, email: emailSchema, password: passwordSchema, teamName: nameSchema }).strict().parse(req.body);
@@ -390,7 +406,14 @@ export async function createApp(config: AppConfig) {
   type AttachmentOf = { documentId: string; title: string; completedHash: string; number: number };
   const attachmentLabel = (attachment: AttachmentOf) => 'Bilaga ' + attachment.number + ' till ' + attachment.title;
   /** Shared by main documents and bilagor. The sender assignment, when present, is always the last party. */
-  async function createSigningDocument(req: Request, res: Response, input: { title: string; fileName: string; pdfBase64: string; methodId: 'draw' }, parties: Party[], sender: Party | null, parent?: Row) {
+  /** Frozen at creation. Without the central option, documents keep exactly the local policy. */
+  function protectionPolicy(independentApproval: boolean) {
+    if (!independentApproval) return LOCAL_SEAL_POLICY;
+    if (!config.central) throw new ApiError(400, 'Oberoende bekräftelse är inte aktiverad på den här installationen.');
+    return { ...LOCAL_SEAL_POLICY, independentApproval: { mode: 'email', service: config.central.settings.url, trustRoot: config.central.settings.trustRoot } };
+  }
+  async function createSigningDocument(req: Request, res: Response, input: { title: string; fileName: string; pdfBase64: string; methodId: 'draw'; independentApproval: boolean }, parties: Party[], sender: Party | null, parent?: Row) {
+    const policy = config.legacyCreation ? null : protectionPolicy(input.independentApproval);
     const recipients = [...parties, ...(sender ? [sender] : [])];
     if (new Set(parties.map(recipient => recipient.email)).size !== parties.length) throw new ApiError(400, 'Varje mottagare behöver en unik e-postadress.');
     if (!recipients.length) throw new ApiError(400, 'Lägg till en mottagare eller välj att signera själv.');
@@ -433,7 +456,7 @@ export async function createApp(config: AppConfig) {
       const senderSnapshot = { name: res.locals.user.name, email: res.locals.user.email, teamName: res.locals.user.team_name };
       const createdAt = at();
       const row = (await client.query("INSERT INTO documents(id,team_id,created_by,title,file_name,original,original_hash,size,pages,status,sender,method_id,method_version,created_at,uploaded,preparation,evidence_version,protection_policy,parent_id,attachment_number) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending',$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING " + docColumns,
-        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, senderSnapshot, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation, config.legacyCreation ? 1 : 2, config.legacyCreation ? null : LOCAL_SEAL_POLICY, attachmentOf?.documentId ?? null, attachmentOf?.number ?? null])).rows[0];
+        [documentId, res.locals.user.team_id, res.locals.user.id, input.title, input.fileName, bytes, parsed.hash, bytes.length, parsed.pages, senderSnapshot, method.id, method.version, createdAt, parsed.preparation ? uploaded : null, parsed.preparation, config.legacyCreation ? 1 : 2, policy, attachmentOf?.documentId ?? null, attachmentOf?.number ?? null])).rows[0];
       const links: Row[] = [];
       for (const [position, recipient] of recipients.entries()) {
         const recipientId = uid(), raw = token();
@@ -441,7 +464,7 @@ export async function createApp(config: AppConfig) {
         links.push({ recipientId, name: recipient.name, url: origin + '/sign#' + raw });
       }
       const senderRecipientId = sender ? links[links.length - 1].recipientId : null;
-      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), ...(attachmentOf ? { attachmentOf } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender: senderSnapshot, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email, ...(recipient.parentRecipientId ? { parentRecipientId: recipient.parentRecipientId } : {}) })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: policy } : {}), ...(attachmentOf ? { attachmentOf } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender: senderSnapshot, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email, ...(recipient.parentRecipientId ? { parentRecipientId: recipient.parentRecipientId } : {}) })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
       return { document: await documentDto(client, row), links, senderRecipientId, attachmentOf };
     });
     const { attachmentOf, ...response } = result;
@@ -459,6 +482,8 @@ export async function createApp(config: AppConfig) {
       recipients: z.array(partySchema).max(25),
       includeSender: z.boolean().default(false),
       methodId: z.literal('draw'),
+      /** Require email-confirmed approval through the configured central service (only offered when configured). */
+      independentApproval: z.boolean().default(false),
     }).strict().parse(req.body);
     const sender = input.includeSender ? { name: res.locals.user.name, email: res.locals.user.email, parentRecipientId: null } : null;
     res.status(201).json(await createSigningDocument(req, res, input, input.recipients.map(recipient => ({ ...recipient, parentRecipientId: null })), sender));
@@ -471,6 +496,8 @@ export async function createApp(config: AppConfig) {
       recipients: z.array(partySchema).max(25),
       includeSender: z.boolean().default(false),
       methodId: z.literal('draw'),
+      /** Require email-confirmed approval through the configured central service (only offered when configured). */
+      independentApproval: z.boolean().default(false),
     }).strict().parse(req.body);
     if (new Set(input.parentRecipientIds).size !== input.parentRecipientIds.length) throw new ApiError(400, 'Varje part kan bara väljas en gång.');
     const parent = await ownedDocument(pool, req.params.id, res.locals.user.team_id);
@@ -510,7 +537,8 @@ export async function createApp(config: AppConfig) {
       schemaVersion: row.evidence_version === 2 ? 2 : 1, document, events, chainHead: events.at(-1)?.hash ?? '0'.repeat(64),
       signingCheckpoint: row.signing_checkpoint ?? null,
       ...(core ? { evidenceCoreBase64: core.toString('base64'), evidenceCoreHash: sha256(core), seal: row.seal_metadata } : {}),
-      assurance: { identityVerified: false, qualifiedSignature: false, trustedTimestamp: false, cryptographicPdfSeal: Boolean(row.seal_metadata) },
+      assurance: { identityVerified: false, qualifiedSignature: false, trustedTimestamp: false, cryptographicPdfSeal: Boolean(row.seal_metadata),
+        ...(row.protection_policy?.independentApproval ? { independentApproval: 'email-access-and-approval-at-central-service', civilIdentityVerified: false } : {}) },
       hashAlgorithm: 'SHA-256', canonicalization: 'JSON with recursively sorted object keys, no whitespace; arrays retain order',
     };
   }
@@ -559,6 +587,7 @@ export async function createApp(config: AppConfig) {
       const updated = (await client.query("UPDATE documents SET status='cancelled' WHERE id=$1 RETURNING " + docColumns, [row.id])).rows[0];
       return documentDto(client, updated);
     });
+    void independent.cancel(document.id).catch(() => console.error('signhere: independent approval cancel failed'));
     res.json({ document });
   });
   app.get('/api/team', requireUser, async (_req, res) => {
@@ -622,9 +651,31 @@ export async function createApp(config: AppConfig) {
       }
       const consent = consentFor(recipient);
       await method.begin({ documentId: document.id, documentHash: document.original_hash, recipientId: recipient.id, name: recipient.name, consent });
-      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version }, emailCopy: Boolean(mailer) };
+      return { document: await documentDto(client, document, true), recipientId: recipient.id, ...(recipient.signing_intent ? { signingIntentHash: sha256(recipient.signing_intent) } : {}), consent, method: { id: method.id, label: method.label, version: method.version }, emailCopy: Boolean(mailer),
+        ...(approvalRequired(document, recipient) ? { independentApproval: { required: true, service: policyOf(document)!.service } } : {}) };
     });
     res.json(result);
+  });
+  /** Starts or polls the participant's independent approval; accepts only a verified matching receipt. */
+  app.post('/api/sign/independent-approval', async (req, res) => {
+    const { token: raw, documentId } = partyInput.parse(req.body);
+    const { document, recipient } = await partyTarget(pool, raw, documentId);
+    res.json(await independent.refresh(document, recipient));
+  });
+  // The participant's browser on the central service page fetches the prepared PDF directly.
+  // Read-only, short-lived transfer token; the central server itself never receives the bytes.
+  const preparedCors = (req: Request, res: Response, allowed?: string) => {
+    const requestOrigin = req.get('origin');
+    if (requestOrigin && allowed && requestOrigin === allowed) res.set({ 'Access-Control-Allow-Origin': requestOrigin, 'Access-Control-Allow-Headers': 'Authorization', 'Access-Control-Allow-Methods': 'GET', 'Access-Control-Max-Age': '600' });
+    res.set({ Vary: 'Origin', 'Cross-Origin-Resource-Policy': 'cross-origin' });
+  };
+  app.options('/api/central/prepared/:id', (req, res) => { preparedCors(req, res, config.central?.settings.url); res.status(204).end(); });
+  app.get('/api/central/prepared/:id', async (req, res) => {
+    const transfer = /^Bearer ([A-Za-z0-9_-]{43})$/.exec(req.get('authorization') ?? '')?.[1];
+    const found = transfer && z.uuid().safeParse(req.params.id).success ? await independent.preparedPdf(req.params.id, transfer) : undefined;
+    preparedCors(req, res, found?.service);
+    if (!found) throw new ApiError(404, 'Dokumentet finns inte eller länken har gått ut.');
+    res.type('application/pdf').set('Content-Disposition', 'inline').send(found.original);
   });
   app.post('/api/sign/pdf', async (req, res) => {
     const { token: raw, documentId } = partyInput.parse(req.body);
@@ -661,6 +712,8 @@ export async function createApp(config: AppConfig) {
         return { document: await documentDto(client, document, true), recipientId: recipient.id };
       }
       if (document.status !== 'pending') throw new ApiError(409, 'Dokumentet är redan avslutat.');
+      const approval = await independent.requireVerified(client, document, recipient);
+      if (approval === undefined) throw new ApiError(409, 'Bekräfta först dokumentet via ' + new URL(policyOf(document)!.service).host + '.');
       const signedAt = at();
       const evidence = {
         recipientId: recipient.id, assignedName: recipient.name, email: recipient.email, claimedName: input.name, originalHash: document.original_hash,
@@ -669,6 +722,7 @@ export async function createApp(config: AppConfig) {
         providerEvidence, ...(recipient.signing_intent ? { intent: intentEvidence(recipient.signing_intent) } : {}), ...requestEvidence(req),
         // Signed through the same party's link to the main document or another bilaga.
         ...(via ? { accessRecipientId: via.id, accessDocumentId: via.document_id } : {}),
+        ...(approval ? { independentApproval: { service: approval.service, instanceId: approval.instance_id, approvalId: approval.approval_id, receiptSha256: approval.receipt_sha256 } } : {}),
       };
       await client.query('UPDATE recipients SET signed_at=$1,claimed_name=$2,signature=$3,evidence=$4,submission_hash=$5,expires_at=$6 WHERE id=$7', [signedAt, input.name, verified.visualSignature ?? null, evidence, submissionHash, now() + 30 * DAY, recipient.id]);
       const checkpoint = await appendEvent(client, document.id, 'recipient.signed', signedAt, evidence);
@@ -676,7 +730,7 @@ export async function createApp(config: AppConfig) {
       let finalDocument = document;
       if (signers.every(signer => !!signer.signed_at) && document.evidence_version === 2) {
         const events = (await client.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows;
-        const core = freezeEvidenceCore(events[0].data.installationId, document, signers, events, checkpoint);
+        const core = freezeEvidenceCore(events[0].data.installationId, document, signers, events, checkpoint, await independent.approvalsFor(client, document.id));
         finalDocument = await enqueueFinalization(client, { documentId: document.id, checkpoint, evidenceCore: core });
       } else if (signers.every(signer => !!signer.signed_at)) {
         const original = (await client.query('SELECT original FROM documents WHERE id=$1', [document.id])).rows[0].original;

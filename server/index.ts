@@ -2,6 +2,7 @@ import { resolve } from 'node:path';
 import { createApp } from './app.js';
 import { loadMailer } from './mail.js';
 import { createNotifier } from './notify.js';
+import { centralFromEnv, createCentralClient } from './central-client.js';
 
 const databaseUrl = process.env.DATABASE_URL;
 if (!databaseUrl) throw new Error('DATABASE_URL is required. Configure PostgreSQL before starting signhere.');
@@ -10,7 +11,11 @@ if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('PORT m
 const baseUrl = process.env.BASE_URL ?? 'http://localhost:' + port;
 const mailer = loadMailer();
 console.log(mailer ? 'signhere: e-mail is sent via ' + mailer.provider : 'signhere: email delivery is not configured');
+// Optional and off unless SIGNHERE_CENTRAL_URL is set; nothing is sent to any central service otherwise.
+const central = centralFromEnv();
+console.log(central ? 'signhere: independent approval available via ' + central.url : 'signhere: central service not configured (optional)');
 const runtime = await createApp({
+  central: central ? createCentralClient(central) : null,
   databaseUrl, baseUrl, dataDir: resolve(process.env.DATA_DIR ?? './data'),
   setupToken: process.env.SETUP_TOKEN, migrationDatabaseUrl: process.env.MIGRATION_DATABASE_URL,
   keysDir: process.env.SIGNHERE_KEYS_DIR,

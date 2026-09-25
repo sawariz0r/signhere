@@ -199,6 +199,7 @@ test('v2-to-v3 database migration preserves pending legacy records, completed by
   // Reconstruct the previous storage shape in this disposable schema, preserving
   // actual legacy documents/events, then execute the real version-3 migration.
   await f.pool.query(`
+    DROP TABLE central_approvals; DROP FUNCTION guard_central_approval();
     DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
     DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
     DROP TRIGGER recipients_parent_valid ON recipients; DROP FUNCTION guard_recipient_parent();

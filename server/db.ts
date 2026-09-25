@@ -33,7 +33,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 5) throw new Error('Database schema is newer than this application.');
+      if (version > 6) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -254,7 +254,37 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
           RETURN NEW; END $$;
         CREATE TRIGGER email_deliveries_completed BEFORE INSERT ON email_deliveries FOR EACH ROW EXECUTE FUNCTION guard_email_delivery();
       `);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      // Optional independent approval through a central service. Only documents whose frozen
+      // protection policy requires it ever get rows here; other installations leave it empty.
+      if (version < 6) await client.query(`
+        CREATE TABLE central_approvals (
+          document_id uuid NOT NULL, recipient_id uuid NOT NULL, service text NOT NULL,
+          instance_id text, approval_id text,
+          -- The participant capability is useless without the participant's mailbox (email code at the service).
+          participant_capability text NOT NULL CHECK(participant_capability ~ '^[A-Za-z0-9_-]{43}$'),
+          transfer_token_hash text CHECK(transfer_token_hash IS NULL OR transfer_token_hash ~ '^[a-f0-9]{64}$'),
+          transfer_expires_at bigint, expires_at bigint NOT NULL,
+          status text NOT NULL DEFAULT 'pending' CHECK(status IN ('pending','verified','cancelled')),
+          receipt text, receipt_sha256 text, trust_bundle text, verified_at text, created_at text NOT NULL,
+          PRIMARY KEY(document_id,recipient_id),
+          FOREIGN KEY(recipient_id,document_id) REFERENCES recipients(id,document_id),
+          CHECK((status='verified')=(receipt IS NOT NULL AND receipt_sha256 IS NOT NULL AND trust_bundle IS NOT NULL AND verified_at IS NOT NULL AND approval_id IS NOT NULL AND instance_id IS NOT NULL))
+        );
+        CREATE UNIQUE INDEX central_approvals_transfer ON central_approvals(transfer_token_hash) WHERE transfer_token_hash IS NOT NULL;
+        CREATE FUNCTION guard_central_approval() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN
+          IF OLD.status IN ('verified','cancelled') AND ROW(OLD.document_id,OLD.recipient_id,OLD.service,OLD.instance_id,OLD.approval_id,OLD.participant_capability,OLD.status,OLD.receipt,OLD.receipt_sha256,OLD.trust_bundle,OLD.verified_at)
+            IS DISTINCT FROM ROW(NEW.document_id,NEW.recipient_id,NEW.service,NEW.instance_id,NEW.approval_id,NEW.participant_capability,NEW.status,NEW.receipt,NEW.receipt_sha256,NEW.trust_bundle,NEW.verified_at)
+            THEN RAISE EXCEPTION 'Verified independent approval is immutable'; END IF;
+          IF ROW(OLD.document_id,OLD.recipient_id,OLD.service,OLD.participant_capability,OLD.expires_at) IS DISTINCT FROM ROW(NEW.document_id,NEW.recipient_id,NEW.service,NEW.participant_capability,NEW.expires_at)
+            OR (OLD.approval_id IS NOT NULL AND OLD.approval_id IS DISTINCT FROM NEW.approval_id)
+            OR (OLD.instance_id IS NOT NULL AND OLD.instance_id IS DISTINCT FROM NEW.instance_id)
+            THEN RAISE EXCEPTION 'Independent approval binding is immutable'; END IF;
+          RETURN NEW; END $$;
+        CREATE TRIGGER central_approvals_immutable BEFORE UPDATE ON central_approvals FOR EACH ROW EXECUTE FUNCTION guard_central_approval();
+        CREATE TRIGGER central_approvals_no_delete BEFORE DELETE ON central_approvals FOR EACH ROW EXECUTE FUNCTION reject_event_mutation();
+        CREATE TRIGGER central_approvals_no_truncate BEFORE TRUNCATE ON central_approvals FOR EACH STATEMENT EXECUTE FUNCTION reject_event_mutation();
+      `);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;

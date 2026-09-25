@@ -188,8 +188,28 @@ def check_manifest(manifest):
     checkpoint = manifest.get('checkpoint')
     if not isinstance(checkpoint, dict) or type(checkpoint.get('sequence')) is not int or checkpoint['sequence'] < 1 or not re.fullmatch(r'[0-9a-f]{64}', str(checkpoint.get('hash', ''))):
         fail('Invalid signing checkpoint')
-    if manifest.get('policy') != {'timestamp': 'off'}:
+    policy = manifest.get('policy')
+    if policy == {'timestamp': 'off'}:
+        if 'approvalReceipts' in manifest:
+            fail('Approval receipts require an independent-approval policy')
+    elif policy == {'timestamp': 'off', 'independentApproval': 'email'}:
+        # The seal commits to each participant's central approval receipt (SHA-256 of the exact JWS).
+        receipts = manifest.get('approvalReceipts')
+        if not isinstance(receipts, list) or not 1 <= len(receipts) <= 100:
+            fail('Invalid approval receipt commitments')
+        seen = set()
+        for item in receipts:
+            if not isinstance(item, dict) or set(item) != {'recipientId', 'receiptSha256'} \
+                    or not isinstance(item['recipientId'], str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', item['recipientId']) \
+                    or not isinstance(item['receiptSha256'], str) or not re.fullmatch(r'[0-9a-f]{64}', item['receiptSha256']) \
+                    or item['recipientId'] in seen:
+                fail('Invalid approval receipt commitment')
+            seen.add(item['recipientId'])
+    else:
         fail('This release supports timestamp policy off only; required timestamping is unavailable')
+    allowed = {'schema', 'evidenceSchema', 'installationId', 'documentId', 'evidenceDigest', 'preparedHash', 'checkpoint', 'certificateFingerprint', 'policy', 'approvalReceipts'}
+    if set(manifest) - allowed:
+        fail('Unknown seal manifest member')
     for name in ('documentId', 'installationId'):
         if not isinstance(manifest.get(name), str) or not re.fullmatch(r'[A-Za-z0-9-]{1,80}', manifest[name]):
             fail('Invalid manifest identifier')

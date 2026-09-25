@@ -18,7 +18,8 @@ export function intentEvidence(bytes: Buffer) {
   return { sha256: sha256(bytes), bytesBase64: bytes.toString('base64') };
 }
 export const eventEvidence = (row: Row) => ({ sequence: row.sequence, type: row.type, at: row.at, data: row.data, hash: row.hash, previousHash: row.previous_hash });
-export function freezeEvidenceCore(installationId: string, document: Row, recipients: Row[], events: Row[], checkpoint: AuditCheckpoint) {
+/** approvals: verified independent approval rows (central_approvals), empty unless the policy requires them. */
+export function freezeEvidenceCore(installationId: string, document: Row, recipients: Row[], events: Row[], checkpoint: AuditCheckpoint, approvals: Row[] = []) {
   if (!recipients.length || recipients.some(recipient => !recipient.signed_at || !recipient.signing_intent)) throw new Error('Incomplete signing evidence.');
   if (events.at(-1)?.hash !== checkpoint.hash || events.at(-1)?.type !== 'recipient.signed') throw new Error('Invalid signing checkpoint.');
   const created = events[0].data;
@@ -33,9 +34,16 @@ export function freezeEvidenceCore(installationId: string, document: Row, recipi
       methodId: recipient.method_id, methodVersion: recipient.method_version, signedAt: recipient.signed_at,
       signedName: recipient.claimed_name,
       intent: intentEvidence(recipient.signing_intent),
+      ...independentApprovalEvidence(approvals.find(approval => approval.recipient_id === recipient.id)),
     })),
     events: events.map(eventEvidence), signingCheckpoint: checkpoint,
   }), 'utf8');
   if (bytes.length > 32 * 1024 * 1024) throw new Error('Evidence core exceeds the supported limit.');
   return bytes;
+}
+/** The exact receipt and the trust bundle it was accepted under, so the frozen record verifies offline. */
+function independentApprovalEvidence(approval?: Row) {
+  if (!approval) return {};
+  return { independentApproval: { service: approval.service, instanceId: approval.instance_id, approvalId: approval.approval_id,
+    receiptSha256: approval.receipt_sha256, receipt: approval.receipt, trustBundle: approval.trust_bundle } };
 }
