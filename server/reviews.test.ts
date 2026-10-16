@@ -176,7 +176,7 @@ test('sharing requires a saved client, excludes private history and follows clie
 
   // Rehearse a deployed-v7 upgrade: existing Dela-created versions remain shared,
   // and a legacy named link is bound only to its unique saved client contact.
-  await runtime.db.query('DROP TABLE review_publications; ALTER TABLE review_links DROP COLUMN client_id,DROP COLUMN client_name,DROP COLUMN contact_id,DROP COLUMN recipient_email,DROP COLUMN first_version CASCADE; DELETE FROM migrations WHERE version=8');
+  await runtime.db.query('DROP TABLE agent_audit,agent_requests,agent_keys; DROP TABLE review_publications; ALTER TABLE review_links DROP COLUMN client_id,DROP COLUMN client_name,DROP COLUMN contact_id,DROP COLUMN recipient_email,DROP COLUMN first_version CASCADE; DELETE FROM migrations WHERE version>=8');
   await runtime.close(); runtime = await createApp(config); owner = request.agent(runtime.app);
   assert.equal((await post('/api/login', { email: 'owner@example.test', password: 'correct horse battery staple' })).status, 200);
   assert.equal((await session(tokenA)).status, 200, 'existing review URLs survive the v7 upgrade');

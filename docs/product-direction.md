@@ -1,6 +1,6 @@
 # Signhere: editor drafts and private client review
 
-Status: implementation in progress following project orientation on 2026-10-16. Draft persistence, private review and the unified client document workspace are implemented locally. Opus supplied the interactive design and handoff; verification is in progress before release.
+Status: the editor/review workspace and client-sharing revision are deployed. The API-key-first agent connection is implemented and undergoing release validation. Original takeover findings below are retained as historical context.
 
 ## Immediate outcome
 
@@ -116,9 +116,13 @@ Claude delivered the client selection and private-link design in `design/editor-
 
 Desired outcome: a user connects Signhere once, gives their agent the Signhere skill, then asks it to create or revise a document and receives a link to the updated draft. Signhere should not require the user to switch models or buy inference through Signhere for this workflow.
 
+Confirmed direction (2026-10-16): Signhere is primarily self-hosted, so instance-issued API keys are the default. An administrator should not need to configure OAuth or an external identity provider to enable agent access. OAuth is an optional later integration, not a prerequisite for this phase.
+
+The connection flow is: create a named, scoped key in Signhere; configure the instance's MCP URL and key in a compatible agent host; then load the Signhere skill. Signhere issues and validates its own keys. No Anthropic or OpenAI API key is required by Signhere for this workflow.
+
 ### API and MCP
 
-Build a versioned authenticated application API and a remote MCP adapter over the same document services. Proposed paths are `/api/v1` and `/mcp`; neither is implemented or advertised as available yet. Keep the current cookie-authenticated editor API and private recipient capabilities intact.
+The versioned authenticated application API at `/api/v1` and remote MCP adapter at `/mcp` now use the same document services. The current cookie-authenticated editor API and private recipient capabilities remain intact. Release validation is recorded below.
 
 The first useful tool set is workspace identity, list/get/create/update draft, save a version, read discussions and add/reply to comments. Creating/revoking review links is a separate granted action and uses the same saved-client checks as the UI. Signing acceptance is outside this interface; sending for signing can be a later separately scoped operation. A key grants only its documented actions, not permission inferred from a skill's prose.
 
@@ -133,13 +137,15 @@ The first useful tool set is workspace identity, list/get/create/update draft, s
 | Request boundary | Dedicated bearer-authenticated routes; do not weaken the existing cookie API's Origin/CSRF checks to accommodate agents. |
 | User result | Return document ID, saved revision/version, a normal authenticated editor URL and a concise description of changes. |
 
-A key-based connection is practical for Codex and Claude Code: both document support for authenticated remote MCP headers. ChatGPT's authenticated plugin connection expects OAuth 2.1, so the same literal key-pasting setup should not be promised for every host. Build the API/key route first and add OAuth authorization over the same team/scopes for web connectors; use an established authorization implementation rather than inventing a new protocol. Sources: [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Claude Code MCP](https://code.claude.com/docs/en/mcp), [OpenAI plugin authentication](https://developers.openai.com/plugins/build/auth), [MCP authorization](https://modelcontextprotocol.io/specification/2026-07-28/basic/authorization). Checked 2026-10-16.
+A key-based connection is practical for Codex and Claude Code: both document support for authenticated remote MCP headers. Claude's web custom connectors also document fixed API-key/bearer credentials through request headers. Validate each target host's actual connection flow; merely pasting a key into a conversation does not configure tool access. On Claude Team/Enterprise, connector request-header credentials are shared by the connector's users, so document that behavior and limit the key's permissions accordingly.
+
+ChatGPT's authenticated plugin connection expects OAuth 2.1, so do not promise the same key setup there. Defer OAuth and that connection path until a later explicit milestone; the initial API-key release must be useful independently. If added, OAuth should authorize the same document services and scopes using an established implementation. Sources: [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Claude Code MCP](https://code.claude.com/docs/en/mcp), [Claude custom connectors and request-header authentication](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), [OpenAI plugin authentication](https://developers.openai.com/plugins/build/auth). Checked 2026-10-16.
 
 ### Portable skill and updates
 
 Keep one maintained `signhere` skill package with host-specific connection instructions only where needed. The skill explains draft structure, client/contact entry, revision conflicts, explicit save versus private edits, comment context, and how to return the document link. Tools remain discoverable through MCP; the skill must not invent unavailable tools or silently expand scopes. Keep keys in the agent host's credential/environment configuration, outside the skill text.
 
-Proposed distribution: public same-origin `/skills/signhere/SKILL.md` plus `/skills/signhere/manifest.json` with package version, compatible API versions, a content digest and a same-origin package/changelog URL. These endpoints are planned, not live.
+Implemented distribution: public same-origin `/skills/signhere/SKILL.md` plus `/skills/signhere/manifest.json` with package version, compatible API versions, per-file SHA-256 digests and a same-origin ZIP/changelog URL. The deterministic ZIP is available at `/skills/signhere/signhere.zip`.
 
 On active skill use, check the manifest at most once per day when the host can retain a last-check timestamp; otherwise once per session. Make one bounded request. This is an on-use check, not an unsolicited background schedule. If a newer version exists, summarize its relevant changes and ask whether the user wants to update. Continue with the installed compatible version if they decline or do not answer. Network failure does not block ordinary work with an already compatible skill. An incompatible API/tool contract requires explaining the needed update instead of guessing operations.
 
@@ -152,4 +158,12 @@ An update never installs itself, executes a downloaded installer, changes MCP cr
 3. An editor change made while the agent is working produces a conflict that the agent reconciles against the latest source rather than erasing it.
 4. Another team's draft, a revoked key and an ungranted share/send operation are denied by the server.
 5. A newer skill manifest produces an update offer; accepting installs only the skill, declining leaves it usable, and an offline check leaves the current compatible version in place.
-6. OAuth-enabled ChatGPT/Claude web connections complete the host's supported authorization flow and run the same document operations. A pasted key alone is not considered proof of that integration.
+6. On a self-hosted instance without OAuth or an external identity provider configured, connect Claude's web custom connector using the instance MCP URL and a scoped key in request headers, then run the same document operations. Verify the actual connector flow. OAuth-dependent host integrations are outside this first milestone.
+
+### Implemented agent connection
+
+**Inställningar → Agenter** provides personal key creation, permissions, expiry, one-time copying, listing and revocation, along with the instance's MCP address, host setup instructions and the skill download. Schema 9 adds hashed keys, idempotency records and append-only operation audits. Agent routes never accept editor cookies as credentials, and key administration retains the editor's same-origin checks.
+
+The first eight tools cover workspace identity, draft listing/reading/creation/editing, immutable saves, discussion reading and comment/reply writes. Saved results report actual private/shared visibility. Updating an existing client link requires both `reviews:share` and `allowSharedUpdate: true`; ordinary edits remain private. Creating/revoking client links, sending and signing are outside the tool set. Comments in an already shared discussion may be visible to the client and use their own discussion-write permission.
+
+The maintained MCP SDK is pinned (server/client 2.3.1, Node adapter 2.1.1). Official SDK client integration verifies protocol `2025-11-25`, with an explicit `2025-06-18` compatibility handshake. Transport validation, input size and concurrency are bounded. These checks verify MCP interoperability, not a completed sign-in/configuration inside a user's Claude or Codex account. Actual host setup remains to be exercised with the user's account. See [connection and API documentation](agent-connection.md).

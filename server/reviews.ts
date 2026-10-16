@@ -106,30 +106,32 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     });
     res.json({ ok: true });
   });
+  async function saveVersion(db: PoolClient, id: string, teamId: string, revision: number, allowSharedUpdate = true) {
+    const row = await own(db, id, teamId, true);
+    const previous = (await db.query('SELECT version FROM review_versions WHERE draft_id=$1 AND source_revision=$2', [row.id, revision])).rows[0];
+    if (previous) return previous;
+    if (row.revision !== revision) throw new ApiError(409, 'Utkastet har ändrats. Spara den senaste versionen igen.');
+    if (!allowSharedUpdate && (await db.query('SELECT 1 FROM review_links WHERE draft_id=$1 AND revoked_at IS NULL AND expires_at>$2 LIMIT 1', [row.id, now()])).rowCount) throw new ApiError(409, 'Saving would update an active client link. Explicit shared-update permission is required.');
+    const count = Number((await db.query('SELECT count(*) FROM review_versions WHERE draft_id=$1', [row.id])).rows[0].count);
+    if (count >= 100) throw new ApiError(409, 'Utkastet har redan 100 sparade versioner.');
+    // Access follows the saved client, never a later private autosave or a different client.
+    const contacts = row.content.company?.contacts ?? [];
+    const links = (await db.query('SELECT * FROM review_links WHERE draft_id=$1 AND revoked_at IS NULL AND expires_at>$2', [row.id, now()])).rows;
+    let shared = false;
+    for (const link of links) {
+      const person = contacts.find((person: Row) => person.id === link.contact_id);
+      if (link.client_id !== row.content.company?.id || !person || person.email.trim().toLowerCase() !== link.recipient_email || person.name.trim() !== link.name) await db.query('UPDATE review_links SET revoked_at=$1 WHERE id=$2', [at(), link.id]);
+      else shared = true;
+    }
+    if (shared && (!row.content.title.trim() || !row.content.blocks.length)) throw new ApiError(400, 'Lägg till en titel och minst ett avsnitt innan du sparar en klientversion.');
+    const snapshot = snapshotForReview(row.content, at());
+    await db.query('INSERT INTO review_versions(draft_id,version,source_revision,content,published_at) VALUES($1,$2,$3,$4,$5)', [row.id, count + 1, revision, snapshot, at()]);
+    if (shared) await db.query('INSERT INTO review_publications(draft_id,version,shared_at) VALUES($1,$2,$3)', [row.id, count + 1, at()]);
+    return { version: count + 1 };
+  }
   app.post('/api/drafts/:id/publish', requireUser, async (req, res) => {
     const input = z.object({ revision: integer }).strict().parse(req.body);
-    res.json(await transaction(pool, async db => {
-      const row = await own(db, req.params.id, res.locals.user.team_id, true);
-      const previous = (await db.query('SELECT version FROM review_versions WHERE draft_id=$1 AND source_revision=$2', [row.id, input.revision])).rows[0];
-      if (previous) return previous;
-      if (row.revision !== input.revision) throw new ApiError(409, 'Utkastet har ändrats. Spara den senaste versionen igen.');
-      const count = Number((await db.query('SELECT count(*) FROM review_versions WHERE draft_id=$1', [row.id])).rows[0].count);
-      if (count >= 100) throw new ApiError(409, 'Utkastet har redan 100 sparade versioner.');
-      // Access follows the saved client, never a later private autosave or a different client.
-      const contacts = row.content.company?.contacts ?? [];
-      const links = (await db.query('SELECT * FROM review_links WHERE draft_id=$1 AND revoked_at IS NULL AND expires_at>$2', [row.id, now()])).rows;
-      let shared = false;
-      for (const link of links) {
-        const person = contacts.find((person: Row) => person.id === link.contact_id);
-        if (link.client_id !== row.content.company?.id || !person || person.email.trim().toLowerCase() !== link.recipient_email || person.name.trim() !== link.name) await db.query('UPDATE review_links SET revoked_at=$1 WHERE id=$2', [at(), link.id]);
-        else shared = true;
-      }
-      if (shared && (!row.content.title.trim() || !row.content.blocks.length)) throw new ApiError(400, 'Lägg till en titel och minst ett avsnitt innan du sparar en klientversion.');
-      const snapshot = snapshotForReview(row.content, at());
-      await db.query('INSERT INTO review_versions(draft_id,version,source_revision,content,published_at) VALUES($1,$2,$3,$4,$5)', [row.id, count + 1, input.revision, snapshot, at()]);
-      if (shared) await db.query('INSERT INTO review_publications(draft_id,version,shared_at) VALUES($1,$2,$3)', [row.id, count + 1, at()]);
-      return { version: count + 1 };
-    }));
+    res.json(await transaction(pool, db => saveVersion(db, String(req.params.id), res.locals.user.team_id, input.revision)));
   });
   app.post('/api/drafts/:id/links', requireUser, async (req, res) => {
     const input = z.object({ contactId: z.string().min(1).max(80), revision: integer, days: z.number().int().min(1).max(365).default(30) }).strict().parse(req.body);
@@ -230,6 +232,9 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     return { ...source, documentId };
   }
   return {
+    saveVersion,
+    ownerHistory: async (db: DB, draftId: string) => history(db, draftId, undefined, true),
+    ownerComment: async (db: PoolClient, draft: Row, userId: string, userName: string, body: unknown) => comment(db, draft, 'user:' + userId, userName, commentSchema.extend({ version: z.number().int().min(0) }).parse(body), undefined, true),
     signingVersion: async (db: DB, documentId: string, version: number) => {
       const source = await signingSource(db, documentId);
       const allowed = source && (await history(db, source.draft_id, { documentId, revision: source.revision, clientId: source.clientId })).versions.some(item => item.version === version);

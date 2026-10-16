@@ -3,6 +3,7 @@ import { date, dateTime, message, request } from './api';
 import { accentStyle, brandName, logoPng } from './brand';
 import type { Brand, Instance, SigningDocument, Team as TeamData, User } from './types';
 import { Avatar, BrandLockup, CopyLink, Dropzone, ErrorBox, Field, Loading, Swatches, useToast } from './ui';
+import { AgentSettings } from './agent-settings';
 
 export function Verify() {
   const [result, setResult] = useState<{ match: boolean; hash: string; fileName: string } | null>(null);
@@ -26,14 +27,14 @@ export function Verify() {
 }
 
 
-export type SettingsTab = 'brand' | 'team' | 'instance';
+export type SettingsTab = 'brand' | 'team' | 'agents' | 'instance';
 /** Settings tabs in order. Signing methods get their own tab once teams can choose them. */
-export const settingsTabs = (user: User): [SettingsTab, string][] => [['brand', 'Varumärke'], ['team', 'Team'], ...(user.role === 'owner' ? [['instance', 'Instans'] as [SettingsTab, string]] : [])];
+export const settingsTabs = (user: User): [SettingsTab, string][] => [['brand', 'Varumärke'], ['team', 'Team'], ['agents', 'Agenter'], ...(user.role === 'owner' ? [['instance', 'Instans'] as [SettingsTab, string]] : [])];
 
 export function Settings({ tab, user, brand, onTab, onBrand, onLogout }: { tab: SettingsTab; user: User; brand: Brand; onTab: (tab: SettingsTab) => void; onBrand: (brand: Brand) => void; onLogout: () => void }) {
   return <div className="settings-screen"><h1>Inställningar</h1>
     <nav className="settings-tabs" aria-label="Inställningar">{settingsTabs(user).map(([key, label]) => <a key={key} href={`/settings/${key}`} aria-current={tab === key ? 'page' : undefined} onClick={event => { if (event.metaKey || event.ctrlKey || event.shiftKey || event.button) return; event.preventDefault(); onTab(key); }}>{label}</a>)}</nav>
-    {tab === 'team' ? <Team user={user} onLogout={onLogout} /> : tab === 'instance' ? <InstanceSettings /> : <BrandSettings user={user} brand={brand} onBrand={onBrand} />}
+    {tab === 'team' ? <Team user={user} onLogout={onLogout} /> : tab === 'instance' ? <InstanceSettings /> : tab === 'agents' ? <AgentSettings /> : <BrandSettings user={user} brand={brand} onBrand={onBrand} />}
   </div>;
 }
 

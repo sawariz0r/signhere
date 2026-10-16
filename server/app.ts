@@ -21,6 +21,9 @@ import type { Mailer } from './mail.js';
 import { createNotifier, type Message, type Notifier } from './notify.js';
 import { ACCENTS, MAX_LOGO_BYTES, accentSchema, brandOf, checkLogoPng } from './brand.js';
 import type { PdfBrand } from './pdf.js';
+import { installAgentApi, authenticateAgent, AgentConflict } from './agent-api.js';
+import { registerMcp } from './mcp.js';
+import { createAgentSkillRouter } from './agent-skill.js';
 import { installReviews } from './reviews.js';
 import { draftIdSchema } from './draft-schema.js';
 
@@ -176,7 +179,14 @@ export async function createApp(config: AppConfig) {
     app.use(['/api/login', '/api/setup', '/api/invitations/accept'], rateLimit({ windowMs: 15 * 60000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många inloggningsförsök. Försök igen senare.' } }));
     app.use(['/api/sign', '/api/verify', '/api/review'], rateLimit({ windowMs: 60000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
   }
-  app.use('/api', (req, _res, next) => {
+  app.use('/api', async (req, res, next) => {
+    if (/^\/v1(?:\/|$)/.test(req.path)) {
+      // This namespace accepts only bearer credentials, never cookie sessions.
+      res.locals.agent = await authenticateAgent(pool, req, now);
+      if (req.get('origin') && req.get('origin') !== origin) throw new ApiError(403, 'Untrusted request origin.');
+      if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method) && !req.is('application/json')) throw new ApiError(415, 'Requests must use application/json.');
+      next(); return;
+    }
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       if (req.get('origin') !== origin) return next(new ApiError(403, 'Förfrågan måste komma från plattformens egen adress.'));
       if (!req.is('application/json')) return next(new ApiError(415, 'Förfrågan måste vara JSON.'));
@@ -188,6 +198,7 @@ export async function createApp(config: AppConfig) {
   const uploadJson = express.json({ limit: '15mb', strict: true });
   const logoJson = express.json({ limit: '1mb', strict: true });
   app.use('/api', async (req, res, next) => {
+    if (/^\/v1(?:\/|$)/.test(req.path)) { uploadJson(req, res, next); return; }
     if (req.method === 'POST' && /^\/documents(?:\/prepare|\/[0-9a-f-]{36}\/attachments)?\/?$/i.test(req.path)) {
       // Authenticate before allocating the large base64 upload body.
       await requireUser(req, res, () => uploadJson(req, res, next));
@@ -384,6 +395,9 @@ export async function createApp(config: AppConfig) {
 
 
   const reviews = installReviews(app, pool, requireUser, origin, now);
+  const agentService = installAgentApi(app, pool, requireUser, origin, now, reviews);
+  registerMcp(app, agentService, { origin, rateLimit: config.rateLimit });
+  app.use('/skills/signhere', createAgentSkillRouter());
 
   app.get('/api/documents', requireUser, async (_req, res) => {
     // Bilagor are listed on their main document, not as separate documents.
@@ -856,6 +870,7 @@ export async function createApp(config: AppConfig) {
   app.use((error: unknown, req: Request, res: Response, _next: NextFunction) => {
     if (res.headersSent) return;
     if (error instanceof ZodError) { res.status(400).json({ error: error.issues[0]?.message ?? 'Kontrollera uppgifterna.' }); return; }
+    if (error instanceof AgentConflict) { res.status(409).json({ error: error.message, code: error.code, currentRevision: error.currentRevision }); return; }
     if (error instanceof ApiError) { res.status(error.status).json({ error: error.message }); return; }
     if ((error as Row)?.type === 'entity.too.large') { res.status(413).json({ error: /^\/api\/team\/logo/i.test(req.path) ? 'Filen är större än 500 kB.' : 'Filen är för stor. PDF-filen får vara högst 10 MB.' }); return; }
     if (error instanceof SyntaxError && 'body' in error) { res.status(400).json({ error: 'Ogiltig JSON.' }); return; }
