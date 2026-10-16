@@ -26,7 +26,7 @@ export type RecipientCompany = Omit<Company, 'contacts'> & { contacts: (Contact 
 export type DocTheme = { font: 'grotesk' | 'serif'; accent: string };
 export type DocSettings = { currency: string; pricesIncludeVat: boolean; expiresInDays: number; remind: boolean; allowDecline: boolean; senderSigns: boolean };
 export type FieldDef = { key: string; label: string; group: 'customer' | 'sender' | 'document' | 'custom' };
-export type Draft = { id: string; version: 2; title: string; createdAt: string; updatedAt: string; blocks: Block[]; company: RecipientCompany | null; theme: DocTheme; settings: DocSettings; fields: Record<string, string>; customFields: FieldDef[] };
+export type Draft = { id: string; version: 2; frozenAt?: string; title: string; createdAt: string; updatedAt: string; blocks: Block[]; company: RecipientCompany | null; theme: DocTheme; settings: DocSettings; fields: Record<string, string>; customFields: FieldDef[] };
 export type IssueTarget = { kind: 'recipients' } | { kind: 'title' } | { kind: 'block'; id: string };
 export type Issue = { message: string; target?: IssueTarget };
 export type Signer = { id: string; name: string; email: string; company: string };
@@ -34,6 +34,13 @@ export type Signer = { id: string; name: string; email: string; company: string 
 export const uid = () => crypto.randomUUID().replace(/-/g, '').slice(0, 12);
 export const SIGNATURE_ID = 'sig';
 export const UNTITLED = 'Namnlöst dokument';
+/** Compare JSON content independently of PostgreSQL jsonb's object-key order. */
+export function canonicalContent(value: unknown): string {
+  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null';
+  if (Array.isArray(value)) return '[' + value.map(canonicalContent).join(',') + ']';
+  const record = value as Record<string, unknown>;
+  return '{' + Object.keys(record).filter(key => record[key] !== undefined).sort().map(key => JSON.stringify(key) + ':' + canonicalContent(record[key])).join(',') + '}';
+}
 
 export const BUILTIN_FIELDS: FieldDef[] = [
   ['customer.name', 'Kundens namn'], ['customer.email', 'Kundens e-post'], ['customer.company', 'Kundens företag'], ['customer.orgNumber', 'Kundens org.nr'], ['customer.address', 'Kundens adress'], ['customer.zip', 'Kundens postnummer'], ['customer.city', 'Kundens ort'],
@@ -46,7 +53,7 @@ export const COMPUTED_FIELDS = new Set(['document.title', 'document.sentAt', 'do
 const LEGACY_LABELS: Record<string, string> = { 'customer.phone': 'Kundens telefon', 'customer.personalNumber': 'Kundens personnummer', 'sender.phone': 'Avsändarens telefon', 'sender.orgNumber': 'Vårt org.nr', 'sender.address': 'Vår adress', 'sender.zip': 'Vårt postnummer', 'sender.city': 'Vår ort' };
 export const allFields = (draft: Draft) => [...BUILTIN_FIELDS, ...draft.customFields];
 export const fieldLabel = (draft: Draft, key: string) => allFields(draft).find(field => field.key === key)?.label ?? LEGACY_LABELS[key] ?? key;
-export const expiryDate = (draft: Draft, from = new Date()) => new Date(from.getTime() + draft.settings.expiresInDays * 86_400_000);
+export const expiryDate = (draft: Draft, from = new Date(draft.frozenAt ?? Date.now())) => new Date(from.getTime() + draft.settings.expiresInDays * 86_400_000);
 export const shortDate = (value: Date) => value.toLocaleDateString('sv-SE', { day: 'numeric', month: 'long', year: 'numeric' });
 
 export const signingContacts = (draft: Draft) => draft.company?.contacts.filter(contact => contact.signs) ?? [];
@@ -67,7 +74,7 @@ function customerValue(draft: Draft, key: string) {
 }
 export function fieldValue(draft: Draft, key: string) {
   if (key === 'document.title') return draft.title;
-  if (key === 'document.sentAt') return shortDate(new Date());
+  if (key === 'document.sentAt') return shortDate(new Date(draft.frozenAt ?? Date.now()));
   if (key === 'document.expiresAt') return shortDate(expiryDate(draft));
   if (key.startsWith('customer.')) return (customerValue(draft, key) || draft.fields[key] || '').trim();
   return draft.fields[key]?.trim() ?? '';

@@ -351,6 +351,7 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
   const schema = (await f.db.query('SELECT current_schema() AS schema')).rows[0].schema;
   // Reconstruct the prior schema in this disposable test database only.
   await f.db.query(`
+    DROP TABLE review_comments,review_threads,review_links,review_versions,draft_signings,draft_revisions,drafts;
     DROP TABLE email_deliveries; DROP FUNCTION guard_email_delivery();
     ALTER TABLE teams DROP COLUMN logo, DROP COLUMN logo_hash, DROP COLUMN logo_show_name, DROP COLUMN accent;
     DROP TRIGGER documents_attachment ON documents; DROP FUNCTION guard_attachment();
@@ -373,7 +374,7 @@ test('schema 3 upgrades existing signed documents without rewriting artifacts or
     assert.deepEqual((await upgraded.query('SELECT original,completed,original_hash,completed_hash,status FROM documents WHERE id=$1', [document.id])).rows[0], before);
     assert.deepEqual((await upgraded.query('SELECT * FROM events WHERE document_id=$1 ORDER BY sequence', [document.id])).rows, events);
     assert.deepEqual((await upgraded.query('SELECT uploaded,preparation FROM documents WHERE id=$1', [document.id])).rows[0], { uploaded: null, preparation: null });
-    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 6);
+    assert.equal((await upgraded.query('SELECT max(version) AS version FROM migrations')).rows[0].version, 7);
     const constraint = (await upgraded.query("SELECT oid FROM pg_constraint WHERE conrelid='documents'::regclass AND conname='documents_preparation_pair'")).rows[0].oid;
     const reopened = await createDatabase(databaseUrl!, schema);
     try {

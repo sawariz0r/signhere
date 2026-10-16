@@ -2,6 +2,7 @@ import { createContext, useContext, type RefObject } from 'react';
 import type { Editor } from '@tiptap/react';
 import type { Block, BlockType, Draft } from './model';
 import type { User } from '../types';
+import type { ReviewThread } from '../document/types';
 
 export type EditorApi = {
   draft: Draft;
@@ -20,6 +21,7 @@ export type EditorApi = {
   copyBlock: (id: string) => void;
   removeBlock: (id: string) => void;
   activeEditor: RefObject<Editor | null>;
+  review?: { threads: ReviewThread[]; version: number; changed: Set<string>; sharedIds: Set<string>; comment: (id: string) => void };
 };
 
 export const EditorContext = createContext<EditorApi | null>(null);

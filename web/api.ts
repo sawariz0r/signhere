@@ -1,3 +1,4 @@
+export class RequestError extends Error { constructor(message: string, public status: number) { super(message); } }
 export async function request<T>(path: string, body?: unknown, method?: string): Promise<T> {
   const response = await fetch(path, {
     method: method ?? (body === undefined ? 'GET' : 'POST'),
@@ -7,7 +8,7 @@ export async function request<T>(path: string, body?: unknown, method?: string):
   });
   if (!response.ok) {
     const detail = await response.json().catch(() => ({}));
-    throw new Error(detail.error || `Förfrågan misslyckades (${response.status}).`);
+    throw new RequestError(detail.error || `Förfrågan misslyckades (${response.status}).`, response.status);
   }
   if (response.status === 204) return undefined as T;
   return response.json() as Promise<T>;

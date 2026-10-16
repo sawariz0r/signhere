@@ -8,7 +8,7 @@ export type SendPhase = 'idle' | 'rendering' | 'creating';
  * Confirms sending a main document. Signers were chosen in the editor, so this only
  * summarises them; it also shows progress and any error without leaving the editor.
  */
-export function SendSheet({ emailEnabled, phase, error, onConfirm, onClose }: { emailEnabled: boolean; phase: SendPhase; error: string; onConfirm: () => void; onClose: () => void }) {
+export function SendSheet({ emailEnabled, phase, error, unsharedChanges = false, reviewed = false, onConfirm, onClose }: { emailEnabled: boolean; phase: SendPhase; error: string; unsharedChanges?: boolean; reviewed?: boolean; onConfirm: () => void; onClose: () => void }) {
   const { draft, user } = useEditorApi();
   const dialog = useRef<HTMLDialogElement>(null);
   const busy = phase !== 'idle';
@@ -37,6 +37,8 @@ export function SendSheet({ emailEnabled, phase, error, onConfirm, onClose }: { 
         </ul>
       </div>
       <p className="ed-dialog-note">{emailEnabled ? 'Varje mottagare får sin personliga länk via e-post.' : 'Inga e-postmeddelanden skickas. Du får en personlig länk per mottagare att dela.'} En signatursida läggs till automatiskt sist i dokumentet.</p>
+      {reviewed && <p className="ed-dialog-note">Signerarna ser den tidigare granskningens diskussion bredvid PDF:en och kan ställa frågor där. Granskningslänken kan inte användas för att signera.</p>}
+      {unsharedChanges && <label className="ed-check"><input type="checkbox" required disabled={busy} />Jag vill skicka det nuvarande utkastet, inklusive ändringar som inte delats för granskning.</label>}
       {sharesSenderEmail && <p className="ed-dialog-note">Du och mottagaren signerar var för sig, även när ni använder samma e-postadress.</p>}
       {busy && <p className="ed-dialog-note" role="status">{phase === 'rendering' ? 'Skapar PDF av dokumentet…' : 'Skickar dokumentet…'}</p>}
       {error && <p className="ed-error" role="alert">{error}</p>}

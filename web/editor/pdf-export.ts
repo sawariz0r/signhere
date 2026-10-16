@@ -183,7 +183,7 @@ function header(writer: Writer, draft: Draft, block: HeaderBlock, accent: RGB) {
   const dark = panel && backgroundIsDark(block.background);
   const color = dark ? WHITE : INK;
   const title = resolveTokens(draft, block.title) || draft.title;
-  const meta: [string, string][] = block.showMeta ? [['Till', draft.company?.name || '—'], ['Från', fieldValue(draft, 'sender.company')], ['Datum', shortDate(new Date())], ['Giltig till', shortDate(expiryDate(draft))]] : [];
+  const meta: [string, string][] = block.showMeta ? [['Till', draft.company?.name || '—'], ['Från', fieldValue(draft, 'sender.company')], ['Datum', shortDate(new Date(draft.frozenAt ?? Date.now()))], ['Giltig till', shortDate(expiryDate(draft))]] : [];
   const titleLines = writer.lines([{ text: title, style: { size: 26, bold: true } }], WIDTH - (panel ? 40 : 0)).length;
   const height = 40 + titleLines * 34 + (block.eyebrow ? 20 : 0) + (meta.length ? 46 : 0);
   const top = writer.y;

@@ -21,6 +21,8 @@ import type { Mailer } from './mail.js';
 import { createNotifier, type Message, type Notifier } from './notify.js';
 import { ACCENTS, MAX_LOGO_BYTES, accentSchema, brandOf, checkLogoPng } from './brand.js';
 import type { PdfBrand } from './pdf.js';
+import { installReviews } from './reviews.js';
+import { draftIdSchema } from './draft-schema.js';
 
 export interface AppConfig {
   databaseUrl: string; dataDir: string; baseUrl: string; schema?: string;
@@ -172,7 +174,7 @@ export async function createApp(config: AppConfig) {
   if (config.rateLimit !== false) {
     app.use('/api', rateLimit({ windowMs: 60000, limit: 150, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
     app.use(['/api/login', '/api/setup', '/api/invitations/accept'], rateLimit({ windowMs: 15 * 60000, limit: 15, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många inloggningsförsök. Försök igen senare.' } }));
-    app.use(['/api/sign', '/api/verify'], rateLimit({ windowMs: 60000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
+    app.use(['/api/sign', '/api/verify', '/api/review'], rateLimit({ windowMs: 60000, limit: 40, standardHeaders: 'draft-8', legacyHeaders: false, message: { error: 'För många förfrågningar. Försök igen om en stund.' } }));
   }
   app.use('/api', (req, _res, next) => {
     if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
@@ -193,6 +195,10 @@ export async function createApp(config: AppConfig) {
     }
     if (req.method === 'PUT' && /^\/team\/logo\/?$/i.test(req.path)) {
       await requireUser(req, res, () => logoJson(req, res, next));
+      return;
+    }
+    if (req.method === 'PUT' && /^\/drafts\/[a-zA-Z0-9_-]{8,64}\/?$/.test(req.path)) {
+      await requireUser(req, res, () => uploadJson(req, res, next));
       return;
     }
     if (req.method === 'POST' && /^\/sign\/complete\/?$/i.test(req.path)) signingJson(req, res, next);
@@ -377,6 +383,8 @@ export async function createApp(config: AppConfig) {
   });
 
 
+  const reviews = installReviews(app, pool, requireUser, origin, now);
+
   app.get('/api/documents', requireUser, async (_req, res) => {
     // Bilagor are listed on their main document, not as separate documents.
     const rows = (await pool.query('SELECT ' + docColumns + ' FROM documents WHERE team_id=$1 AND parent_id IS NULL ORDER BY created_at DESC LIMIT 200', [res.locals.user.team_id])).rows;
@@ -408,7 +416,7 @@ export async function createApp(config: AppConfig) {
   type AttachmentOf = { documentId: string; title: string; completedHash: string; number: number };
   const attachmentLabel = (attachment: AttachmentOf) => 'Bilaga ' + attachment.number + ' till ' + attachment.title;
   /** Shared by main documents and bilagor. The sender assignment, when present, is always the last party. */
-  async function createSigningDocument(req: Request, res: Response, input: { title: string; fileName: string; pdfBase64: string; methodId: 'draw' }, parties: Party[], sender: Party | null, parent?: Row) {
+  async function createSigningDocument(req: Request, res: Response, input: { title: string; fileName: string; pdfBase64: string; methodId: 'draw'; draftSource?: { id: string; revision: number } }, parties: Party[], sender: Party | null, parent?: Row) {
     const recipients = [...parties, ...(sender ? [sender] : [])];
     if (new Set(parties.map(recipient => recipient.email)).size !== parties.length) throw new ApiError(400, 'Varje mottagare behöver en unik e-postadress.');
     if (!recipients.length) throw new ApiError(400, 'Lägg till en mottagare eller välj att signera själv.');
@@ -439,6 +447,21 @@ export async function createApp(config: AppConfig) {
       }
     }
     const result = await transaction(pool, async client => {
+      let sourceBinding: Row | undefined;
+      if (input.draftSource) {
+        const source = input.draftSource;
+        const draft = (await client.query('SELECT id FROM drafts WHERE id=$1 AND team_id=$2 AND archived_at IS NULL FOR UPDATE', [source.id, res.locals.user.team_id])).rows[0];
+        const saved = (await client.query('SELECT content FROM draft_revisions WHERE draft_id=$1 AND revision=$2', [source.id, source.revision])).rows[0];
+        if (!draft || !saved) throw new ApiError(404, 'Källutkastet finns inte.');
+        sourceBinding = { ...source, contentHash: sha256(canonical(saved.content)) };
+        const existing = (await client.query('SELECT document_id FROM draft_signings WHERE draft_id=$1 AND revision=$2', [source.id, source.revision])).rows[0];
+        if (existing) {
+          const document = await ownedDocument(client, existing.document_id, res.locals.user.team_id);
+          const assigned = (await client.query('SELECT name,email FROM recipients WHERE document_id=$1 ORDER BY position', [existing.document_id])).rows;
+          if (document.original_hash !== parsed.hash || document.title !== input.title || document.file_name !== input.fileName || canonical(assigned) !== canonical(recipients.map(({ name, email }) => ({ name, email })))) throw new ApiError(409, 'Den här utkastversionen har redan skickats med annat innehåll. Öppna det befintliga dokumentet eller spara en ny version.');
+          return { document: await documentDto(client, document), links: [], senderRecipientId: null, attachmentOf: undefined, alreadyCreated: true };
+        }
+      }
       let attachmentOf: AttachmentOf | undefined;
       if (parent) {
         // The lock serializes numbering. A completed main document is never modified.
@@ -459,7 +482,8 @@ export async function createApp(config: AppConfig) {
         links.push({ recipientId, name: recipient.name, url: origin + '/sign#' + raw });
       }
       const senderRecipientId = sender ? links[links.length - 1].recipientId : null;
-      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), ...(attachmentOf ? { attachmentOf } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender: senderSnapshot, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email, ...(recipient.parentRecipientId ? { parentRecipientId: recipient.parentRecipientId } : {}) })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      await appendEvent(client, documentId, 'document.created', createdAt, { senderRecipientId, ...(sourceBinding ? { draftSource: sourceBinding } : {}), ...(row.evidence_version === 2 ? { evidenceVersion: 2, installationId: creationIdentity!.installationId, protectionPolicy: LOCAL_SEAL_POLICY } : {}), ...(attachmentOf ? { attachmentOf } : {}), originalHash: parsed.hash, ...(parsed.preparation ? { preparation: parsed.preparation } : {}), fileName: input.fileName, pages: parsed.pages, size: bytes.length, title: input.title, sender: senderSnapshot, recipients: recipients.map((recipient, position) => ({ id: links[position].recipientId, position, name: recipient.name, email: recipient.email, ...(recipient.parentRecipientId ? { parentRecipientId: recipient.parentRecipientId } : {}) })), recipientIds: links.map(link => link.recipientId), method: { id: method.id, version: method.version }, actorId: res.locals.user.id, ...requestEvidence(req) });
+      if (input.draftSource) await client.query('INSERT INTO draft_signings(draft_id,revision,document_id) VALUES($1,$2,$3)', [input.draftSource.id, input.draftSource.revision, documentId]);
       return { document: await documentDto(client, row), links, senderRecipientId, attachmentOf };
     });
     const { attachmentOf, ...response } = result;
@@ -474,6 +498,7 @@ export async function createApp(config: AppConfig) {
       pdfBase64: pdfBase64Schema,
       // Accepted for older clients; a sender preview is optional.
       preparedHash: hashSchema.optional(),
+      draftSource: z.object({ id: draftIdSchema, revision: z.number().int().positive() }).strict().optional(),
       recipients: z.array(partySchema).max(25),
       includeSender: z.boolean().default(false),
       methodId: z.literal('draw'),
@@ -659,6 +684,24 @@ export async function createApp(config: AppConfig) {
 
 
   const partyInput = z.object({ token: tokenSchema, documentId: z.uuid().optional() }).strict();
+  app.post('/api/sign/discussion', async (req, res) => {
+    const { token: raw, documentId } = partyInput.parse(req.body);
+    const { document } = await partyTarget(pool, raw, documentId);
+    res.json(await reviews.signingDiscussion(pool, document.id));
+  });
+  app.post('/api/sign/review-version', async (req, res) => {
+    const { token: raw, documentId, version } = partyInput.extend({ version: z.number().int().positive() }).parse(req.body);
+    const { document } = await partyTarget(pool, raw, documentId);
+    res.json(await reviews.signingVersion(pool, document.id, version));
+  });
+  app.post('/api/sign/comments', async (req, res) => {
+    const { token: raw, documentId, ...body } = z.object({ token: tokenSchema, documentId: z.uuid().optional(), body: z.string(), requestId: z.uuid(), blockId: z.string().nullable().optional(), threadId: z.uuid().optional() }).strict().parse(req.body);
+    res.json(await transaction(pool, async client => {
+      const { document, recipient } = await partyTarget(client, raw, documentId, true);
+      if (recipient.signed_at || document.status !== 'pending') throw new ApiError(409, 'Diskussionen är stängd efter signering.');
+      return reviews.signingComment(client, document.id, recipient, body);
+    }));
+  });
   app.post('/api/sign/session', async (req, res) => {
     const { token: raw, documentId } = partyInput.parse(req.body);
     const result = await transaction(pool, async client => {
@@ -825,10 +868,4 @@ export async function createApp(config: AppConfig) {
   if (delivery && config.delivery?.autoStart !== false) delivery.start();
   return { app, db: pool, pool, finalization, delivery, keys, close: async () => { await finalization.stop(); await delivery?.stop(); await pool.end(); } };
 }
-
-
-
-
-
-
 

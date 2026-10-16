@@ -41,12 +41,15 @@ function pageNotes(annotations: unknown[]): PageNote[] {
   });
 }
 
-function Page({ pdf, number, thumbnail, onReady, onError }: { pdf: PDFDocumentProxy; number: number; thumbnail: boolean; onReady: () => void; onError: (error: string) => void }) {
+function Page({ pdf, number, thumbnail, zoomable, onReady, onError }: { pdf: PDFDocumentProxy; number: number; thumbnail: boolean; zoomable?: boolean; onReady: () => void; onError: (error: string) => void }) {
   const canvas = useRef<HTMLCanvasElement>(null);
   const parent = useRef<HTMLDivElement>(null);
   const [visible, setVisible] = useState(false);
   const [error, setError] = useState('');
   const [notes, setNotes] = useState<PageNote[]>([]);
+  const zoom = useRef<HTMLDialogElement>(null);
+  const [zoomSource, setZoomSource] = useState('');
+  const enlarge = () => { if (zoomable && canvas.current) { setZoomSource(canvas.current.toDataURL('image/png')); zoom.current?.showModal(); } };
   useEffect(() => {
     const element = parent.current;
     if (!element) return;
@@ -77,7 +80,8 @@ function Page({ pdf, number, thumbnail, onReady, onError }: { pdf: PDFDocumentPr
     return () => { cancelled = true; task?.cancel(); };
   }, [pdf, number, thumbnail, visible, onReady, onError]);
   return <div className="pdf-page-wrap" ref={parent}>
-    <div className="pdf-page"><canvas ref={canvas} aria-label={`Dokument, sida ${number}`} /><ErrorBox error={error} /></div>
+    <div className="pdf-page" role={zoomable ? 'button' : undefined} tabIndex={zoomable ? 0 : undefined} aria-label={zoomable ? `Förstora sida ${number}` : undefined} onClick={enlarge} onKeyDown={event => { if (zoomable && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); enlarge(); } }}><canvas ref={canvas} aria-label={`Dokument, sida ${number}`} /><ErrorBox error={error} /></div>
+    {zoomable && <><span className="rd-zoom-hint">Tryck på sidan för att förstora</span><dialog ref={zoom} className="rd-pdf-zoom" aria-label={`Förstorad sida ${number}`}><header><strong>Sida {number}</strong><button type="button" className="button secondary small" onClick={() => zoom.current?.close()}>Stäng</button></header><div className="rd-pdf-zoom-body">{zoomSource && <img src={zoomSource} alt={`Dokument, sida ${number}`} />}</div></dialog></>}
     <span className="page-number">{number}</span>
     {!thumbnail && notes.length > 0 && <details className="pdf-annotations" open>
       <summary>Anteckningar på sidan {number} ({notes.length})</summary>
@@ -86,7 +90,7 @@ function Page({ pdf, number, thumbnail, onReady, onError }: { pdf: PDFDocumentPr
   </div>;
 }
 
-export function PdfPreview({ source, thumbnail = false, onReady, onError }: { source: Blob; thumbnail?: boolean; onReady?: () => void; onError?: (error: string) => void }) {
+export function PdfPreview({ source, thumbnail = false, zoomable = false, onReady, onError }: { source: Blob; thumbnail?: boolean; zoomable?: boolean; onReady?: () => void; onError?: (error: string) => void }) {
   const [pdf, setPdf] = useState<PDFDocumentProxy | null>(null);
   const [error, setError] = useState('');
   const callbacks = useRef({ onReady, onError });
@@ -107,5 +111,5 @@ export function PdfPreview({ source, thumbnail = false, onReady, onError }: { so
   if (error) return <ErrorBox error={error} />;
   if (!pdf) return <Loading>Öppnar PDF…</Loading>;
   const count = thumbnail ? Math.min(pdf.numPages, 12) : pdf.numPages;
-  return <><div className={thumbnail ? 'pdf-thumbnails' : 'pdf-pages'}>{Array.from({ length: count }, (_, i) => <Page key={i} pdf={pdf} number={i + 1} thumbnail={thumbnail} onReady={ready} onError={failed} />)}</div>{thumbnail && pdf.numPages > count && <p className="muted text-small">Visar {count} av {pdf.numPages} sidor. Öppna originalet för att läsa hela dokumentet.</p>}</>;
+  return <><div className={thumbnail ? 'pdf-thumbnails' : 'pdf-pages'}>{Array.from({ length: count }, (_, i) => <Page key={i} pdf={pdf} number={i + 1} thumbnail={thumbnail} zoomable={zoomable} onReady={ready} onError={failed} />)}</div>{thumbnail && pdf.numPages > count && <p className="muted text-small">Visar {count} av {pdf.numPages} sidor. Öppna originalet för att läsa hela dokumentet.</p>}</>;
 }

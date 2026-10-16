@@ -1,4 +1,4 @@
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useEditorApi } from './context';
 import {
@@ -7,8 +7,9 @@ import {
 } from './model';
 
 /** With `attachment`, signers come from the main document, so sending and signer options are hidden. */
-export function SidePanel({ issues, flash, onIssue, attachment = false }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment?: boolean }) {
+export function SidePanel({ issues, flash, onIssue, attachment = false, review }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment?: boolean; review?: ReactNode }) {
   return <aside className="ed-panel" aria-label="Utskick och inställningar">
+    {review}
     <StatusCard issues={issues} flash={flash} onIssue={onIssue} attachment={attachment} />
     <RecipientsCard attachment={attachment} />
     <OutlineCard attachment={attachment} />
@@ -200,4 +201,3 @@ function AppearanceCard() {
     </div>
   </section>;
 }
-

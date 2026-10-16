@@ -19,6 +19,16 @@ Public HTTPS terminates at the operator's reverse proxy. Non-localhost applicati
 
 Docker cannot run on the development machine. The repository has Docker lifecycle/isolation CI and static checks, but no local container execution is claimed. See [deployment](deployment.md) for the exact host requirements and recovery procedures.
 
+## Drafts, review and the recipient workspace
+
+Drafts are mutable, team-scoped editor content in PostgreSQL. Saves use an expected revision, and each accepted source revision is retained. Publishing creates a separately frozen review snapshot with resolved-date context and embedded assets. Review capabilities are random, hashed at rest and carried in URL fragments, with expiry and revocation. Only explicitly published versions reach a review link. Browser drafts require an explicit import into the authenticated team.
+
+Section/general threads retain their published version, block ID, author claim and replies. Older versions are read-only to reviewers. Once the sender creates a signing transaction, review-link comments close; cancellation reopens them. Review capabilities do not authorize signing. A personal signing link opens the same document layout with the exact PDF and earlier discussion, authorized through the existing signing-capability path. That discussion is pinned to the transaction's saved source revision and excludes later draft versions. New signing-copy questions are stored separately from review-only access. Signer discussion closes after acceptance; comments never alter the signing PDF or audit core.
+
+`draft_signings` links one exact saved source revision to its signing transaction. Creation records the source ID, revision and canonical content hash in the creation event, in addition to the prepared PDF hash. A retried creation for the same source returns the existing transaction; changed bytes/assignments are rejected. The source and discussion remain available after sending. The sender sees the prior-discussion visibility notice and explicitly chooses unreviewed changes before sending.
+
+The shared document shell is presentation. HTML helps read drafts and follow comment anchors; it is labelled reference-only during signing. Signing continues to require the existing actual-PDF fetch, SHA-256 match and rendering readiness, with consent bound to that frozen PDF. The signed receipt retains the document canvas and links to downloads. See the Opus design handoff at `design/recipient-document.md` for the visual state model and remaining optional enhancements.
+
 ## Immutable signing input
 
 Upload preserves the exact source bytes and SHA-256. The server rejects encrypted files, existing digital signatures and unsupported/active structures. Supported annotations and widgets are flattened with JavaScript disabled. Comment text becomes a static notes appendix; already static PDFs retain their bytes. Preparation is not a universal PDF repair service.

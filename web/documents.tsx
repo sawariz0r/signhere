@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { attachmentLabel, date, dateTime, download, fetchPdf, fileBase64, message, pages, request, size } from './api';
 import { takeHandOff } from './handoff';
 import { PdfPreview } from './pdf';
-import { deleteDraft, listDrafts } from './editor/model';
+import { deleteDraft, listDrafts, loadDraft } from './editor/model';
 import { Sign } from './sign';
 import { CreatedSummary, hasExpectedSenderAssignment, SENDER_UNCONFIRMED, SenderSigning, senderState } from './created';
 import { Avatar, CopyLink, Dropzone, ErrorBox, Field, Loading, PdfIcon, Signature, Status } from './ui';
@@ -10,15 +10,18 @@ import type { AuditEvent, Brand, CreatedDocument, Delivery, PreparedPdf, Signing
 import { accentStyle, brandName } from './brand';
 
 export function Documents({ onOpen, onNew, onCreate, onDraft }: { onOpen: (id: string) => void; onNew: () => void; onCreate: () => void; onDraft: (id: string) => void }) {
-  const [drafts, setDrafts] = useState(listDrafts);
+  const [drafts, setDrafts] = useState<{ id: string; title: string; updatedAt: string; publishedVersion?: number }[]>([]);
+  const [legacy, setLegacy] = useState(listDrafts);
+  const [importing, setImporting] = useState(false);
   const [documents, setDocuments] = useState<SigningDocument[] | null>(null);
   const [filter, setFilter] = useState('all');
   const [error, setError] = useState('');
-  const load = () => { setError(''); void request<{ documents: SigningDocument[] }>('/api/documents').then(result => setDocuments(result.documents)).catch(error => setError(message(error))); };
+  const load = () => { setError(''); void Promise.all([request<{ documents: SigningDocument[] }>('/api/documents'), request<{ drafts: typeof drafts }>('/api/drafts')]).then(([docs, saved]) => { setDocuments(docs.documents); setDrafts(saved.drafts); }).catch(error => setError(message(error))); };
   useEffect(load, []);
   const visible = documents?.filter(doc => filter === 'all' || (doc.status === filter || filter === 'pending' && doc.status === 'finalizing')) ?? [];
   return <div><div className="page-heading"><h1>Dokument</h1><div className="actions"><button className="button secondary" onClick={onCreate}>Skapa i editorn</button><button className="button" onClick={onNew}><span className="plus">+</span>Nytt dokument</button></div></div>
-    {drafts.length > 0 && <section className="drafts" aria-label="Utkast"><h2>Utkast</h2><div className="draft-list">{drafts.slice(0, 6).map(draft => <div className="draft-card" key={draft.id}><button className="draft-open" onClick={() => onDraft(draft.id)}><strong>{draft.title || 'Namnlöst dokument'}</strong><span>Ändrat {date(draft.updatedAt)}</span></button><button className="text-button" aria-label={`Ta bort utkastet ${draft.title}`} onClick={() => { deleteDraft(draft.id); setDrafts(listDrafts()); }}>Ta bort</button></div>)}</div></section>}<ErrorBox error={error} />{error && <button className="button secondary" onClick={load}>Försök igen</button>}
+    {drafts.length > 0 && <section className="drafts" aria-label="Utkast"><h2>Utkast</h2><div className="draft-list">{drafts.map(draft => <div className="draft-card" key={draft.id}><button className="draft-open" onClick={() => onDraft(draft.id)}><strong>{draft.title || 'Namnlöst dokument'}</strong><span>Ändrat {date(draft.updatedAt)}</span></button><button className="text-button" aria-label={`Ta bort utkastet ${draft.title}`} onClick={() => { if (window.confirm('Arkivera utkastet och återkalla dess granskningslänkar?')) void request(`/api/drafts/${draft.id}`, {}, 'DELETE').then(load).catch(error => setError(message(error))); }}>Arkivera</button></div>)}</div></section>}<ErrorBox error={error} />{error && <button className="button secondary" onClick={load}>Försök igen</button>}
+    {legacy.length > 0 && <section className="legacy-drafts"><h2>Utkast i den här webbläsaren</h2><p>Dessa har inte sparats på servern. Importera bara utkast som hör till ditt nuvarande team. Originalet behålls tills servern har bekräftat importen.</p>{legacy.map(item => <div className="draft-card" key={item.id}><strong>{item.title || 'Namnlöst dokument'}</strong><button className="button secondary small" disabled={importing} onClick={() => { void (async () => { setImporting(true); setError(''); try { const original = loadDraft(item.id); if (!original) throw new Error('Utkastet kunde inte läsas.'); const draft = { ...original, id: crypto.randomUUID().replaceAll('-', '').slice(0, 16) }; await request(`/api/drafts/${draft.id}`, { draft, expectedRevision: 0 }, 'PUT'); deleteDraft(item.id); setLegacy(listDrafts()); onDraft(draft.id); } catch (error) { setError(message(error)); } finally { setImporting(false); } })(); }}>Importera till teamet</button></div>)}</section>}
     {!documents && !error && <Loading />}
     {documents && (documents.length === 0 ? <button className="empty-state" onClick={onNew}><span className="circle">+</span><strong>Skicka ditt första avtal</strong><span>Ladda upp en PDF så är du igång.</span></button> : <>
       <div className="filters" aria-label="Filtrera dokument">{[['all', 'Alla'], ['pending', 'Väntar'], ['completed', 'Signerade'], ...(documents.some(doc => doc.status === 'cancelled') ? [['cancelled', 'Avbrutna']] : [])].map(([value, label]) => <button key={value} className={`filter ${filter === value ? 'active' : ''}`} aria-pressed={filter === value} onClick={() => setFilter(value)}>{label}<span>{documents.filter(doc => value === 'all' || doc.status === value).length}</span></button>)}</div>

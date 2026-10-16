@@ -73,14 +73,19 @@ export function BlockFrame({ block, index, count, children }: { block: Block; in
   const api = useEditorApi();
   const selected = !api.preview && api.selectedId === block.id;
   const label = BLOCK_LABELS[block.type];
+  const review = api.review;
+  const comments = review?.threads.filter(thread => thread.blockId === block.id && thread.version === review.version) ?? [];
   return <div className={`ed-block ed-block-${block.type}${selected ? ' selected' : ''}${api.fresh === block.id ? ' fresh' : ''}`} data-block={block.id} onMouseDown={() => api.select(block.id)}>
     {selected && <div className="ed-toolbar" role="toolbar" aria-label={`${label}-block`}>
       <span className="ed-toolbar-label">{label}</span>
+      {review?.sharedIds.has(block.id) && <button type="button" className="text" onMouseDown={event => event.stopPropagation()} onClick={() => review.comment(block.id)}>Kommentera ({comments.length})</button>}
       <button type="button" aria-label="Flytta upp" title="Flytta upp (Alt+↑)" disabled={index === 0} onClick={() => api.moveBlock(block.id, -1)}><ArrowUp size={14} /></button>
       <button type="button" aria-label="Flytta ner" title="Flytta ner (Alt+↓)" disabled={index === count - 1} onClick={() => api.moveBlock(block.id, 1)}><ArrowDown size={14} /></button>
       {!SINGLE_BLOCKS.has(block.type) && <button type="button" className="text" title={`Kopiera (${MOD}D)`} onClick={() => api.copyBlock(block.id)}>Kopiera</button>}
       <button type="button" className="text danger" title="Ta bort (Delete)" onClick={() => api.removeBlock(block.id)}>Ta bort</button>
     </div>}
+    {review?.changed.has(block.id) && <div className="rd-private-change">Ändrat sedan version {review.version}</div>}
+    {!selected && review?.sharedIds.has(block.id) && <button type="button" className={`rd-marker rd-editor-marker${comments.some(thread => !thread.resolved) ? ' open' : ''}`} aria-label={`Kommentera avsnitt ${index + 1}`} onMouseDown={event => event.stopPropagation()} onClick={() => review.comment(block.id)}>{comments.length || '+'}</button>}
     {children}
   </div>;
 }
@@ -107,7 +112,7 @@ function HeaderView({ block }: { block: HeaderBlock }) {
   const panel = block.layout === 'boxed' || block.layout === 'cover';
   const dark = panel && backgroundIsDark(block.background);
   const uploaded = isImageBackground(block.background);
-  const meta: [string, string][] = [['Till', draft.company?.name || '—'], ['Från', fieldValue(draft, 'sender.company')], ['Datum', shortDate(new Date())], ['Giltig till', shortDate(expiryDate(draft))]];
+  const meta: [string, string][] = [['Till', draft.company?.name || '—'], ['Från', fieldValue(draft, 'sender.company')], ['Datum', shortDate(new Date(draft.frozenAt ?? Date.now()))], ['Giltig till', shortDate(expiryDate(draft))]];
   return <>
     {selected && <Options>
       <Segmented label="Layout" items={HEADER_LAYOUTS} value={block.layout} onChange={layout => set({ layout })} />
@@ -256,7 +261,7 @@ function PricingView({ block }: { block: PricingBlock }) {
       const subtotal = totals(block, [pkg], draft.settings).net;
       return <div key={pkg.id} className={`ed-package${multi ? ' card' : ''}${multi && pkg.selected ? ' chosen' : ''}`}>
         {multi && <div className="ed-package-head">
-          <button type="button" role={block.mode === 'choice' ? 'radio' : 'checkbox'} aria-checked={pkg.selected} aria-label={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} title={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} className={`ed-pick ${block.mode}${pkg.selected ? ' on' : ''}`} onClick={() => toggle(pkg.id)}>{pkg.selected && <Check size={13} strokeWidth={3} />}</button>
+          <button type="button" role={block.mode === 'choice' ? 'radio' : 'checkbox'} aria-checked={pkg.selected} aria-label={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} title={block.mode === 'choice' ? 'Förvalt paket' : 'Förvald'} className={`ed-pick ${block.mode}${pkg.selected ? ' on' : ''}`} disabled={preview} onClick={() => toggle(pkg.id)}>{pkg.selected && <Check size={13} strokeWidth={3} />}</button>
           <div className="ed-package-text">
             {preview ? <><div className="ed-package-name">{pkg.name}</div>{pkg.description && <div className="ed-package-desc">{pkg.description}</div>}</>
               : <><input className="ed-bare ed-package-name" aria-label="Paketets namn" placeholder="Paketets namn" value={pkg.name} onChange={event => setPackage(pkg.id, { name: event.target.value })} />

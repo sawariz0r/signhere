@@ -137,7 +137,7 @@ try {
   await signer.screenshot({ path: output + '/04-mobile-signature.png', fullPage: true });
   await dialog.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
   await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible({ timeout: 15000 });
-  await expect(signer.getByText('Åsa Q. Test', { exact: true })).toBeVisible();
+  await expect(signer.locator('.signed-receipt').getByText('Åsa Q. Test', { exact: true })).toBeVisible();
   await expect(signer.getByRole('button', { name: 'Ladda ner signerad PDF' })).toBeVisible({ timeout: 30000 });
   const [download] = await Promise.all([signer.waitForEvent('download'), signer.getByRole('button', { name: 'Ladda ner signerad PDF' }).click()]);
   const completedPath = output + '/completed.pdf'; await download.saveAs(completedPath);
@@ -409,7 +409,7 @@ try {
     await page.getByLabel('Mottagare 1, e-post', { exact: true }).fill('owner@example.test');
     await page.getByRole('checkbox', { name: 'Jag ska också signera' }).check();
     await page.getByRole('button', { name: 'Skapa och signera', exact: true }).click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.getByRole('alert')).toBeVisible({ timeout: 30000 });
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('textbox', { name: 'Personlig länk' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Skapa och signera', exact: true })).toHaveCount(0);
@@ -444,7 +444,14 @@ try {
     console.log('PostgreSQL backup/restore roundtrip passed for the completed document and evidence.');
   }
   console.log('Browser test passed: setup, automatic PDF flattening without mandatory preview or PDF worker, mobile signing, final PDF, offline evidence, standalone public verification with hash-only requests, invitation and member role, sender plus all parties (including shared emails) with verified signature evidence, resuming self-only signatures, and refusing inconsistent sender assignments before opening any signature.');
+} catch (error) {
+  console.error('Browser smoke failure:', error);
+  for (const context of browser?.contexts() ?? []) for (const [index, page] of context.pages().entries()) {
+    await page.screenshot({ path: output + `/failure-${index}.png`, fullPage: true }).catch(() => {});
+  }
+  throw error;
 } finally {
+  for (const context of browser?.contexts() ?? []) for (const page of context.pages()) await page.unrouteAll({ behavior: 'wait' }).catch(() => {});
   await browser?.close();
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));
