@@ -4,10 +4,11 @@ import { ArrowRight, Check, X } from 'lucide-react';
 import '@fontsource-variable/source-serif-4';
 import { EditorContext, useEditorApi, type EditorApi } from './context';
 import { BlockFrame, BlockView, SignatureSection, UnitList } from './blocks';
-import { SidePanel } from './sidebar';
+import { SidePanel, RecipientsCard } from './sidebar';
 import { SendSheet, type SendPhase } from './send';
 import { createDocument, type Created } from '../created';
-import { EditorReviewPanel, useEditorReview } from './review-panel';
+import { EditorReviewPanel, isActiveLink, linkMatchesDraft, useEditorReview } from './review-panel';
+import { SaveVersionDialog, ShareDialog } from './share';
 import { ReadOnlyDraft } from './read-only';
 import { DraftStorage } from './storage';
 import { fileBase64, message, request } from '../api';
@@ -46,6 +47,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, initialDraft, i
   const [storage] = useState(() => new DraftStorage(initialRevision, initialDraft));
   const [mobileReview, setMobileReview] = useState(() => window.matchMedia('(max-width:859px)').matches);
   const reviewDialog = useRef<HTMLDialogElement>(null);
+  const [sharing, setSharing] = useState<{ contactId?: string } | null>(null), [savingVersion, setSavingVersion] = useState(false);
   const [unsharedChanges, setUnsharedChanges] = useState(false);
   const [reviewed, setReviewed] = useState(false);
   const [revision, setRevision] = useState(0);
@@ -247,9 +249,10 @@ export function DocumentEditor({ draftId, user, onClose, onSent, initialDraft, i
     if (attachment) { void useAsAttachment(); return; }
     try {
       const savedRevision = await persist(latest.current);
-      const review = await request<{ versions: { sourceRevision: number }[] }>(`/api/drafts/${draftId}`);
-      setUnsharedChanges(Boolean(review.versions.length && review.versions[0].sourceRevision !== savedRevision));
-      setReviewed(review.versions.length > 0);
+      const review = await request<{ versions: { sourceRevision: number; sharedAt: string | null; clientId: string | null }[] }>(`/api/drafts/${draftId}`);
+      const shared = review.versions.filter(version => version.sharedAt && version.clientId === latest.current.company?.id);
+      setUnsharedChanges(Boolean(shared.length && shared[0].sourceRevision !== savedRevision));
+      setReviewed(shared.length > 0);
       setSendError(''); setSheet(true);
     } catch (error) { setRenderError(message(error)); }
   };
@@ -329,20 +332,34 @@ export function DocumentEditor({ draftId, user, onClose, onSent, initialDraft, i
   const deselect = (event: React.MouseEvent) => { if (event.target === event.currentTarget) select(null); };
   const font = FONTS.find(([key]) => key === draft.theme.font)?.[2] ?? FONTS[0][2];
   const paperStyle = { fontFamily: font, '--doc-accent': draft.theme.accent } as CSSProperties;
-  const reviewPanel = !attachment ? <EditorReviewPanel review={review} draft={draft} revision={storage.revision} /> : null;
+  const savedVersion = review.data?.versions[0];
+  const hasVersionChanges = !savedVersion || savedVersion.sourceRevision !== storage.revision || saveState !== 'saved';
+  const activeLinks = review.data?.links.filter(isActiveLink) ?? [];
+  const activeClientNames = activeLinks.filter(link => linkMatchesDraft(link, draft)).map(link => link.name);
+  const openShare = (contactId?: string) => { reviewDialog.current?.close(); setSharing({ contactId }); };
+  const savedVersionNotice = (version: number) => {
+    setSavingVersion(false); setToast({ message: `Version ${version} sparad. ${activeClientNames.length ? `${activeClientNames.join(' och ')} ser den nu.` : 'Bara du ser den.'}` });
+    later('toast', 6000, () => setToast(null));
+  };
+  const saveVersion = () => {
+    if (review.busy || !hasVersionChanges) return;
+    if (activeLinks.length) setSavingVersion(true);
+    else void review.saveVersion().then(result => savedVersionNotice(result.version)).catch(() => {});
+  };
+  const saveVersionButton = (mobile = false) => <button type="button" className={`ed-btn large sh-save-button${mobile ? ' primary' : ' sh-hide-m'}`} disabled={!hasVersionChanges || phase !== 'idle' || review.busy || Boolean(review.historical)} title={hasVersionChanges ? `Spara utkastet som version ${(savedVersion?.version ?? 0) + 1}` : `Inga ändringar sedan version ${savedVersion?.version}`} onClick={saveVersion}>{hasVersionChanges && <span className="sh-save-dot" aria-hidden="true" />}Spara utkast</button>;
+  const reviewPanel = !attachment ? <EditorReviewPanel review={review} draft={draft} changed={hasVersionChanges} onShare={openShare} /> : null;
 
-  return <EditorContext.Provider value={api}><div className={`ed rd-editor${preview ? ' is-preview' : ''}`}>
+  return <EditorContext.Provider value={api}><div className={`ed rd-editor${!attachment ? ' has-review' : ''}${preview ? ' is-preview' : ''}`}>
     <header className="ed-topbar">
       <div className="ed-topbar-inner">
         <button type="button" className="ed-logo" aria-label="Tillbaka till dokument" title="Tillbaka till dokument" disabled={rendering || phase !== 'idle'} onClick={() => void close()}><span><i /></span></button>
         <span className="ed-slash" aria-hidden="true">/</span>
         <input className="ed-title" aria-label="Dokumentnamn" value={draft.title} placeholder={UNTITLED} onChange={event => update(current => ({ ...current, title: event.target.value }))} />
-        <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <><Check size={13} strokeWidth={3} aria-hidden="true" />Sparat</>}</span>
+        <button type="button" className={`sh-chip ${saveState === 'error' ? 'error' : ''}`} title="Bara du ser utkastet. Klienter med länk ser den senast sparade versionen." onClick={() => { setToast({ message: 'Bara du ser utkastet. Klienter med länk ser den senast sparade versionen.' }); later('toast', 6000, () => setToast(null)); }}><span role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <>{!hasVersionChanges ? <Check size={13} aria-hidden="true" /> : <span className="sh-save-dot" aria-hidden="true" />}<span className="sh-long">{attachment ? 'Sparat' : !hasVersionChanges ? `Version ${savedVersion?.version} sparad` : savedVersion ? 'Ändringar sparade för dig' : 'Utkast sparat för dig'}</span><span className="sh-short">{!hasVersionChanges ? `v${savedVersion?.version}` : 'Sparat'}</span></>}</span></button>
         <div className="ed-topbar-actions">
-          {!attachment && <button type="button" className="ed-btn large" disabled={phase !== 'idle' || review.busy || Boolean(review.historical)} onClick={() => void review.publish()}>{review.data?.versions[0] ? `Dela version ${review.data.versions[0].version + 1}` : 'Dela för granskning'}</button>}
-          {mobileReview && !attachment && <button type="button" className="ed-btn large" onClick={() => reviewDialog.current?.showModal()}>Kommentarer</button>}
+          {!attachment && saveVersionButton()}
           {review.historical && <button type="button" className="ed-btn large" onClick={() => review.setHistorical(null)}>Till mitt utkast</button>}
-          <button type="button" className="ed-btn large" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
+          <button type="button" className="ed-btn large sh-hide-m" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
           <button type="button" className="ed-btn primary large" disabled={rendering || phase !== 'idle' || Boolean(review.historical)} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
         </div>
       </div>
@@ -371,11 +388,14 @@ export function DocumentEditor({ draftId, user, onClose, onSent, initialDraft, i
           {draft.blocks.length > 0 && (attachment ? <p className="ed-attachment-note">Bilagan signeras av parterna du väljer i nästa steg. En signatursida läggs till automatiskt.</p> : <SignatureSection />)}
         </article>}
       </div>
-      {!preview && !review.historical ? <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} review={!mobileReview ? reviewPanel : null} /> : !mobileReview && !attachment ? <aside className="ed-panel" aria-label="Granskning och kommentarer">{reviewPanel}</aside> : null}
+      {!preview && !review.historical ? <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} review={!mobileReview ? reviewPanel : null} activeClientNames={activeClientNames} /> : !mobileReview && !attachment ? <aside className="ed-panel" aria-label="Granskning och kommentarer">{reviewPanel}</aside> : null}
     </div>
     <UnitList />
 
-    {mobileReview && !attachment && <dialog ref={reviewDialog} className="rd-sheet ed" aria-labelledby="editor-comments-title"><header><h2 id="editor-comments-title">Granskning och kommentarer</h2><button type="button" className="ed-btn" onClick={() => reviewDialog.current?.close()}>Stäng</button></header><div className="rd-sheet-body">{reviewPanel}</div></dialog>}
+    {mobileReview && !attachment && <div className="sh-bar"><button type="button" className="ed-btn large" onClick={() => reviewDialog.current?.showModal()}>Granskning<span className="ed-count">{review.data?.threads.filter(thread => !thread.resolved).length ?? 0}</span></button>{saveVersionButton(true)}</div>}
+    {mobileReview && !attachment && <dialog ref={reviewDialog} className="rd-sheet" aria-labelledby="editor-comments-title"><header><h2 id="editor-comments-title">Granskning och kommentarer</h2><button type="button" className="ed-btn" onClick={() => reviewDialog.current?.close()}>Stäng</button></header><div className="rd-sheet-body">{reviewPanel}<RecipientsCard activeClientNames={activeClientNames} /></div></dialog>}
+    {sharing && <ShareDialog review={review} changed={hasVersionChanges} contactId={sharing.contactId} onClose={() => setSharing(null)} />}
+    {savingVersion && <SaveVersionDialog review={review} draft={draft} onClose={() => setSavingVersion(false)} onSaved={savedVersionNotice} />}
     {saveError && <div className="rd-save-error" role="alert">{saveError} <button type="button" className="ed-btn" onClick={() => void persist(latest.current).catch(() => {})}>Försök spara igen</button></div>}
     {sheet && <SendSheet emailEnabled={emailEnabled} phase={phase} error={sendError} unsharedChanges={unsharedChanges} reviewed={reviewed} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
     {renderError && <div className="ed-toast-wrap"><div className="ed-toast" role="alert"><span>{renderError}</span><button type="button" onClick={() => setRenderError('')}>Stäng</button></div></div>}

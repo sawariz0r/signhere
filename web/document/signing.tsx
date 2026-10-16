@@ -1,11 +1,12 @@
-import { useEffect, useState, type ReactNode } from 'react';
-import { attachmentLabel, dateTime, download, message, request } from '../api';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { attachmentLabel, dateTime, download, message, request, RequestError } from '../api';
 import { Avatar, ErrorBox, Loading, Signature } from '../ui';
 import { PdfPreview } from '../pdf';
 import { ReadOnlyDraft, sectionLabel } from '../editor/read-only';
 import type { Draft } from '../editor/model';
 import type { SignSession } from '../types';
 import { Discussion } from './discussion';
+import { useBackgroundRefresh } from './refresh';
 import { Callout, DocumentShell, StatusCard } from './shell';
 import type { CommentInput, ReviewThread, SigningDiscussion } from './types';
 
@@ -19,8 +20,18 @@ export function SigningWorkspace({ session, token, documentId, pdf, hash, ready,
   const [mobile, setMobile] = useState(() => window.matchMedia('(max-width:859px)').matches);
   useEffect(() => { const query = window.matchMedia('(max-width:859px)'); const change = () => setMobile(query.matches); query.addEventListener('change', change); return () => query.removeEventListener('change', change); }, []);
   const target = documentId ? { token, documentId } : { token };
-  const loadDiscussion = async () => { try { setDiscussion(await request<SigningDiscussion | null>('/api/sign/discussion', target)); setDiscussionError(''); } catch (error) { setDiscussionError(message(error)); } };
-  useEffect(() => { if (session) void loadDiscussion(); }, [token, documentId, Boolean(session)]);
+  const sequence = useRef(0);
+  const loadDiscussion = async (background = false) => {
+    const current = ++sequence.current;
+    try {
+      const result = await request<Partial<SigningDiscussion> | null>('/api/sign/discussion', { ...target, ...(background ? { updatesOnly: true } : {}) });
+      if (current === sequence.current) { setDiscussion(previous => result ? result.source ? result as SigningDiscussion : previous ? { ...previous, ...result } : null : null); setDiscussionError(''); }
+    } catch (error) {
+      if (current === sequence.current && (!background || error instanceof RequestError && [401, 403, 404, 410].includes(error.status))) { setDiscussion(null); setDiscussionError(message(error)); }
+    }
+  };
+  useEffect(() => { setDiscussion(null); if (session) void loadDiscussion(); return () => { sequence.current++; }; }, [token, documentId, Boolean(session)]);
+  useBackgroundRefresh(() => loadDiscussion(true), Boolean(discussion));
   const doc = session?.document, recipient = doc?.recipients.find(item => item.id === session?.recipientId);
   const post = async (input: CommentInput) => { const { version, ...body } = input; await request('/api/sign/comments', { ...body, ...target }); await loadDiscussion(); };
   const onAnchor = async (thread: ReviewThread) => {
@@ -38,7 +49,7 @@ export function SigningWorkspace({ session, token, documentId, pdf, hash, ready,
   const status = cancelled ? 'Signeringen är avbruten' : signed ? completed ? 'Signerat av alla' : 'Du har signerat' : 'Väntar på din signatur';
   const shown = reference?.draft ?? discussion?.source;
   const historicalView = Boolean(webView && reference?.version && discussion?.versions.find(item => item.version === reference.version)?.sourceRevision !== discussion?.revision);
-  const comments = discussion ? <><ErrorBox error={discussionError} /><Discussion threads={discussion.threads} version={last?.version ?? null} filter={selected} setFilter={setSelected} label={id => sectionLabel(discussion.source, id)} post={post} signing canPost={canSign && !historicalView} identity={canSign ? 'Frågor ändrar inte PDF:en.' : undefined} closedNote={signed ? 'Diskussionen ingår inte i det signerade dokumentet.' : historicalView ? 'Du visar en tidigare granskning. Återgå till PDF:en för att ställa frågor om signeringsdokumentet.' : undefined} onRefresh={() => void loadDiscussion()} onAnchor={thread => void onAnchor(thread)} /></> : discussionError ? <ErrorBox error={discussionError} /> : undefined;
+  const comments = discussion ? <><ErrorBox error={discussionError} /><Discussion threads={discussion.threads} version={last?.version ?? null} filter={selected} setFilter={setSelected} label={id => sectionLabel(discussion.source, id)} post={post} signing canPost={canSign && !historicalView} identity={canSign ? 'Frågor ändrar inte PDF:en.' : undefined} closedNote={signed ? 'Diskussionen ingår inte i det signerade dokumentet.' : historicalView ? 'Du visar en tidigare granskning. Återgå till PDF:en för att ställa frågor om signeringsdokumentet.' : undefined} onAnchor={thread => void onAnchor(thread)} /></> : discussionError ? <ErrorBox error={discussionError} /> : undefined;
   const canvas = webView && shown ? <><p className="rd-version-note">Webbvisningen {reference?.version ? `av version ${reference.version}` : 'av signeringsunderlaget'} hjälper dig följa diskussionen. Det är PDF:en du signerar.</p><ReadOnlyDraft key={reference?.version ?? discussion?.revision} draft={shown} threads={discussion?.threads.filter(thread => reference?.version ? thread.version === reference.version : Boolean(thread.signingDocumentId)) ?? []} selected={selected} onSelect={setSelected} onComment={id => { setSelected(id); setCommentRequest(value => value + 1); }} /></> : <div className="rd-pdf-stage"><ErrorBox error={error} /><ErrorBox error={pdfError} />{hash && <p className="rd-version-note">Exakt den PDF {signed ? 'du signerade' : 'du signerar'}. Fingeravtrycket är kontrollerat i din webbläsare.</p>}{pdf ? <PdfPreview source={pdf} zoomable onReady={onReady} onError={onPdfError} /> : !pdfError && <Loading>Kontrollerar och öppnar PDF…</Loading>}<section className="sign-signatures"><div className="eyebrow">SIGNATURER</div><p className="muted text-small">{completed ? 'Signatursidan finns i den signerade PDF:en.' : 'Signatursidan läggs till när alla har signerat.'}</p><div>{doc.recipients.map(item => <div key={item.id}><div className="signature-line"><Signature strokes={item.signature?.strokes} /></div><strong>{item.signedName || item.name}</strong><p className="muted text-small">{item.signedAt ? dateTime(item.signedAt) : 'Väntar på signatur'}</p></div>)}</div></section><details className="document-fingerprint"><summary>Dokumentets fingeravtryck (SHA-256)</summary><p className="mono hash">{doc.originalHash}</p></details></div>;
   const receipt = <section className="ed-card"><h2>{signed ? 'Kvitto' : 'Det här signerar du'}</h2>{signed && <div className="signed-receipt"><Signature strokes={recipient.signature?.strokes} /><div><strong>{recipient.signedName || recipient.name}</strong><div className="mono">{dateTime(recipient.signedAt)}</div></div></div>}<dl className="rd-facts"><div><dt>Dokument</dt><dd>PDF, {doc.pages} {doc.pages === 1 ? 'sida' : 'sidor'}</dd></div>{last && <div><dt>Granskning</dt><dd>Version {last.version}{changed ? ' med ändringar' : ''}</dd></div>}<div><dt>Fingeravtryck</dt><dd className="mono">{doc.originalHash.slice(0, 16)}…</dd></div></dl><div className="rd-parties">{doc.recipients.map(item => <div className="rd-party" key={item.id}><Avatar name={item.name} /><div><strong>{item.signedName || item.name}</strong><small>{item.signedAt ? `Signerade ${dateTime(item.signedAt)}` : 'Väntar på signatur'}</small></div></div>)}</div></section>;
   return <DocumentShell title={doc.title} brand={session!.brand} person={recipient.name} status={status} done={signed} commentRequest={commentRequest} count={discussion?.threads.length} discussion={comments}

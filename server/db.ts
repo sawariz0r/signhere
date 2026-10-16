@@ -1,7 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { sha256 } from './pdf.js';
-import { migrateReviews } from './review-schema.js';
+import { migrateReviews, migrateReviewSharing } from './review-schema.js';
 
 export type Row = Record<string, any>;
 export function canonical(value: unknown): string {
@@ -34,7 +34,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 7) throw new Error('Database schema is newer than this application.');
+      if (version > 8) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -262,7 +262,8 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
         CREATE INDEX teams_logo_hash ON teams(logo_hash) WHERE logo_hash IS NOT NULL;
       `);
       if (version < 7) await migrateReviews(client);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1),(7,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      if (version < 8) await migrateReviewSharing(client);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1),(7,$1),(8,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;
@@ -298,4 +299,3 @@ export async function appendEvent(client: PoolClient, documentId: string, type: 
   await client.query('INSERT INTO events(document_id,sequence,type,at,data,previous_hash,hash) VALUES($1,$2,$3,$4,$5,$6,$7)', [documentId, sequence, type, at, data, previousHash, hash]);
   return { sequence, hash };
 }
-

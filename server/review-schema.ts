@@ -44,3 +44,29 @@ export async function migrateReviews(db: PoolClient) {
     );
   `);
 }
+
+export async function migrateReviewSharing(db: PoolClient) {
+  await db.query(`
+    CREATE TABLE review_publications (
+      draft_id text NOT NULL, version integer NOT NULL, shared_at text NOT NULL,
+      PRIMARY KEY(draft_id,version), FOREIGN KEY(draft_id,version) REFERENCES review_versions(draft_id,version)
+    );
+    CREATE TRIGGER review_publications_immutable BEFORE UPDATE OR DELETE ON review_publications FOR EACH ROW EXECUTE FUNCTION reject_event_mutation();
+    -- Existing versions were created by the explicit "Dela" action.
+    INSERT INTO review_publications SELECT draft_id,version,published_at FROM review_versions;
+    ALTER TABLE review_links ADD COLUMN client_id text, ADD COLUMN client_name text, ADD COLUMN contact_id text,
+      ADD COLUMN recipient_email text, ADD COLUMN first_version integer NOT NULL DEFAULT 1,
+      ADD FOREIGN KEY(draft_id,first_version) REFERENCES review_versions(draft_id,version);
+    -- Only bind a legacy link when its name identifies exactly one saved contact.
+    WITH latest AS (
+      SELECT DISTINCT ON (draft_id) draft_id,content FROM review_versions ORDER BY draft_id,version DESC
+    ), candidates AS (
+      SELECT l.id,v.content#>>'{company,id}' AS client_id,v.content#>>'{company,name}' AS client_name,c->>'id' AS contact_id,
+        lower(btrim(c->>'email')) AS email,count(*) OVER (PARTITION BY l.id) AS matches
+      FROM review_links l JOIN latest v ON v.draft_id=l.draft_id
+      CROSS JOIN LATERAL jsonb_array_elements(coalesce(v.content#>'{company,contacts}','[]'::jsonb)) c
+      WHERE l.name=btrim(c->>'name') AND coalesce(v.content#>>'{company,id}','')<>'' AND coalesce(c->>'email','')<>''
+    ) UPDATE review_links l SET client_id=c.client_id,client_name=c.client_name,contact_id=c.contact_id,recipient_email=c.email
+      FROM candidates c WHERE c.id=l.id AND c.matches=1;
+  `);
+}

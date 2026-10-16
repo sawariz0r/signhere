@@ -47,7 +47,7 @@ test('private review keeps working copies private, preserves discussion across r
   assert.equal((await stranger.get('/api/drafts')).body.drafts.length, 0);
   assert.equal((await post(`/api/drafts/${draft.id}/publish`, { revision: 1 })).body.version, 1);
   assert.equal((await post(`/api/drafts/${draft.id}/publish`, { revision: 1 })).body.version, 1);
-  const link = await post(`/api/drafts/${draft.id}/links`, { name: 'Client', days: 1 });
+  const link = await post(`/api/drafts/${draft.id}/links`, { contactId: 'a', revision: 1, days: 1 });
   assert.equal(link.status, 201, link.text);
   const token = new URL(link.body.url).hash.slice(1);
   const session = () => post('/api/review/session', { token }, guest);
@@ -76,11 +76,25 @@ test('private review keeps working copies private, preserves discussion across r
   shared = await session(); assert.equal(shared.body.draft.title, 'Shared proposal');
   const current = (await owner.get('/api/drafts/' + draft.id)).body;
   assert.equal(current.threads[0].comments.length, 2);
+  const updates = (await owner.get('/api/drafts/' + draft.id + '?discussion=1')).body;
+  assert.equal(updates.draft, undefined, 'background owner updates omit the working document');
+  assert.equal(updates.threads[0].comments.length, 2);
   assert.equal((await post(`/api/drafts/${draft.id}/publish`, { revision: current.revision })).body.version, 2);
   shared = await session(); assert.equal(shared.body.version, 2); assert.equal(shared.body.draft.title, current.draft.title);
+  const unchanged = await post('/api/review/session', { token, knownVersion: 2 }, guest);
+  assert.equal(unchanged.body.draft, undefined, 'background review updates omit unchanged document bytes');
+  assert.equal(unchanged.body.threads.length, shared.body.threads.length);
+  assert.equal((await post('/api/review/session', { token, knownVersion: 1 }, guest)).body.draft.title, current.draft.title, 'a newly saved version includes its document');
   assert.equal((await post('/api/review/comments', body, guest)).body.id, comment.body.id, 'a prior accepted comment remains retryable after publication changes');
   const old = await post('/api/review/session', { token, version: 1 }, guest);
   assert.equal(old.body.draft.title, 'Shared proposal'); assert.equal(old.body.threads[0].blockId, body.blockId);
+  const lateLink = await post(`/api/drafts/${draft.id}/links`, { contactId: 'b', revision: current.revision });
+  assert.equal(lateLink.status, 201, lateLink.text);
+  const lateToken = new URL(lateLink.body.url).hash.slice(1);
+  const lateView = await post('/api/review/session', { token: lateToken }, guest);
+  assert.deepEqual(lateView.body.versions.map((version: any) => version.version), [2], 'a later contact cannot see older shared versions of the same client');
+  assert.equal(lateView.body.threads.length, 0, 'older-version discussion is outside the new link scope');
+  assert.equal((await post('/api/review/session', { token: lateToken, version: 1 }, guest)).status, 404);
   assert.equal((await post('/api/review/comments', { ...body, requestId: uid(), version: 2 }, guest)).status, shared.body.draft.blocks.some((block: any) => block.id === body.blockId) ? 200 : 404);
   await assert.rejects(runtime.db.query('UPDATE review_versions SET published_at=$1 WHERE draft_id=$2', ['changed', draft.id]), /append-only/);
   const pdf = await PDFDocument.create(); pdf.addPage().drawText('Final agreement');
@@ -94,6 +108,9 @@ test('private review keeps working copies private, preserves discussion across r
   assert.equal(discussion.status, 200, discussion.text);
   assert.equal(discussion.body.threads[0].comments.length, 2, 'the signing capability sees prior review discussion');
   assert.equal(discussion.body.source.fields['private.unused'], undefined);
+  const signingUpdates = await post('/api/sign/discussion', { token: signingToken, updatesOnly: true }, guest);
+  assert.equal(signingUpdates.body.source, undefined);
+  assert.deepEqual(signingUpdates.body.threads, discussion.body.threads);
   assert.equal((await session()).body.signing.state, 'pending');
   assert.equal((await post('/api/review/comments', { ...body, requestId: uid() }, guest)).status, 409, 'review comments close when signing starts');
   assert.equal((await post('/api/sign/comments', { token, body: 'Review link must not authorize signing discussion', requestId: uid() }, guest)).status, 404);
@@ -107,6 +124,8 @@ test('private review keeps working copies private, preserves discussion across r
   const future = { ...current.draft, title: 'Future private content' };
   assert.equal((await save(future, current.revision)).status, 200);
   await post(`/api/drafts/${draft.id}/publish`, { revision: current.revision + 1 });
+  assert.equal((await session()).body.signing, null, 'an older signing must not close review of a newer saved version');
+  assert.equal((await post('/api/review/comments', { token, version: 3, body: 'Reviewing the new version', requestId: uid() }, guest)).status, 200);
   assert.equal((await post('/api/sign/discussion', { token: signingToken }, guest)).body.versions.length, 2, 'a signing capability cannot see future draft revisions');
   assert.equal((await post('/api/sign/review-version', { token: signingToken, version: 3 }, guest)).status, 404);
   assert.equal((await post('/api/sign/review-version', { token: signingToken, version: 1 }, guest)).body.draft.title, 'Shared proposal');
@@ -114,12 +133,81 @@ test('private review keeps working copies private, preserves discussion across r
   assert.equal((await post('/api/documents', signingBody, stranger)).status, 404);
   clock += 86400001; assert.equal((await session()).status, 404);
   assert.equal((await post('/api/login', { email: 'owner@example.test', password: 'correct horse battery staple' })).status, 200);
-  const replacement = await post(`/api/drafts/${draft.id}/links`, { name: 'Client' });
+  const replacement = await post(`/api/drafts/${draft.id}/links`, { contactId: 'a', revision: current.revision + 1 });
   const replacementToken = new URL(replacement.body.url).hash.slice(1);
   assert.equal((await post('/api/review/session', { token: replacementToken }, guest)).status, 200);
   await post(`/api/drafts/${draft.id}/links/${replacement.body.id}/revoke`, {});
   assert.equal((await post('/api/review/session', { token: replacementToken }, guest)).status, 404);
   assert.equal((await post('/api/review/comments', { ...body, token: replacementToken, requestId: uid() }, guest)).status, 404);
+});
+
+test('sharing requires a saved client, excludes private history and follows client changes', { skip: !databaseUrl }, async t => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'signhere-sharing-'));
+  const schema = 'sharing_' + uid().replaceAll('-', '');
+  const config = { databaseUrl: databaseUrl!, schema, dataDir, baseUrl: origin, setupToken: 'sharing-tests-installation-key-long-enough', legacyCreation: true, rateLimit: false };
+  let runtime = await createApp(config);
+  t.after(async () => { await runtime.db.query('DROP SCHEMA "' + schema + '" CASCADE'); await runtime.close(); await rm(dataDir, { recursive: true, force: true }); });
+  let owner = request.agent(runtime.app);
+  const guest = () => request(runtime.app);
+  const post = (path: string, body: unknown) => owner.post(path).set('Origin', origin).send(body);
+  const setup = await post('/api/setup', { setupToken: config.setupToken, name: 'Owner', email: 'owner@example.test', password: 'correct horse battery staple', teamName: 'Sharing' });
+  const draft = createDraft('sharingdraft00001', setup.body.user);
+  draft.title = 'Private early draft'; draft.blocks = templateBlocks('blank');
+  const save = (revision: number) => owner.put('/api/drafts/' + draft.id).set('Origin', origin).send({ draft, expectedRevision: revision });
+  const publish = (revision: number) => post(`/api/drafts/${draft.id}/publish`, { revision });
+  const createLink = (revision: number, contactId = 'anna') => post(`/api/drafts/${draft.id}/links`, { revision, contactId });
+  assert.equal((await save(0)).status, 200);
+  assert.equal((await publish(1)).body.version, 1, 'saving a private version needs no client');
+  assert.equal((await createLink(1)).status, 400, 'a free-form name cannot substitute for an actual client');
+  draft.company = { id: 'client-a', name: 'Client A', orgNr: '', address: '', zip: '', city: '', contacts: [{ id: 'anna', name: 'Anna A', email: 'anna@example.test', role: '', signs: true }] };
+  draft.title = 'Ready for Client A';
+  assert.equal((await save(1)).status, 200);
+  assert.equal((await createLink(2)).status, 409, 'private autosave does not create a shareable version');
+  assert.equal((await publish(2)).body.version, 2);
+  assert.equal((await createLink(2, 'not-a-client-contact')).status, 400);
+  const linkA = await createLink(2);
+  assert.equal(linkA.status, 201, linkA.text);
+  const tokenA = new URL(linkA.body.url).hash.slice(1);
+  const session = (token: string, version?: number) => guest().post('/api/review/session').set('Origin', origin).send({ token, ...(version ? { version } : {}) });
+  let shared = await session(tokenA);
+  assert.equal(shared.body.reviewerName, 'Anna A');
+  assert.deepEqual(shared.body.versions.map((item: any) => item.version), [2]);
+  assert.equal((await session(tokenA, 1)).status, 404, 'earlier private saved versions remain inaccessible');
+
+  // Rehearse a deployed-v7 upgrade: existing Dela-created versions remain shared,
+  // and a legacy named link is bound only to its unique saved client contact.
+  await runtime.db.query('DROP TABLE review_publications; ALTER TABLE review_links DROP COLUMN client_id,DROP COLUMN client_name,DROP COLUMN contact_id,DROP COLUMN recipient_email,DROP COLUMN first_version CASCADE; DELETE FROM migrations WHERE version=8');
+  await runtime.close(); runtime = await createApp(config); owner = request.agent(runtime.app);
+  assert.equal((await post('/api/login', { email: 'owner@example.test', password: 'correct horse battery staple' })).status, 200);
+  assert.equal((await session(tokenA)).status, 200, 'existing review URLs survive the v7 upgrade');
+  const migrated = (await owner.get('/api/drafts/' + draft.id)).body.links[0];
+  assert.equal(migrated.clientId, 'client-a'); assert.equal(migrated.contactId, 'anna');
+
+  const before = draft.company;
+  draft.company = { ...before, id: 'client-b', name: 'Client B', contacts: [{ id: 'bea', name: 'Bea B', email: 'bea@example.test', role: '', signs: true }] };
+  draft.title = 'Only Client B may see this';
+  assert.equal((await save(2)).status, 200);
+  shared = await session(tokenA);
+  assert.equal(shared.body.draft.company.id, 'client-a', 'private client changes cannot reach an existing link');
+  assert.equal((await publish(3)).body.version, 3);
+  assert.equal((await session(tokenA)).status, 404, 'saving for another client revokes the previous client link');
+  const linkB = await createLink(3, 'bea'); assert.equal(linkB.status, 201, linkB.text);
+  let tokenB = new URL(linkB.body.url).hash.slice(1);
+  shared = await session(tokenB);
+  assert.deepEqual(shared.body.versions.map((item: any) => item.version), [3]);
+  assert.equal((await session(tokenB, 2)).status, 404, 'a new client cannot inspect another client’s history');
+  const replacement = await createLink(3, 'bea');
+  assert.equal(replacement.status, 201); assert.equal(replacement.body.rotated, true);
+  assert.equal((await session(tokenB)).status, 404, 'replacing a contact link revokes the old capability atomically');
+  tokenB = new URL(replacement.body.url).hash.slice(1);
+  assert.equal((await session(tokenB)).status, 200);
+  const pdf = await PDFDocument.create(); pdf.addPage().drawText('Client B agreement');
+  const signing = await post('/api/documents', { title: draft.title, fileName: 'client-b.pdf', pdfBase64: Buffer.from(await pdf.save()).toString('base64'), recipients: [{ name: 'Bea B', email: 'bea@example.test' }], methodId: 'draw', draftSource: { id: draft.id, revision: 3 } });
+  assert.equal(signing.status, 201, signing.text);
+  const signingToken = new URL(signing.body.links[0].url).hash.slice(1);
+  const discussion = await guest().post('/api/sign/discussion').set('Origin', origin).send({ token: signingToken });
+  assert.deepEqual(discussion.body.versions.map((item: any) => item.version), [3]);
+  assert.equal((await guest().post('/api/sign/review-version').set('Origin', origin).send({ token: signingToken, version: 2 })).status, 404);
 });
 
 test('draft and review migration works with separate restricted runtime and migration roles', { skip: !databaseUrl }, async t => {

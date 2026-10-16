@@ -685,9 +685,9 @@ export async function createApp(config: AppConfig) {
 
   const partyInput = z.object({ token: tokenSchema, documentId: z.uuid().optional() }).strict();
   app.post('/api/sign/discussion', async (req, res) => {
-    const { token: raw, documentId } = partyInput.parse(req.body);
+    const { token: raw, documentId, updatesOnly } = partyInput.extend({ updatesOnly: z.boolean().optional() }).parse(req.body);
     const { document } = await partyTarget(pool, raw, documentId);
-    res.json(await reviews.signingDiscussion(pool, document.id));
+    res.json(await reviews.signingDiscussion(pool, document.id, updatesOnly));
   });
   app.post('/api/sign/review-version', async (req, res) => {
     const { token: raw, documentId, version } = partyInput.extend({ version: z.number().int().positive() }).parse(req.body);
@@ -868,4 +868,3 @@ export async function createApp(config: AppConfig) {
   if (delivery && config.delivery?.autoStart !== false) delivery.start();
   return { app, db: pool, pool, finalization, delivery, keys, close: async () => { await finalization.stop(); await delivery?.stop(); await pool.end(); } };
 }
-

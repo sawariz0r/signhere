@@ -17,10 +17,10 @@ function Composer({ label, send, identity }: { label: string; send: (body: strin
   return <form className="rd-composer" onSubmit={event => void submit(event)}><label><span className="sr-only">{label}</span><textarea className="ed-input" aria-label={label} placeholder={label} value={body} onChange={event => setBody(event.target.value)} maxLength={5000} required rows={3} disabled={busy} onKeyDown={event => { if ((event.metaKey || event.ctrlKey) && event.key === 'Enter') event.currentTarget.form?.requestSubmit(); }} /></label><ErrorBox error={error} /><div className="rd-composer-foot"><span>{identity}</span><button className="ed-btn primary" disabled={busy || !body.trim()}>{busy ? 'Sparar…' : 'Skicka kommentar'}</button></div></form>;
 }
 
-export function Discussion({ threads, version, filter, setFilter, label, post, resolve, owner = false, signing = false, canPost = true, identity, closedNote, onAnchor, onRefresh }: {
+export function Discussion({ threads, version, filter, setFilter, label, post, resolve, owner = false, signing = false, canPost = true, identity, closedNote, onAnchor }: {
   threads: ReviewThread[]; version: number | null; filter: string | null; setFilter: (id: string | null) => void; label: (id: string | null) => string;
   post: (input: CommentInput) => Promise<void>; resolve?: (thread: ReviewThread) => Promise<void>; owner?: boolean; signing?: boolean; canPost?: boolean;
-  identity?: string; closedNote?: string; onAnchor?: (thread: ReviewThread) => void; onRefresh?: () => void;
+  identity?: string; closedNote?: string; onAnchor?: (thread: ReviewThread) => void;
 }) {
   const [reply, setReply] = useState<string | null>(null), [error, setError] = useState('');
   const current = threads.filter(thread => signing ? thread.signingDocumentId || thread.version === version : thread.version === version && !thread.signingDocumentId);
@@ -38,6 +38,5 @@ export function Discussion({ threads, version, filter, setFilter, label, post, r
     {closedNote && <p className="rd-closed">{closedNote}</p>}<ErrorBox error={error} />
     <div className="rd-threads">{visible.map(thread => renderThread(thread))}</div>{!visible.length && <p className="rd-empty">Inga kommentarer {filter ? 'här ' : ''}ännu.</p>}
     {older.length > 0 && <details className="rd-older"><summary>Tidigare versioner och signering ({older.length})</summary><div className="rd-threads">{older.map(thread => renderThread(thread, true))}</div></details>}
-    {onRefresh && <button type="button" className="ed-text-btn rd-refresh" onClick={onRefresh}>Uppdatera kommentarer</button>}
   </section>;
 }

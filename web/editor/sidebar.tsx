@@ -1,17 +1,18 @@
-import { useEffect, useState, type FormEvent, type ReactNode } from 'react';
+import { useState, type FormEvent, type ReactNode } from 'react';
 import { ArrowRight } from 'lucide-react';
 import { useEditorApi } from './context';
+import { CompanyFields, CompanyPicker, ContactForm, emptyCompany, rememberContact, type CompanyDetails } from './clients';
 import {
-  ACCENTS, BLOCK_LABELS, companyInitials, CURRENCIES, EXPIRY_DAYS, FONTS, initials, loadBook, normalizeOrgNumber, ORG_NUMBER, resolveTokens, saveBook, signers, SIGNATURE_ID, toRecipient, uid, validEmail,
+  ACCENTS, BLOCK_LABELS, companyInitials, CURRENCIES, EXPIRY_DAYS, FONTS, initials, loadBook, normalizeOrgNumber, ORG_NUMBER, resolveTokens, saveBook, signers, SIGNATURE_ID, toRecipient,
   type Block, type Company, type DocSettings, type Draft, type Issue, type RecipientCompany,
 } from './model';
 
 /** With `attachment`, signers come from the main document, so sending and signer options are hidden. */
-export function SidePanel({ issues, flash, onIssue, attachment = false, review }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment?: boolean; review?: ReactNode }) {
+export function SidePanel({ issues, flash, onIssue, attachment = false, review, activeClientNames }: { issues: Issue[]; flash: boolean; onIssue: (issue: Issue) => void; attachment?: boolean; review?: ReactNode; activeClientNames?: string[] }) {
   return <aside className="ed-panel" aria-label="Utskick och inställningar">
-    {review}
     <StatusCard issues={issues} flash={flash} onIssue={onIssue} attachment={attachment} />
-    <RecipientsCard attachment={attachment} />
+    {review}
+    <RecipientsCard attachment={attachment} activeClientNames={activeClientNames} />
     <OutlineCard attachment={attachment} />
     {!attachment && <SendingCard />}
     <AppearanceCard />
@@ -29,117 +30,29 @@ function StatusCard({ issues, flash, onIssue, attachment }: { issues: Issue[]; f
 
 /* ---------- Mottagare ---------- */
 
-type CompanyForm = { name: string; orgNr: string; address: string; zip: string; city: string; contactName: string; contactEmail: string; contactRole: string; save: boolean };
-const emptyForm = (name = ''): CompanyForm => ({ name, orgNr: '', address: '', zip: '', city: '', contactName: '', contactEmail: '', contactRole: '', save: true });
-
-function RecipientsCard({ attachment }: { attachment: boolean }) {
+export function RecipientsCard({ attachment = false, activeClientNames = [] }: { attachment?: boolean; activeClientNames?: string[] }) {
   const { draft, update } = useEditorApi();
-  const [book, setBook] = useState<Company[]>(loadBook);
-  const [query, setQuery] = useState('');
-  const [mode, setMode] = useState<'new' | 'edit' | null>(null);
-  const [form, setForm] = useState<CompanyForm>(emptyForm);
-  const [formError, setFormError] = useState('');
-  const [contactOpen, setContactOpen] = useState(false);
-  const [contact, setContact] = useState({ name: '', email: '', role: '' });
-  const [contactError, setContactError] = useState('');
+  const [editing, setEditing] = useState(false), [details, setDetails] = useState<CompanyDetails>(emptyCompany), [error, setError] = useState('');
+  const [contactOpen, setContactOpen] = useState(false), [switching, setSwitching] = useState(false);
   const company = draft.company;
-  useEffect(() => saveBook(book), [book]);
-
   const setCompany = (change: (company: RecipientCompany | null) => RecipientCompany | null) => update(current => ({ ...current, company: change(current.company) }));
-  const choose = (entry: Company) => { setCompany(() => toRecipient(entry)); setBook(list => [entry, ...list.filter(item => item.id !== entry.id)]); setQuery(''); };
-  const q = query.trim().toLowerCase();
-  const haystack = (entry: Company) => [entry.name, entry.orgNr, entry.city, ...entry.contacts.map(person => `${person.name} ${person.email}`)].join(' ').toLowerCase();
-  const hits = book.filter(entry => !q || haystack(entry).includes(q)).slice(0, 5);
-
-  const field = (key: keyof CompanyForm) => (event: React.ChangeEvent<HTMLInputElement>) => { const value = event.target.type === 'checkbox' ? event.target.checked : event.target.value; setForm(current => ({ ...current, [key]: value })); setFormError(''); };
-  const submit = (event: FormEvent) => {
-    event.preventDefault();
-    const orgNr = form.orgNr.trim();
-    if (!form.name.trim()) return setFormError('Ange företagets namn.');
-    if (orgNr && !ORG_NUMBER.test(orgNr)) return setFormError('Org.nr skrivs som 556123-4567.');
-    const details = { name: form.name.trim(), orgNr: normalizeOrgNumber(orgNr), address: form.address.trim(), zip: form.zip.trim(), city: form.city.trim() };
-    if (mode === 'edit' && company) {
-      setCompany(current => current && { ...current, ...details });
-      setBook(list => list.map(entry => entry.id === company.id ? { ...entry, ...details } : entry));
-      return setMode(null);
-    }
-    if (!form.contactName.trim()) return setFormError('Ange kontaktpersonens namn.');
-    if (!validEmail(form.contactEmail)) return setFormError('Ange en giltig e-postadress.');
-    const entry: Company = { id: uid(), ...details, contacts: [{ id: uid(), name: form.contactName.trim(), email: form.contactEmail.trim(), role: form.contactRole.trim() }] };
-    setCompany(() => toRecipient(entry));
-    if (form.save) setBook(list => [entry, ...list]);
-    setMode(null); setQuery('');
+  const choose = (entry: Company) => { setCompany(() => toRecipient(entry)); setSwitching(false); };
+  const saveDetails = (event: FormEvent) => {
+    event.preventDefault(); if (!company) return;
+    if (!details.name.trim()) return setError('Ange företagets namn.');
+    if (details.orgNr.trim() && !ORG_NUMBER.test(details.orgNr.trim())) return setError('Org.nr skrivs som 556123-4567.');
+    const value = { ...details, name: details.name.trim(), orgNr: normalizeOrgNumber(details.orgNr.trim()) };
+    setCompany(current => current && { ...current, ...value });
+    saveBook(loadBook().map(entry => entry.id === company.id ? { ...entry, ...value } : entry)); setEditing(false);
   };
-  const addContact = (event: FormEvent) => {
-    event.preventDefault();
-    if (!company) return;
-    if (!contact.name.trim()) return setContactError('Ange ett namn.');
-    if (!validEmail(contact.email)) return setContactError('Ange en giltig e-postadress.');
-    const person = { id: uid(), name: contact.name.trim(), email: contact.email.trim(), role: contact.role.trim() };
-    setCompany(current => current && { ...current, contacts: [...current.contacts, { ...person, signs: true }] });
-    setBook(list => list.some(entry => entry.id === company.id) ? list.map(entry => entry.id === company.id ? { ...entry, contacts: [...entry.contacts, person] } : entry) : list);
-    setContactOpen(false);
-  };
-  const toggleSigner = (id: string) => setCompany(current => current && { ...current, contacts: current.contacts.map(person => person.id === id ? { ...person, signs: !person.signs } : person) });
-
-  return <section className="ed-card ed-recipients" data-rec-card>
-    <div className="ed-card-head"><h2>Mottagare</h2><span>{attachment ? 'Används i kundfälten' : 'Blir parter och signerare'}</span></div>
-
-    {mode ? <form className="ed-form" onSubmit={submit} noValidate>
-      <strong>{mode === 'edit' ? 'Ändra företag' : 'Nytt företag'}</strong>
-      <label><span>Företagsnamn</span><input className="ed-input" value={form.name} placeholder="Företag AB" onChange={field('name')} autoFocus /></label>
-      <label><span>Organisationsnummer <em>valfritt</em></span><input className="ed-input tabular" inputMode="numeric" value={form.orgNr} placeholder="556123-4567" onChange={field('orgNr')} /></label>
-      <label><span>Adress <em>valfritt</em></span><input className="ed-input" value={form.address} placeholder="Gatuadress" onChange={field('address')} /></label>
-      <div className="ed-zip-row"><input className="ed-input" aria-label="Postnummer" value={form.zip} placeholder="Postnr" onChange={field('zip')} /><input className="ed-input" aria-label="Ort" value={form.city} placeholder="Ort" onChange={field('city')} /></div>
-      {mode === 'new' && <div className="ed-form-section">
-        <span className="ed-form-label">Kontaktperson som signerar</span>
-        <input className="ed-input" aria-label="Kontaktpersonens namn" value={form.contactName} placeholder="För- och efternamn" onChange={field('contactName')} />
-        <input className="ed-input" aria-label="Kontaktpersonens e-post" type="email" value={form.contactEmail} placeholder="E-post" onChange={field('contactEmail')} />
-        <input className="ed-input" aria-label="Kontaktpersonens roll" value={form.contactRole} placeholder="Roll, t.ex. VD (valfritt)" onChange={field('contactRole')} />
-        <label className="ed-check"><input type="checkbox" checked={form.save} onChange={field('save')} />Spara i kontakter</label>
-      </div>}
-      {formError && <span className="ed-error" role="alert">{formError}</span>}
-      <div className="ed-form-actions"><button type="button" className="ed-btn" onClick={() => { setMode(null); setFormError(''); }}>Avbryt</button><button type="submit" className="ed-btn primary">{mode === 'edit' ? 'Spara' : 'Lägg till'}</button></div>
-    </form>
-
-    : !company ? <div className="ed-pick-company">
-      <input className="ed-input tall" aria-label="Sök mottagare" value={query} placeholder="Sök företag, org.nr eller kontakt" onChange={event => setQuery(event.target.value)} />
-      <div className="ed-mono muted">{q ? 'Träffar' : 'Senaste'}</div>
-      <div className="ed-hits">
-        {hits.map(entry => <button key={entry.id} type="button" onClick={() => choose(entry)}>
-          <span className="ed-tile">{companyInitials(entry.name)}</span>
-          <span className="ed-hit-text"><strong>{entry.name}</strong><span>{[entry.orgNr, entry.contacts.length === 1 ? entry.contacts[0].name : `${entry.contacts.length} kontakter`].filter(Boolean).join(' · ')}</span></span>
-        </button>)}
-        {!hits.length && <p className="ed-hits-empty">Inga träffar i kontakter.</p>}
-      </div>
-      <button type="button" className="ed-dashed" onClick={() => { setForm(emptyForm(query.trim())); setFormError(''); setMode('new'); }}>{q ? `+ Nytt företag "${query.trim()}"` : '+ Nytt företag'}</button>
-    </div>
-
-    : <div className="ed-chosen">
-      <div className="ed-company">
-        <div className="ed-company-main"><span className="ed-tile dark">{companyInitials(company.name)}</span><div><strong>{company.name}</strong><span>{[company.orgNr ? `Org.nr ${company.orgNr}` : 'Org.nr saknas', company.city].filter(Boolean).join(' · ')}</span></div></div>
-        <div className="ed-company-actions">
-          <button type="button" className="ed-text-btn" onClick={() => { setForm({ ...emptyForm(company.name), orgNr: company.orgNr, address: company.address, zip: company.zip, city: company.city }); setFormError(''); setMode('edit'); }}>Ändra uppgifter</button>
-          <button type="button" className="ed-text-btn" onClick={() => { setCompany(() => null); setContactOpen(false); }}>Byt mottagare</button>
-        </div>
-      </div>
-      <div className="ed-contacts">
-        <div className="ed-contacts-head"><span>Kontaktpersoner</span><span>Signerar</span></div>
-        {company.contacts.map(person => <label key={person.id} className="ed-contact">
-          <span className="ed-avatar">{initials(person.name)}</span>
-          <span className="ed-contact-text"><strong>{person.name}</strong><span>{[person.role, person.email].filter(Boolean).join(' · ')}</span></span>
-          <input type="checkbox" checked={person.signs} aria-label={`${person.name} signerar`} onChange={() => toggleSigner(person.id)} />
-        </label>)}
-      </div>
-      {contactOpen ? <form className="ed-form dashed" onSubmit={addContact} noValidate>
-        <input className="ed-input" aria-label="Namn" value={contact.name} placeholder="För- och efternamn" autoFocus onChange={event => { setContact(value => ({ ...value, name: event.target.value })); setContactError(''); }} />
-        <input className="ed-input" aria-label="E-post" type="email" value={contact.email} placeholder="E-post" onChange={event => { setContact(value => ({ ...value, email: event.target.value })); setContactError(''); }} />
-        <input className="ed-input" aria-label="Roll" value={contact.role} placeholder="Roll (valfritt)" onChange={event => setContact(value => ({ ...value, role: event.target.value }))} />
-        {contactError && <span className="ed-error" role="alert">{contactError}</span>}
-        <div className="ed-form-actions"><button type="button" className="ed-btn" onClick={() => setContactOpen(false)}>Avbryt</button><button type="submit" className="ed-btn primary">Lägg till</button></div>
-      </form> : <button type="button" className="ed-text-btn start" onClick={() => { setContact({ name: '', email: '', role: '' }); setContactError(''); setContactOpen(true); }}>+ Kontaktperson</button>}
+  return <section className="ed-card ed-recipients" data-rec-card><div className="ed-card-head"><h2>Mottagare</h2><span>{attachment ? 'Används i kundfälten' : 'Blir parter och signerare'}</span></div>
+    {editing ? <form className="ed-form" onSubmit={saveDetails} noValidate><strong>Ändra företag</strong><CompanyFields value={details} onChange={value => { setDetails(value); setError(''); }} />{error && <span className="ed-error" role="alert">{error}</span>}<div className="ed-form-actions"><button type="button" className="ed-btn" onClick={() => setEditing(false)}>Avbryt</button><button className="ed-btn primary">Spara</button></div></form>
+    : !company ? <CompanyPicker onChoose={choose} />
+    : <div className="ed-chosen"><div className="ed-company"><div className="ed-company-main"><span className="ed-tile dark">{companyInitials(company.name)}</span><div><strong>{company.name}</strong><span>{[company.orgNr ? `Org.nr ${company.orgNr}` : 'Org.nr saknas', company.city].filter(Boolean).join(' · ')}</span></div></div><div className="ed-company-actions"><button type="button" className="ed-text-btn" onClick={() => { setDetails(company); setError(''); setEditing(true); }}>Ändra uppgifter</button><button type="button" className="ed-text-btn" onClick={() => { if (activeClientNames.length) setSwitching(true); else { setCompany(() => null); setContactOpen(false); } }}>Byt mottagare</button></div></div>
+      {switching && <div className="sh-confirm" role="group" aria-label="Byt mottagare"><p>{activeClientNames.join(' och ')} har en aktiv länk. Den slutar fungera när du sparar utkastet med en ny mottagare. Den nya mottagaren får en egen länk när du delar.</p><div className="ed-form-actions"><button type="button" className="ed-btn" autoFocus onClick={() => setSwitching(false)}>Avbryt</button><button type="button" className="ed-btn" onClick={() => { setCompany(() => null); setContactOpen(false); setSwitching(false); }}>Välj ny mottagare</button></div></div>}
+      <div className="ed-contacts"><div className="ed-contacts-head"><span>Kontaktpersoner</span><span>Signerar</span></div>{company.contacts.map(person => <label key={person.id} className="ed-contact"><span className="ed-avatar">{initials(person.name)}</span><span className="ed-contact-text"><strong>{person.name}</strong><span>{[person.role, person.email].filter(Boolean).join(' · ')}</span></span><input type="checkbox" checked={person.signs} aria-label={`${person.name} signerar`} onChange={() => setCompany(current => current && { ...current, contacts: current.contacts.map(item => item.id === person.id ? { ...item, signs: !item.signs } : item) })} /></label>)}</div>
+      {contactOpen ? <ContactForm onCancel={() => setContactOpen(false)} onAdd={person => { setCompany(current => current && { ...current, contacts: [...current.contacts, { ...person, signs: true }] }); rememberContact(company.id, person); setContactOpen(false); }} /> : <button type="button" className="ed-text-btn start" onClick={() => setContactOpen(true)}>+ Kontaktperson</button>}
     </div>}
-
     {!attachment && <label className="ed-check ed-me"><input type="checkbox" checked={draft.settings.senderSigns} onChange={event => update(current => ({ ...current, settings: { ...current.settings, senderSigns: event.target.checked } }))} />Jag signerar också</label>}
   </section>;
 }

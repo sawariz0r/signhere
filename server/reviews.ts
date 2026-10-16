@@ -40,17 +40,25 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     if (!draft || draft.archived_at || current.revoked_at || Number(current.expires_at) <= now()) throw new ApiError(404, 'Granskningslänken är ogiltig eller har upphört att gälla.');
     return { draft, link: current };
   }
-  async function signingState(db: DB, draftId: string) {
-    return (await db.query("SELECT d.status AS state,d.created_at AS \"sentAt\" FROM draft_signings s JOIN documents d ON d.id=s.document_id WHERE s.draft_id=$1 AND d.status<>'cancelled' ORDER BY d.created_at DESC LIMIT 1", [draftId])).rows[0] ?? null;
+  async function signingState(db: DB, draftId: string, sourceRevision: number, clientId?: string | null) {
+    return (await db.query(`SELECT d.status AS state,d.created_at AS "sentAt" FROM draft_signings s JOIN documents d ON d.id=s.document_id
+      JOIN draft_revisions r ON r.draft_id=s.draft_id AND r.revision=s.revision
+      WHERE s.draft_id=$1 AND s.revision>=$2 AND d.status<>'cancelled' AND ($3::text IS NULL OR r.content#>>'{company,id}'=$3)
+      ORDER BY d.created_at DESC LIMIT 1`, [draftId, sourceRevision, clientId ?? null])).rows[0] ?? null;
   }
-  async function history(db: DB, draftId: string, signing?: { documentId: string; revision: number }, owner = false) {
-    const versions = (await db.query('SELECT version,source_revision AS "sourceRevision",published_at AS "publishedAt" FROM review_versions WHERE draft_id=$1 ORDER BY version DESC', [draftId])).rows;
+  async function history(db: DB, draftId: string, signing?: { documentId: string; revision: number; clientId?: string | null }, owner = false, reviewLink?: Row) {
+    const versions = (await db.query(`SELECT v.version,v.source_revision AS "sourceRevision",v.published_at AS "publishedAt",p.shared_at AS "sharedAt",v.content#>>'{company,id}' AS "clientId"
+      FROM review_versions v LEFT JOIN review_publications p ON p.draft_id=v.draft_id AND p.version=v.version
+      WHERE v.draft_id=$1 AND ($2 OR p.version IS NOT NULL AND v.version>=$3 AND ($4::text IS NULL OR v.content#>>'{company,id}'=$4))
+      ORDER BY v.version DESC`, [draftId, owner, reviewLink?.first_version ?? 1, reviewLink?.client_id ?? signing?.clientId ?? null])).rows;
     const threads = (await db.query(`SELECT t.id,t.version,t.signing_document_id AS "signingDocumentId",t.block_id AS "blockId",t.resolved,t.created_at AS "createdAt"
       FROM review_threads t LEFT JOIN review_versions v ON v.draft_id=t.draft_id AND v.version=t.version
       WHERE t.draft_id=$1 AND ($4 OR ($2::uuid IS NULL AND t.signing_document_id IS NULL) OR ($2::uuid IS NOT NULL AND (t.signing_document_id=$2 OR t.signing_document_id IS NULL AND v.source_revision<=$3)))
       ORDER BY t.created_at,t.id`, [draftId, signing?.documentId ?? null, signing?.revision ?? null, owner])).rows;
     const comments = (await db.query('SELECT c.id,c.thread_id AS "threadId",c.author_name AS "authorName",c.body,c.created_at AS "createdAt" FROM review_comments c JOIN review_threads t ON t.id=c.thread_id WHERE t.draft_id=$1 ORDER BY c.created_at,c.id', [draftId])).rows;
-    return { versions: signing ? versions.filter(version => version.sourceRevision <= signing.revision) : versions, threads: threads.map(thread => ({ ...thread, comments: comments.filter(comment => comment.threadId === thread.id) })) };
+    const visibleVersions = signing ? versions.filter(version => version.sourceRevision <= signing.revision) : versions;
+    const allowed = new Set(visibleVersions.map(version => version.version));
+    return { versions: visibleVersions, threads: threads.filter(thread => owner || thread.signingDocumentId === signing?.documentId || allowed.has(thread.version)).map(thread => ({ ...thread, comments: comments.filter(comment => comment.threadId === thread.id) })) };
   }
   app.get('/api/drafts', requireUser, async (_req, res) => {
     const drafts = (await pool.query(`SELECT id,content->>'title' AS title,revision,updated_at AS "updatedAt",
@@ -62,9 +70,9 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     res.json(await transaction(pool, async db => {
       const row = await own(db, req.params.id, res.locals.user.team_id, true, req.query.optional === '1');
       if (!row) return { draft: null };
-      const links = (await db.query('SELECT id,name,expires_at AS "expiresAt",revoked_at AS "revokedAt" FROM review_links WHERE draft_id=$1 ORDER BY created_at DESC', [row.id])).rows;
+      const links = (await db.query('SELECT id,name,client_id AS "clientId",client_name AS "clientName",contact_id AS "contactId",recipient_email AS "recipientEmail",first_version AS "firstVersion",expires_at AS "expiresAt",revoked_at AS "revokedAt" FROM review_links WHERE draft_id=$1 ORDER BY created_at DESC', [row.id])).rows;
       const signings = (await db.query('SELECT revision,document_id AS "documentId" FROM draft_signings WHERE draft_id=$1', [row.id])).rows;
-      return { draft: row.content, revision: row.revision, ...await history(db, row.id, undefined, true), links, signings };
+      return { ...(req.query.discussion === '1' ? {} : { draft: row.content }), revision: row.revision, ...await history(db, row.id, undefined, true), links, signings };
     }));
   });
   app.get('/api/drafts/:id/versions/:version', requireUser, async (req, res) => {
@@ -104,24 +112,40 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
       const row = await own(db, req.params.id, res.locals.user.team_id, true);
       const previous = (await db.query('SELECT version FROM review_versions WHERE draft_id=$1 AND source_revision=$2', [row.id, input.revision])).rows[0];
       if (previous) return previous;
-      if (row.revision !== input.revision) throw new ApiError(409, 'Spara och kontrollera den senaste versionen före delning.');
-      if (!row.content.title.trim() || !row.content.blocks.length) throw new ApiError(400, 'Lägg till en titel och minst ett avsnitt.');
+      if (row.revision !== input.revision) throw new ApiError(409, 'Utkastet har ändrats. Spara den senaste versionen igen.');
       const count = Number((await db.query('SELECT count(*) FROM review_versions WHERE draft_id=$1', [row.id])).rows[0].count);
-      if (count >= 100) throw new ApiError(409, 'Utkastet har redan 100 delade versioner.');
+      if (count >= 100) throw new ApiError(409, 'Utkastet har redan 100 sparade versioner.');
+      // Access follows the saved client, never a later private autosave or a different client.
+      const contacts = row.content.company?.contacts ?? [];
+      const links = (await db.query('SELECT * FROM review_links WHERE draft_id=$1 AND revoked_at IS NULL AND expires_at>$2', [row.id, now()])).rows;
+      let shared = false;
+      for (const link of links) {
+        const person = contacts.find((person: Row) => person.id === link.contact_id);
+        if (link.client_id !== row.content.company?.id || !person || person.email.trim().toLowerCase() !== link.recipient_email || person.name.trim() !== link.name) await db.query('UPDATE review_links SET revoked_at=$1 WHERE id=$2', [at(), link.id]);
+        else shared = true;
+      }
+      if (shared && (!row.content.title.trim() || !row.content.blocks.length)) throw new ApiError(400, 'Lägg till en titel och minst ett avsnitt innan du sparar en klientversion.');
       const snapshot = snapshotForReview(row.content, at());
       await db.query('INSERT INTO review_versions(draft_id,version,source_revision,content,published_at) VALUES($1,$2,$3,$4,$5)', [row.id, count + 1, input.revision, snapshot, at()]);
+      if (shared) await db.query('INSERT INTO review_publications(draft_id,version,shared_at) VALUES($1,$2,$3)', [row.id, count + 1, at()]);
       return { version: count + 1 };
     }));
   });
   app.post('/api/drafts/:id/links', requireUser, async (req, res) => {
-    const input = z.object({ name: z.string().trim().min(1).max(80), days: z.number().int().min(1).max(365).default(30) }).strict().parse(req.body);
+    const input = z.object({ contactId: z.string().min(1).max(80), revision: integer, days: z.number().int().min(1).max(365).default(30) }).strict().parse(req.body);
     const result = await transaction(pool, async db => {
       const row = await own(db, req.params.id, res.locals.user.team_id, true);
-      if (!(await db.query('SELECT 1 FROM review_versions WHERE draft_id=$1', [row.id])).rowCount) throw new ApiError(409, 'Dela en version först.');
+      const latest = (await db.query('SELECT version,source_revision FROM review_versions WHERE draft_id=$1 ORDER BY version DESC LIMIT 1', [row.id])).rows[0];
+      if (!latest || latest.source_revision !== input.revision || row.revision !== input.revision) throw new ApiError(409, 'Spara utkastet innan du skapar länken.');
+      if (!row.content.title.trim() || !row.content.blocks.length) throw new ApiError(400, 'Lägg till en titel och minst ett avsnitt.');
+      const company = row.content.company, person = company?.contacts.find((person: Row) => person.id === input.contactId);
+      if (!company?.name.trim() || !person?.name.trim() || !z.email().safeParse(person.email).success) throw new ApiError(400, 'Lägg till en klient och välj en kontaktperson med namn och e-post först.');
       if (Number((await db.query('SELECT count(*) FROM review_links WHERE draft_id=$1', [row.id])).rows[0].count) >= 100) throw new ApiError(409, 'Utkastet har redan 100 länkar.');
       const raw = token(), id = uid(), expiresAt = now() + input.days * 86400000;
-      await db.query('INSERT INTO review_links(id,draft_id,name,token_hash,expires_at,created_at) VALUES($1,$2,$3,$4,$5,$6)', [id, row.id, input.name, sha256(raw), expiresAt, at()]);
-      return { id, url: origin + '/review#' + raw, expiresAt };
+      const replaced = await db.query('UPDATE review_links SET revoked_at=$1 WHERE draft_id=$2 AND client_id=$3 AND contact_id=$4 AND revoked_at IS NULL RETURNING id', [at(), row.id, company.id, person.id]);
+      await db.query('INSERT INTO review_links(id,draft_id,name,token_hash,expires_at,created_at,client_id,client_name,contact_id,recipient_email,first_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)', [id, row.id, person.name.trim(), sha256(raw), expiresAt, at(), company.id, company.name, person.id, person.email.trim().toLowerCase(), latest.version]);
+      await db.query('INSERT INTO review_publications(draft_id,version,shared_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING', [row.id, latest.version, at()]);
+      return { id, url: origin + '/review#' + raw, expiresAt, version: latest.version, name: person.name.trim(), email: person.email, clientName: company.name, rotated: Boolean(replaced.rowCount) };
     });
     res.status(201).json(result);
   });
@@ -133,16 +157,19 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     res.json({ ok: true });
   });
   app.post('/api/review/session', async (req, res) => {
-    const input = z.object({ token: rawToken, version: integer.optional() }).strict().parse(req.body);
+    const input = z.object({ token: rawToken, version: integer.optional(), knownVersion: integer.optional() }).strict().parse(req.body);
     res.json(await transaction(pool, async db => {
       const { draft, link } = await capability(db, input.token);
-      const version = (await db.query('SELECT version,content,published_at FROM review_versions WHERE draft_id=$1 AND ($2::integer IS NULL OR version=$2) ORDER BY version DESC LIMIT 1', [draft.id, input.version ?? null])).rows[0];
+      const discussion = await history(db, draft.id, undefined, false, link);
+      const selected = input.version ?? discussion.versions[0]?.version;
+      if (!discussion.versions.some(version => version.version === selected)) throw new ApiError(404, 'Versionen finns inte för denna granskningslänk.');
+      const version = (await db.query('SELECT version,CASE WHEN version=$3 THEN NULL ELSE content END AS content,published_at FROM review_versions WHERE draft_id=$1 AND version=$2', [draft.id, selected, input.knownVersion ?? null])).rows[0];
       if (!version) throw new ApiError(404, 'Versionen finns inte.');
       const brand = brandOf((await db.query('SELECT * FROM teams WHERE id=$1', [draft.team_id])).rows[0]);
-      return { draft: version.content, version: version.version, publishedAt: version.published_at, reviewerName: link.name, brand, signing: await signingState(db, draft.id), ...await history(db, draft.id) };
+      return { ...(version.content ? { draft: version.content } : {}), version: version.version, publishedAt: version.published_at, reviewerName: link.name, brand, signing: await signingState(db, draft.id, discussion.versions[0].sourceRevision, link.client_id), ...discussion };
     }));
   });
-  async function comment(db: PoolClient, draft: Row, authorKey: string, authorName: string, input: z.infer<typeof commentSchema>, signing?: { documentId: string; revision: number }, isOwner = false, beforeCreate?: () => Promise<void>) {
+  async function comment(db: PoolClient, draft: Row, authorKey: string, authorName: string, input: z.infer<typeof commentSchema>, signing?: { documentId: string; revision: number; clientId?: string | null }, isOwner = false, beforeCreate?: () => Promise<void>) {
     const previous = (await db.query('SELECT c.*,t.draft_id,t.version,t.signing_document_id,t.block_id FROM review_comments c JOIN review_threads t ON t.id=c.thread_id WHERE c.author_key=$1 AND c.request_id=$2', [authorKey, input.requestId])).rows[0];
     if (previous) {
       if (previous.draft_id !== draft.id || (!(isOwner && input.threadId) && (signing ? previous.signing_document_id !== signing.documentId && !input.threadId : previous.version !== input.version)) || previous.body !== input.body || (input.threadId ? previous.thread_id !== input.threadId : previous.block_id !== input.blockId)) throw new ApiError(409, 'Försöket innehåller andra ändringar än det sparade svaret.');
@@ -178,9 +205,9 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     res.json(await transaction(pool, async db => {
       const { draft, link } = await capability(db, raw);
       return comment(db, draft, 'link:' + link.id, link.name, input, undefined, false, async () => {
-        if (await signingState(db, draft.id)) throw new ApiError(409, 'Avtalet har skickats för signering. Ställ frågor via din personliga signeringslänk.');
-        const latest = (await db.query('SELECT max(version) AS version FROM review_versions WHERE draft_id=$1', [draft.id])).rows[0].version;
-        if (input.version !== latest) throw new ApiError(409, 'Kommentera den senaste delade versionen.');
+        const latest = (await history(db, draft.id, undefined, false, link)).versions[0];
+        if (!latest || input.version !== latest.version) throw new ApiError(409, 'Kommentera den senaste delade versionen.');
+        if (await signingState(db, draft.id, latest.sourceRevision, link.client_id)) throw new ApiError(409, 'Avtalet har skickats för signering. Ställ frågor via din personliga signeringslänk.');
       });
     }));
   });
@@ -198,23 +225,25 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
     res.json({ ok: true });
   });
   async function signingSource(db: DB, documentId: string) {
-    const source = (await db.query('SELECT s.draft_id,s.revision FROM draft_signings s WHERE s.document_id=$1', [documentId])).rows[0];
+    const source = (await db.query('SELECT s.draft_id,s.revision,r.content#>>\'{company,id}\' AS "clientId" FROM draft_signings s JOIN draft_revisions r ON r.draft_id=s.draft_id AND r.revision=s.revision WHERE s.document_id=$1', [documentId])).rows[0];
     if (!source) return null;
     return { ...source, documentId };
   }
   return {
     signingVersion: async (db: DB, documentId: string, version: number) => {
       const source = await signingSource(db, documentId);
-      const row = source ? (await db.query('SELECT content FROM review_versions WHERE draft_id=$1 AND source_revision<=$2 AND version=$3', [source.draft_id, source.revision, version])).rows[0] : null;
+      const allowed = source && (await history(db, source.draft_id, { documentId, revision: source.revision, clientId: source.clientId })).versions.some(item => item.version === version);
+      const row = allowed ? (await db.query('SELECT content FROM review_versions WHERE draft_id=$1 AND version=$2', [source!.draft_id, version])).rows[0] : null;
       if (!row) throw new ApiError(404, 'Versionen finns inte för detta signeringsdokument.');
       return { draft: row.content };
     },
     /** Caller must authorize the exact signing document first; review tokens never enter this path. */
-    signingDiscussion: async (db: DB, documentId: string) => {
+    signingDiscussion: async (db: DB, documentId: string, updatesOnly = false) => {
       const source = await signingSource(db, documentId);
       if (!source) return null;
+      const historyData = await history(db, source.draft_id, { documentId, revision: source.revision, clientId: source.clientId });
+      if (updatesOnly) return { draftId: source.draft_id, revision: source.revision, ...historyData };
       const saved = (await db.query('SELECT r.content,d.created_at FROM draft_revisions r JOIN documents d ON d.id=$3 WHERE r.draft_id=$1 AND r.revision=$2', [source.draft_id, source.revision, documentId])).rows[0];
-      const historyData = await history(db, source.draft_id, { documentId, revision: source.revision });
       const last = historyData.versions[0];
       const shared = last ? (await db.query('SELECT content FROM review_versions WHERE draft_id=$1 AND version=$2', [source.draft_id, last.version])).rows[0].content : null;
       const content = snapshotForReview(saved.content, last?.sourceRevision === source.revision ? shared.frozenAt : saved.created_at);
@@ -229,7 +258,7 @@ export function installReviews(app: Express, pool: Pool, requireUser: RequestHan
       if (!source) throw new ApiError(404, 'Dokumentet har ingen utkastdiskussion.');
       // Signer access is pinned to the signing transaction, including when the draft is later archived.
       const draft = (await db.query('SELECT * FROM drafts WHERE id=$1 FOR UPDATE', [source.draft_id])).rows[0];
-      return comment(db, draft, 'recipient:' + recipient.id, recipient.claimed_name || recipient.name, { ...input, version: 0 }, { documentId, revision: source.revision });
+      return comment(db, draft, 'recipient:' + recipient.id, recipient.claimed_name || recipient.name, { ...input, version: 0 }, { documentId, revision: source.revision, clientId: source.clientId });
     },
   };
 }
