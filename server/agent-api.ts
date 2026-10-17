@@ -8,7 +8,7 @@ import { sha256 } from './pdf.js';
 import type { installReviews } from './reviews.js';
 
 export const agentScopes = ['drafts:read', 'drafts:write', 'discussion:read', 'discussion:write', 'reviews:share'] as const;
-export type AgentContext = { keyId: string; userId: string; teamId: string; userName: string; teamName: string; scopes: string[] };
+export type AgentContext = { keyId: string; userId: string; teamId: string; userName: string; teamName: string; scopes: string[]; credential?: { kind: 'oauth'; tokenHash: string; resource: string } };
 export type AgentOperation = 'workspace' | 'list_drafts' | 'get_draft' | 'create_draft' | 'update_draft' | 'save_draft' | 'get_discussion' | 'add_comment';
 type Reviews = ReturnType<typeof installReviews>;
 const revisionSchema = z.number().int().min(1).max(2_000_000_000);
@@ -28,10 +28,10 @@ export class AgentConflict extends ApiError {
   constructor(public currentRevision: number) { super(409, 'The draft changed. Fetch the latest draft and reconcile your changes.'); }
 }
 function context(row: Row): AgentContext { return { keyId: row.id, userId: row.user_id, teamId: row.team_id, userName: row.user_name, teamName: row.team_name, scopes: row.scopes }; }
-async function keyById(db: Pick<PoolClient, 'query'>, keyId: string, now: number) {
+async function keyById(db: Pick<PoolClient, 'query'>, keyId: string, now: number, kind = 'manual') {
   const row = (await db.query(`SELECT k.*,u.name AS user_name,t.name AS team_name FROM agent_keys k JOIN users u ON u.id=k.user_id AND u.team_id=k.team_id JOIN teams t ON t.id=k.team_id
-    WHERE k.id=$1 AND k.revoked_at IS NULL AND k.expires_at>$2`, [keyId, new Date(now).toISOString()])).rows[0];
-  if (!row) throw new ApiError(401, 'The API key is invalid, expired or revoked.');
+    WHERE k.id=$1 AND k.revoked_at IS NULL AND k.expires_at>$2 AND k.kind=$3`, [keyId, new Date(now).toISOString(), kind])).rows[0];
+  if (!row) throw new ApiError(401, kind === 'oauth' ? 'The connection expired or was revoked. Reconnect through Signhere.' : 'The API key is invalid, expired or revoked.');
   return row;
 }
 export async function authenticateAgent(pool: Pool, req: Request, now: () => number): Promise<AgentContext> {
@@ -40,7 +40,7 @@ export async function authenticateAgent(pool: Pool, req: Request, now: () => num
   const hash = sha256(auth.slice(7));
   const found = (await pool.query('SELECT id FROM agent_keys WHERE token_hash=$1', [hash])).rows[0];
   if (!found) throw new ApiError(401, 'The API key is invalid, expired or revoked.');
-  return context(await keyById(pool, found.id, now()));
+  return context(await keyById(pool, found.id, now(), 'manual'));
 }
 export function createAgentService(pool: Pool, origin: string, now: () => number, reviews: Reviews) {
   const at = () => new Date(now()).toISOString();
@@ -58,10 +58,15 @@ export function createAgentService(pool: Pool, origin: string, now: () => number
       try { return await transaction(pool, async db => {
         // Serialize per-key mutations, rechecking revocation and expiry on every call.
         await db.query('SELECT id FROM agent_keys WHERE id=$1 FOR UPDATE', [auth.keyId]);
-        const key = await keyById(db, auth.keyId, now());
+        const key = await keyById(db, auth.keyId, now(), auth.credential?.kind ?? 'manual');
+        if (auth.credential) {
+          const credential = auth.credential;
+          const access = await db.query('SELECT 1 FROM oauth_access_tokens WHERE token_hash=$1 AND key_id=$2 AND resource=$3 AND expires_at>$4', [credential.tokenHash, key.id, credential.resource, new Date(now()).toISOString()]);
+          if (!access.rowCount || key.resource !== credential.resource) throw new ApiError(401, 'The OAuth authorization has expired or been revoked. Reconnect through Signhere.');
+        }
         const actor = context(key);
         const required = operationScope[operation];
-        if (required && !actor.scopes.includes(required)) throw new ApiError(403, 'The API key does not permit ' + required + '.');
+        if (required && !actor.scopes.includes(required)) throw new ApiError(403, (auth.credential ? 'The connection does not permit ' : 'The API key does not permit ') + required + '.');
         await db.query('UPDATE agent_keys SET last_used_at=$1 WHERE id=$2', [at(), key.id]);
         const inputHash = sha256(canonical(input));
         if (input.requestId) {
@@ -98,7 +103,7 @@ export function createAgentService(pool: Pool, origin: string, now: () => number
           } else if (operation === 'save_draft') {
             if (row.revision !== input.expectedRevision) throw new AgentConflict(row.revision);
             const active = Boolean((await db.query('SELECT 1 FROM review_links WHERE draft_id=$1 AND revoked_at IS NULL AND expires_at>$2 LIMIT 1', [row.id, now()])).rowCount);
-            if (active && input.allowSharedUpdate && !actor.scopes.includes('reviews:share')) throw new ApiError(403, 'The API key needs reviews:share to update existing client links.');
+            if (active && input.allowSharedUpdate && !actor.scopes.includes('reviews:share')) throw new ApiError(403, (auth.credential ? 'The connection needs ' : 'The API key needs ') + 'reviews:share to update existing client links.');
             const saved = await reviews.saveVersion(db, row.id, actor.teamId, input.expectedRevision, !active || input.allowSharedUpdate && actor.scopes.includes('reviews:share'));
             const shared = Boolean((await db.query('SELECT 1 FROM review_publications WHERE draft_id=$1 AND version=$2', [row.id, saved.version])).rowCount);
             result = { draftId: row.id, revision: row.revision, ...saved, url: url(row.id), mayUpdateClientLinks: active, shared, visibility: shared ? 'shared' : 'private' };
@@ -128,7 +133,7 @@ export function installAgentApi(app: Express, pool: Pool, requireUser: RequestHa
   const service = createAgentService(pool, origin, now, reviews);
   const urls = { mcpUrl: origin + '/mcp', apiUrl: origin + '/api/v1' };
   app.get('/api/agent-keys', requireUser, async (_req, res) => {
-    const keys = (await pool.query('SELECT ' + keyColumns + ' FROM agent_keys WHERE user_id=$1 AND team_id=$2 ORDER BY created_at DESC LIMIT 100', [res.locals.user.id, res.locals.user.team_id])).rows;
+    const keys = (await pool.query('SELECT ' + keyColumns + " FROM agent_keys WHERE user_id=$1 AND team_id=$2 AND kind='manual' ORDER BY created_at DESC LIMIT 100", [res.locals.user.id, res.locals.user.team_id])).rows;
     res.json({ keys, scopes: agentScopes, ...urls });
   });
   app.post('/api/agent-keys', requireUser, async (req, res) => {
@@ -137,7 +142,7 @@ export function installAgentApi(app: Express, pool: Pool, requireUser: RequestHa
     const key = await transaction(pool, async db => {
       await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [res.locals.user.id]);
       const issuedAt = now();
-      if (Number((await db.query('SELECT count(*) FROM agent_keys WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>$2', [res.locals.user.id, new Date(issuedAt).toISOString()])).rows[0].count) >= 20) throw new ApiError(409, 'Revoke an existing API key before creating another (maximum 20 active keys).');
+      if (Number((await db.query('SELECT count(*) FROM agent_keys WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>$2 AND kind=\'manual\'', [res.locals.user.id, new Date(issuedAt).toISOString()])).rows[0].count) >= 20) throw new ApiError(409, 'Revoke an existing API key before creating another (maximum 20 active keys).');
       const metadata = (await db.query('INSERT INTO agent_keys(id,user_id,team_id,name,prefix,token_hash,scopes,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ' + keyColumns, [uid(), res.locals.user.id, res.locals.user.team_id, input.name, raw.slice(0, 12), sha256(raw), JSON.stringify(input.scopes), new Date(issuedAt).toISOString(), new Date(issuedAt + input.expiresInMinutes * 60000).toISOString()])).rows[0];
       await db.query('INSERT INTO agent_audit(id,key_id,operation,created_at) VALUES($1,$2,$3,$4)', [uid(), metadata.id, 'key.created', new Date(issuedAt).toISOString()]);
       return metadata;
@@ -147,7 +152,7 @@ export function installAgentApi(app: Express, pool: Pool, requireUser: RequestHa
   app.post('/api/agent-keys/:id/revoke', requireUser, async (req, res) => {
     await transaction(pool, async db => {
       const id = z.uuid().parse(req.params.id);
-      const result = await db.query('UPDATE agent_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND user_id=$3 AND team_id=$4', [new Date(now()).toISOString(), id, res.locals.user.id, res.locals.user.team_id]);
+      const result = await db.query('UPDATE agent_keys SET revoked_at=COALESCE(revoked_at,$1) WHERE id=$2 AND user_id=$3 AND team_id=$4 AND kind=\'manual\'', [new Date(now()).toISOString(), id, res.locals.user.id, res.locals.user.team_id]);
       if (!result.rowCount) throw new ApiError(404, 'API key not found.');
       await db.query('INSERT INTO agent_audit(id,key_id,operation,created_at) VALUES($1,$2,$3,$4)', [uid(), id, 'key.revoked', new Date(now()).toISOString()]);
     });

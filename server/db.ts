@@ -1,6 +1,7 @@
 import { Pool, type PoolClient } from 'pg';
 import { randomBytes, randomUUID } from 'node:crypto';
 import { sha256 } from './pdf.js';
+import { migrateOAuth } from './oauth-schema.js';
 import { migrateAgents } from './agent-schema.js';
 import { migrateReviews, migrateReviewSharing } from './review-schema.js';
 
@@ -35,7 +36,7 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       await client.query('CREATE TABLE IF NOT EXISTS migrations (version integer PRIMARY KEY, applied_at text NOT NULL)');
       const existing = await client.query('SELECT max(version) AS version FROM migrations');
       const version = Number(existing.rows[0].version);
-      if (version > 9) throw new Error('Database schema is newer than this application.');
+      if (version > 10) throw new Error('Database schema is newer than this application.');
       await client.query(`
         CREATE TABLE IF NOT EXISTS teams (id uuid PRIMARY KEY, name text NOT NULL);
         CREATE TABLE IF NOT EXISTS users (id uuid PRIMARY KEY, team_id uuid NOT NULL REFERENCES teams(id), name text NOT NULL, email text NOT NULL UNIQUE, password_hash text NOT NULL, role text NOT NULL CHECK(role IN ('owner','member')), created_at text NOT NULL);
@@ -265,7 +266,8 @@ export async function createDatabase(databaseUrl: string, schema = 'public', mig
       if (version < 7) await migrateReviews(client);
       if (version < 8) await migrateReviewSharing(client);
       if (version < 9) await migrateAgents(client);
-      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1),(7,$1),(8,$1),(9,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
+      if (version < 10) await migrateOAuth(client);
+      await client.query('INSERT INTO migrations(version,applied_at) VALUES(1,$1),(2,$1),(3,$1),(4,$1),(5,$1),(6,$1),(7,$1),(8,$1),(9,$1),(10,$1) ON CONFLICT DO NOTHING', [new Date().toISOString()]);
     });
   } catch (error) { await pool.end(); throw legacyRoleHint(error, migrationDatabaseUrl); }
   if (!migrationDatabaseUrl) return pool;

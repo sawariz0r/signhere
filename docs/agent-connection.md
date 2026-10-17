@@ -1,14 +1,24 @@
 # Connect your agent to Signhere
 
-Signhere issues its own API keys. You do not need OAuth, an external identity provider, or an Anthropic/OpenAI API key. Your existing agent supplies the model; Signhere supplies document tools.
+Signhere issues its own short-lived credentials. Use a supplied API key for a host supporting bearer headers, or optional browser-approved OAuth for ChatGPT. Neither method needs an external identity provider, manually registered client ID/secret, or an Anthropic/OpenAI API key. Your existing agent supplies the model; Signhere supplies document tools.
 
-This release implements remote Streamable HTTP MCP at `/mcp`, the equivalent REST API at `/api/v1`, and a portable `signhere` skill. The examples below use `https://sign.example.com`; replace it with your installation's base URL. Host setup instructions were checked against official documentation on 2026-10-16. Transport tests are separate from account-level checks in Claude's or Codex's user interfaces; connector availability depends on your host and plan.
+The manual-token MCP endpoint is `/mcp`, the ChatGPT OAuth MCP endpoint is `/mcp/oauth`, and the manual-token REST API is `/api/v1`. Both MCP connections expose the same document tools and scopes. The examples below use `https://sign.example.com`; replace it with your installation's base URL. Host setup instructions were checked against official documentation on 2026-10-17. Local protocol/browser tests are separate from account-level checks in ChatGPT's, Claude's or Codex's interfaces; connector availability depends on your host and plan.
 
 ## Supply a short-lived token
 
 The user supplies the instance's MCP URL and a short-lived API token to their agent. Agent authentication is `Authorization: Bearer <token>` for MCP requests. The skill describes document operations and token use; agents never sign into the application using email/password, browser sessions or cookies. They do not recover accounts, mint tokens, extend lifetimes or refresh credentials. When a token is missing, expired or rejected, the agent pauses authenticated work and asks the user for a replacement.
 
 Pass the token using the host's protected task/session credential mechanism. Avoid saving it in permanent configuration files or echoing it in messages, URLs or document contents. Configuring persistent host settings is a separate user decision. Public skill-update files need no bearer token. A working MCP connection provides document access directly; editor links returned by the agent are for the user to open independently.
+
+## ChatGPT: approve the connection in your browser
+
+In **Inställningar → Agenter**, copy the separate **ChatGPT MCP-adress**, for example `https://sign.example.com/mcp/oauth`. Add that URL as a custom MCP connection in ChatGPT and choose OAuth authentication. Leave client ID and client secret fields empty. Select the published-client-metadata method (CIMD) if the host asks how to identify its client. Signhere validates ChatGPT's official client metadata and callback; it does not require you to register an application or set up an identity provider. [Official OpenAI authentication and client metadata documentation](https://developers.openai.com/plugins/build/auth).
+
+ChatGPT opens Signhere in your browser. Sign in there as a human if needed; then review the named client, your account, your team and the exact permissions requested. Choose 15 minutes, 1 hour, 4 hours or 24 hours of access and approve, or decline. You return to ChatGPT after the decision. The agent never needs your email/password, browser cookies, recovery information or authorization code. A logged-in session alone does not approve an agent's request.
+
+OAuth access is fixed to the chosen lifetime. Signhere does not issue refresh tokens, renew access automatically, or let the agent extend it. Reconnect through ChatGPT and approve again after expiry. **Dina godkända anslutningar** in Signhere's agent settings lists these connections separately from API keys; revoke one there to stop its access immediately. Permissions cover your team, not one selected document.
+
+The OAuth endpoint supports ChatGPT's published client metadata; it is not a general dynamic-registration service for arbitrary OAuth clients. Use the manual `/mcp` API-key method for other supported hosts. Your public HTTPS installation must be reachable by the host. If ChatGPT only offers a registration method requiring manually issued client credentials, use a host/version offering CIMD rather than entering a Signhere API key in client-secret fields.
 
 ## Create a key
 
@@ -66,7 +76,7 @@ Codex sends the named environment variable as a bearer token. Confirm the variab
 
 Extract the skill's `signhere/` folder into your chosen Codex skill directory (a project's `.agents/skills/` or `~/.agents/skills/` for your user). [Official Codex skill locations](https://learn.chatgpt.com/docs/build-skills). Load the `signhere` skill and request a document operation. Skill instructions cannot grant permissions missing from the key.
 
-This release does not implement an OAuth connector for ChatGPT's chat interface. Do not substitute a Signhere key for an OAuth client ID/secret in a host that requires OAuth.
+Codex's manual API-key connection does not require OAuth. Do not substitute a Signhere key for an OAuth client ID/secret.
 
 ## First workflow
 
@@ -80,7 +90,7 @@ An agent write does not silently overwrite a newer editor revision. A conflict r
 
 ## REST and MCP contract
 
-Send `Authorization: Bearer YOUR_SIGNHERE_KEY` to `/api/v1` or `/mcp`. Browser cookies do not authenticate these routes. Never put keys in query strings. The workspace response contains `apiVersion`, `baseUrl`, `workspace`, `user`, `scopes` and `expiresAt`. Use that actual expiry, and request a user-supplied replacement on 401. Draft source uses schema version `2`, distinct from API `v1`, editable revision and saved version.
+Send `Authorization: Bearer YOUR_SIGNHERE_KEY` to `/api/v1` or `/mcp` for manual credentials. The host sends its OAuth bearer credential to `/mcp/oauth`; credentials are bound to their respective connection method and cannot be exchanged between these endpoints. Browser cookies do not authenticate document tools. Never put credentials in query strings. The workspace response contains `apiVersion`, `baseUrl`, `workspace`, `user`, `scopes` and `expiresAt`. Use that actual expiry; on 401 ask for a user-supplied replacement in manual mode or human host reconnection in OAuth mode. Draft source uses schema version `2`, distinct from API `v1`, editable revision and saved version.
 
 | MCP tool | REST operation | Inputs |
 | --- | --- | --- |
@@ -111,4 +121,4 @@ The manifest provides `version`, `compatibleApiVersions`, relative `skillUrl`, `
 
 On active use, the skill asks an agent to check once per day if it can retain state, otherwise once per session. A bounded failed check does not block compatible work. A newer version prompts an update offer; it never installs automatically. After approval, the agent verifies the ZIP and per-file digests and replaces only the skill. Hosts that cannot fetch or write packages offer a manual download instead. Skill updates never change your key, connection or permissions.
 
-For administrators: keep the existing configured public base URL accurate, terminate TLS normally, allow the MCP POST/GET transport through the reverse proxy, and do not rewrite bearer authorization headers. The existing cookie API's Origin checks stay in place. Revoke a compromised or unused key in Signhere; removing a connector from an agent host alone does not revoke the server-side credential.
+For administrators: keep the existing configured public base URL accurate, terminate TLS normally, allow both MCP transports and `/.well-known/oauth-protected-resource/mcp/oauth` plus the OAuth discovery/authorization/token paths through the reverse proxy, and preserve bearer authorization headers. No extra environment secrets or external authentication service are needed. Signhere fetches supported ChatGPT client metadata over HTTPS. Human consent and connection administration retain the existing cookie API's same-origin checks; document tools remain bearer-only. Revoke a compromised or unused key/connection in Signhere; removing a connector from an agent host alone does not revoke the server-side credential.

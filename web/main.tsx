@@ -13,6 +13,7 @@ import { Brand, BrandLockup, ErrorBox, Loading, ProfileMenu } from './ui';
 import { message, request } from './api';
 import type { Bootstrap, Brand as BrandData, SigningDocument, User } from './types';
 import { EditorSent, type Created } from './created';
+import { OAuthConsent, consentReturnPath } from './oauth-consent';
 
 const Review = lazy(() => import('./review').then(module => ({ default: module.Review })));
 const DocumentEditor = lazy(() => import('./editor/remote').then(module => ({ default: module.RemoteEditor })));
@@ -40,16 +41,18 @@ function App() {
   const navigate = (path: string) => { history.pushState({}, '', path); setCurrent(route()); setCertificate(null); setSent(null); window.scrollTo(0, 0); };
   const load = () => { setError(''); void request<Bootstrap>('/api/bootstrap').then(setBootstrap).catch(error => setError(message(error))); };
   useEffect(() => { if (!standalone) load(); }, [standalone]);
-  useEffect(() => { if (current.path.startsWith('/editor/')) return; document.title = `${sent ? 'Skickat' : current.path === '/sign' ? 'Signera' : current.path === '/verify' || current.path === '/verifiera' ? 'Verifiera dokument' : current.path.startsWith('/settings/') ? 'Inställningar' : current.path === '/new' ? 'Nytt dokument' : current.path.endsWith('/bilaga') ? 'Ny bilaga' : 'Dokument'} · signhere`; }, [current.path, sent]);
+  useEffect(() => { if (current.path.startsWith('/editor/')) return; document.title = `${sent ? 'Skickat' : current.path === '/oauth/consent' ? 'Anslut agent' : current.path === '/sign' ? 'Signera' : current.path === '/verify' || current.path === '/verifiera' ? 'Verifiera dokument' : current.path.startsWith('/settings/') ? 'Inställningar' : current.path === '/new' ? 'Nytt dokument' : current.path.endsWith('/bilaga') ? 'Ny bilaga' : 'Dokument'} · signhere`; }, [current.path, sent]);
   if (current.path === '/review') return <Suspense fallback={<Loading />}><Review key={current.fragment} token={current.fragment} /></Suspense>;
   if (current.path === '/copy') return <CompletedCopy key={current.fragment} token={current.fragment} />;
   if (current.path === '/sign') return <Sign key={current.fragment} token={current.fragment} />;
   if (publicVerify) return <><header className="app-header public-header"><div className="header-inner"><Brand publicBrand /><a className="button secondary small" href="/">Till signhere</a></div></header><main className="main" id="main-content"><Verify /></main></>;
   if (!bootstrap) return <div><header className="auth-header"><Brand /></header><main className="main"><ErrorBox error={error} />{error ? <button className="button secondary" onClick={load}>Försök igen</button> : <Loading />}</main></div>;
   const user = bootstrap.user;
-  const loggedIn = (user: User) => { setBootstrap({ ...bootstrap, setupRequired: false, user }); navigate('/'); };
+  const returnTo = consentReturnPath(current.path, current.query);
+  const loggedIn = (user: User) => { setBootstrap({ ...bootstrap, setupRequired: false, user }); navigate(returnTo ?? '/'); };
   if (current.path === '/join' || current.path === '/invite' || current.path === '/invitations/accept') return <Auth key="invite" setup={false} invitationToken={current.fragment} onLogin={loggedIn} onVerify={() => navigate('/verify')} />;
-  if (!user) return <Auth key={bootstrap.setupRequired ? 'setup' : 'login'} setup={bootstrap.setupRequired} onLogin={loggedIn} onVerify={() => navigate('/verify')} />;
+  if (!user) return <Auth key={bootstrap.setupRequired ? 'setup' : 'login'} setup={bootstrap.setupRequired} returnTo={returnTo} onLogin={loggedIn} onVerify={() => navigate('/verify')} />;
+  if (current.path === '/oauth/consent') return <OAuthConsent key={current.query.get('request') ?? ''} authorizationRequest={current.query.get('request') ?? ''} />;
   if (current.path.startsWith('/editor/')) {
     const id = current.path.split('/')[2];
     // A bilaga continues as a PDF in the bilaga flow of its main document.

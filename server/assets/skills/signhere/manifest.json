@@ -1,6 +1,6 @@
 {
   "name": "signhere",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "compatibleApiVersions": ["v1"],
   "skillUrl": "/skills/signhere/SKILL.md",
   "packageUrl": "/skills/signhere/signhere.zip",
