@@ -4,7 +4,7 @@ import { Router } from 'express';
 import { zipSync } from 'fflate';
 
 const assetDirectory = new URL('./assets/skills/signhere/', import.meta.url);
-const packageFiles = ['SKILL.md', 'references/draft-format.md', 'CHANGELOG.md'] as const;
+const packageFiles = ['SKILL.md', 'references/draft-format.md', 'references/rich-text.md', 'examples/service-agreement.json', 'CHANGELOG.md'] as const;
 const sha256 = (bytes: Uint8Array) => createHash('sha256').update(bytes).digest('hex');
 
 /** Static package bytes are independent of request headers and of the instance hostname. */
@@ -40,7 +40,7 @@ export function createAgentSkillRouter() {
     res.set('Content-Disposition', 'attachment; filename="signhere.zip"').type('application/zip').send(archive);
   });
   for (const { path, bytes } of files) {
-    router.get('/' + path, (_req, res) => { res.type('text/markdown; charset=utf-8').send(bytes); });
+    router.get('/' + path, (_req, res) => { res.type(path.endsWith('.json') ? 'application/json' : 'text/markdown; charset=utf-8').send(bytes); });
   }
   // Unknown paths must not become an HTML application page or expose adjacent assets.
   router.use((_req, res) => { res.status(404).json({ error: 'Skill file not found.' }); });

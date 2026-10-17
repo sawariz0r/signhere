@@ -1,5 +1,9 @@
 # Signhere skill changes
 
+## 1.0.4
+
+Documents native blocks, party data, reusable fields and supported Tiptap formatting. Adds a synthetic service agreement fixture, pricing guidance for unknown rates, and signing-flow guidance. Documents current signing-PDF fidelity limits and distinguishes stored editor preferences from signing behavior. JSON examples are validated against the draft schema; the agreement fixture is exercised through MCP and the editor, including reusable-value updates. Authentication, revision, retry and sharing safeguards remain in place.
+
 ## 1.0.3
 
 Adds optional ChatGPT host OAuth alongside the existing user-supplied API token mode. The human signs in and approves scopes in their own browser; the agent never handles passwords, sessions, recovery or authorization codes. OAuth access has a fixed lifetime without refresh; expiry requires a human reconnection. Both modes use the same document tools and keep credential changes outside skill updates.

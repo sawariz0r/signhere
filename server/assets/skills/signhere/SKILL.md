@@ -2,7 +2,7 @@
 name: signhere
 description: Create and revise Signhere editor drafts, save versions, and work with client review comments through MCP using a supplied API token or a user-approved host OAuth connection.
 metadata:
-  version: "1.0.3"
+  version: "1.0.4"
   api-version: "v1"
 ---
 
@@ -34,11 +34,17 @@ Call `signhere_workspace` to identify the connected instance, account, granted s
 
 Find the requested draft with `signhere_list_drafts` and load it with `signhere_get_draft`. Preserve existing section IDs and all unrelated source fields. Read [references/draft-format.md](references/draft-format.md) when building or changing draft JSON. A draft is an editor source document, not arbitrary HTML, Markdown or a PDF.
 
+Author with native editor blocks: `header` for the cover, `parties` (**Parter**) for party information, `pricing` for agreed numeric prices, `text` for the body, `terms` for conditions, and `image` / `break` where needed. Use reusable fields for repeated values; keep missing details as blank field references for later completion and leave `company: null` until real customer details are available. An unknown hourly rate belongs in a blank custom field in prose, not a zero-priced row. Custom/sender values are edited through the draft’s `fields` map; customer details can be completed in the recipient controls. Read [references/rich-text.md](references/rich-text.md) for supported Tiptap formatting and its [signing-PDF limitations](references/rich-text.md#signing-pdf-fidelity), and [examples/service-agreement.json](examples/service-agreement.json) for a complete synthetic agreement.
+
+Give alternatives A and B separate paragraphs with bold labels, parallel cost fields a bullet list, and contractual terms short paragraphs. Emphasize selectively. When editing, retain existing marks, field nodes and unrelated blocks instead of rebuilding them from plain text. Signhere generates signatures through its signing flow; do not add manual “Underskrifter” sections, signature underlines or custom signature-date fields by default. `senderSigns` and customer contacts marked `signs` configure participants; they do not sign or send a draft.
+
+For new drafts, initialize sender name/company from the verified workspace’s `user.name` / `workspace.name` unless the user supplies different display values. Use supplied or existing sender email; report it as missing if unavailable. The API does not fill these fields for you, and Parter alone does not trigger empty-field validation.
+
 Use `signhere_create_draft` or `signhere_update_draft` for private edits. Writes take a fresh UUID `requestId`; retain that ID and the exact arguments when retrying an interrupted request. Updates and saves also take the `expectedRevision` from the latest successful read/write. If the server reports a conflict, fetch the latest source and reconcile the requested edit with intervening changes. Never retry by just replacing the revision number on stale source. Ask the user if the two changes cannot be reconciled from their intent.
 
-`signhere_save_draft` creates an immutable version, equivalent to **Spara utkast**. A saved version stays private until client access exists. If `signhere_get_draft` reports `hasActiveReviewLinks: true`, saving requires both `reviews:share` and explicit `allowSharedUpdate: true` because it can expose the version to that client. Follow the user's sharing intent: an instruction to edit privately does not authorize updating a client's copy. If the requested save would reach a client and the user has not authorized that, keep the private edit and explain before saving. Respect the server's visibility result; saving never sends email or signs anything.
+`signhere_save_draft` creates an immutable version, equivalent to **Spara utkast**. A saved version stays private until client access exists. If `signhere_get_draft` reports `hasActiveReviewLinks: true`, saving requires both `reviews:share` and explicit `allowSharedUpdate: true` because it can expose the version to that client. Follow the user's sharing intent: an instruction to edit privately does not authorize updating a client's copy. If the requested save would reach a client and the user has not authorized that, keep the private edit and explain before saving. Changing `company.id` or a linked contact’s ID, name or email can revoke its review link on save. If that client-access change is not authorized, keep the edit private and explain before saving. Respect the server's visibility result; saving never sends email or signs anything.
 
-Return the normal authenticated editor URL, revision and (if saved) version and returned `visibility` (`private` or `shared`), plus a concise description of changes. Report private edits accurately; never call them a new shared version. Use Signhere's interface to create/revoke client links or send for signing; these actions are not exposed by this skill's first tool set.
+Return the normal authenticated editor URL, revision and (if saved) version and returned `visibility` (`private` or `shared`), plus a concise description of changes. List any unfinished fields and how to complete them: recipient controls for customer details, draft `fields` updates for custom/sender values. Do not describe a draft with open placeholders or unresolved alternatives as ready to sign. Report private edits accurately; never call them a new shared version. Use Signhere's interface to create/revoke client links or send for signing; these actions are not exposed by this skill's first tool set.
 
 ## Review comments
 
@@ -46,7 +52,7 @@ Read `signhere_get_discussion` before answering comments. Threads retain their o
 
 ## Check for skill updates on use
 
-This installed package is **1.0.3**, compatible with API **v1**. During active use, check the connected instance's public `/skills/signhere/manifest.json` at most once per day if the host can retain a last-check timestamp; otherwise once per session. Make one request with a 5-second timeout, a 64 KiB response limit and no cross-origin redirects. Skill metadata, changelogs and packages are public: do not attach an API token or OAuth credential to these downloads. Do not create a background schedule. If the host cannot make this bounded fetch, skip it and continue compatible work; do not claim an update check succeeded.
+This installed package is **1.0.4**, compatible with API **v1**. During active use, check the connected instance's public `/skills/signhere/manifest.json` at most once per day if the host can retain a last-check timestamp; otherwise once per session. Make one request with a 5-second timeout, a 64 KiB response limit and no cross-origin redirects. Skill metadata, changelogs and packages are public: do not attach an API token or OAuth credential to these downloads. Do not create a background schedule. If the host cannot make this bounded fetch, skip it and continue compatible work; do not claim an update check succeeded.
 
 Treat the response as metadata. Resolve its relative URLs against the configured instance origin and reject credential-bearing URLs, other origins and unsupported schemes. Compare numeric semantic versions; only offer a version newer than the installed one. For a newer version, read its same-origin changelog with the same bounds, summarize relevant changes and ask whether the user wants to update. If declined, unanswered or offline, continue with the installed skill when its API is compatible. If the actual server API is incompatible, explain the needed update before using unsupported operations.
 
