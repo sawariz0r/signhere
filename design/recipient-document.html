@@ -1,0 +1,996 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Mottagarens dokument · prototyp · signhere</title>
+<!--
+  Signhere recipient document: one document-first view for review, signing and the signed receipt.
+  Standalone prototype. Tokens and class names mirror web/editor/editor.css (.ed-*) and web/styles.css
+  (sign-*, signature-modal). Everything new is prefixed rd-. See design/recipient-document.md.
+-->
+<style>
+@font-face{font-family:'Schibsted Grotesk';font-weight:400 900;font-style:normal;font-display:swap;src:url(../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-normal.woff2) format('woff2-variations'),url(../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-normal.woff2) format('woff2')}
+@font-face{font-family:'Schibsted Grotesk';font-weight:400 900;font-style:normal;font-display:swap;unicode-range:U+0100-02AF,U+1E00-1EFF;src:url(../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-ext-wght-normal.woff2) format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-weight:400;src:url(../node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2) format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-weight:500;src:url(../node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-500-normal.woff2) format('woff2')}
+/* The PDF export (web/editor/pdf-export.ts) embeds only Noto Sans Regular and fakes bold. */
+@font-face{font-family:'Signhere PDF';font-weight:400;src:url(../server/assets/NotoSans-Regular.ttf) format('truetype'),local('Noto Sans'),local('NotoSans-Regular')}
+
+/* ---------- Tokens: copied from .ed in web/editor/editor.css ---------- */
+:root{
+  --ink:#0e1116;--ink-hover:#2a3039;--text:#2a3039;--secondary:#3a4049;--muted:#5b626d;--subtle:#6b727d;--faint:#9aa1ab;
+  --line:#e3e6ea;--input:#d9dde2;--dash:#c4cad1;--inner:#eef0f2;--track:#e9ecef;--page:#f6f7f9;--hover:#f1f3f5;
+  --green:oklch(0.56 0.13 155);--amber:oklch(0.72 0.15 70);--red:oklch(0.52 0.18 25);
+  --ui:'Schibsted Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;--ease:cubic-bezier(.2,.7,.2,1);
+  --accent:var(--ink);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{min-width:320px;background:var(--page);color:var(--ink);font-family:var(--ui);-webkit-font-smoothing:antialiased;font-synthesis:weight}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}
+button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+h1,h2,h3,p{margin:0}
+.ed-mono{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@keyframes shIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes shFade{from{opacity:0}to{opacity:1}}
+@keyframes shRise{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes shSheet{from{transform:translateY(100%)}to{transform:none}}
+
+/* ---------- Prototype controls (not product UI) ---------- */
+.proto{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 16px;background:#fff;border-bottom:1px dashed var(--dash);font-size:12px;color:var(--muted)}
+.proto strong{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+.proto label{display:flex;align-items:center;gap:6px}
+.proto select{height:28px;border:1px solid var(--input);border-radius:7px;background:#fff;padding:0 6px;font-size:12px;font-weight:600}
+.proto button{height:28px;border:0;background:none;color:var(--muted);text-decoration:underline;text-underline-offset:3px;font-size:12px}
+
+/* ---------- Editor primitives reused as-is ---------- */
+.ed-btn{height:36px;padding:0 12px;border:1px solid var(--input);border-radius:8px;background:#fff;color:var(--ink);font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;text-decoration:none}
+.ed-btn:hover:not(:disabled){background:var(--hover)}
+.ed-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;padding:0 14px}
+.ed-btn.primary:hover:not(:disabled){background:var(--ink-hover);border-color:var(--ink-hover)}
+.ed-btn.large{height:38px;padding:0 14px;border-radius:9px;font-size:14px}
+.ed-btn.xl{height:48px;padding:0 24px;border-radius:12px;font-size:16px;font-weight:700}
+.ed-btn.block{width:100%}
+.ed-btn svg{flex-shrink:0}
+.ed-count{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.18);font-size:12px;display:grid;place-items:center}
+.ed-btn:not(.primary) .ed-count{background:var(--inner)}
+.ed-text-btn{height:28px;padding:0 8px;border:0;border-radius:6px;background:none;font-size:12px;font-weight:600;color:var(--muted);white-space:nowrap}
+.ed-text-btn:hover:not(:disabled){background:var(--hover);color:var(--ink)}
+
+.ed-topbar{position:sticky;top:0;z-index:20;background:rgba(246,247,249,.88);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.ed-topbar-inner{max-width:1240px;margin:0 auto;padding:0 24px;height:60px;display:flex;align-items:center;gap:14px}
+.ed-logo{width:34px;height:34px;border:0;border-radius:9px;background:none;display:grid;place-items:center;flex-shrink:0;padding:0}
+.ed-logo:hover{background:#eceef1}
+.ed-logo span{width:22px;height:22px;border-radius:6px;background:var(--ink);display:grid;place-items:center}
+.ed-logo i{width:8px;height:8px;border-radius:50%;background:#fff}
+.ed-slash{color:var(--dash);font-size:18px;flex-shrink:0}
+.ed-title{min-width:0;flex:0 1 360px;height:36px;padding:0 8px;margin-left:-8px;border:0;border-radius:8px;background:none;font-size:15px;font-weight:600;outline:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
+input.ed-title:hover{background:#eceef1}
+input.ed-title:focus{background:#fff;box-shadow:0 0 0 1px var(--input)}
+.ed-save{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--subtle);white-space:nowrap}
+.ed-save svg{color:var(--green)}
+.ed-topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex-shrink:0}
+
+.ed-main{max-width:1240px;margin:0 auto;padding:28px 24px 120px;display:flex;gap:28px;align-items:flex-start}
+.ed-canvas{flex:1 1 480px;min-width:0}
+.ed-panel{flex:0 0 340px;width:340px;position:sticky;top:84px;max-height:calc(100vh - 100px);overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:2px 2px 90px}
+.ed-preview-note{max-width:800px;margin:0 auto 14px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);line-height:1.4}
+.ed-preview-note>span:first-child{width:7px;height:7px;border-radius:50%;background:var(--ink);flex-shrink:0}
+
+.ed-paper{--pad-x:clamp(24px,6vw,72px);--doc-accent:var(--ink);max-width:800px;margin:0 auto;background:#fff;border:1px solid var(--line);border-radius:6px;padding:clamp(28px,6vw,64px) var(--pad-x) 56px;box-shadow:0 24px 60px -40px rgba(14,17,22,.28);color:var(--ink);font-size:16px}
+.ed-block{position:relative;margin:0 -20px;padding:18px 20px;border-radius:10px;transition:background-color .12s;cursor:pointer;outline:none}
+.ed-block:hover{background:#fafbfc}
+.ed-block.selected{box-shadow:0 0 0 1.5px var(--ink)}
+.ed-block:focus-visible{box-shadow:0 0 0 2px var(--ink)}
+.is-owner .ed-block{cursor:text}
+.ed-toolbar{position:absolute;top:-15px;right:14px;z-index:2;height:30px;padding:0 4px 0 12px;border:1px solid var(--ink);border-radius:999px;background:#fff;display:flex;align-items:center;gap:2px;color:var(--ink);cursor:default;animation:shFade .14s ease-out}
+.ed-toolbar-label{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
+.ed-toolbar button{height:24px;border:0;border-radius:6px;background:none;display:inline-flex;align-items:center;gap:6px;padding:0 8px;color:var(--ink);font-size:12px;font-weight:600}
+.ed-toolbar button:hover{background:var(--hover)}
+.ed-toolbar .sep{width:1px;height:14px;background:var(--line);margin:0 2px}
+
+.ed-cover-body{display:flex;flex-direction:column;padding:8px 0 4px}
+.ed-cover-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--doc-accent)}
+.ed-cover-title{margin:12px 0 0;font-size:44px;font-weight:700;letter-spacing:-.04em;line-height:1.1;text-wrap:balance}
+.ed-cover-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px 20px;margin:32px 0 0;padding-top:18px;border-top:1px solid var(--line)}
+.ed-cover-meta dt{font-size:12px;color:var(--muted);margin-bottom:3px}
+.ed-cover-meta dd{margin:0;font-size:14px;font-weight:600}
+.ed-parties{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:24px}
+.ed-party{display:flex;flex-direction:column;gap:3px;font-size:14px;color:var(--muted)}
+.ed-party .ed-mono{margin-bottom:8px}
+.ed-party strong{font-size:16px;font-weight:700;color:var(--ink)}
+.ed-heading{margin:0 0 10px;font-size:24px;font-weight:700;letter-spacing:-.03em;line-height:1.2}
+.ed-prose{font-size:16px;line-height:1.65;color:var(--text);outline:none}
+.ed-prose p{margin:0 0 12px;text-wrap:pretty}
+.ed-prose>*:last-child{margin-bottom:0}
+.ed-prose ul{padding-left:1.35em;margin:0}
+.ed-prose li{margin:.25em 0}
+.ed-prose li::marker{color:var(--doc-accent)}
+.is-owner .ed-prose[contenteditable]:focus{background:transparent}
+.ed-row{display:grid;grid-template-columns:minmax(0,1fr) 56px 52px 84px 104px;gap:4px;align-items:center;padding:8px 0;border-bottom:1px solid var(--inner);font-size:15px}
+.ed-row>span{padding:0 6px;min-width:0}
+.ed-row-head{padding:0 0 8px;border-bottom:1px solid var(--ink);font-size:12px;color:var(--muted)}
+.ed-row .num{text-align:right;font-variant-numeric:tabular-nums}
+.ed-row .muted{color:var(--muted)}
+.ed-row strong{font-weight:600}
+.ed-package-name{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.ed-package-desc{margin:2px 0 12px;font-size:14px;color:var(--muted)}
+.ed-totals{width:min(100%,320px);margin:14px 0 0 auto;display:flex;flex-direction:column;gap:6px;font-size:14px;font-variant-numeric:tabular-nums}
+.ed-totals div{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}
+.ed-totals .total{align-items:baseline;padding-top:10px;margin-top:4px;border-top:1px solid var(--ink);color:var(--ink)}
+.ed-totals .total span{font-weight:700}
+.ed-totals .total strong{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.ed-block.ed-signatures{margin:36px -20px 0;padding:24px 20px 18px;cursor:default}
+.ed-block.ed-signatures:hover{background:none}
+.ed-signatures::before{content:'';position:absolute;left:20px;right:20px;top:0;border-top:1px solid var(--line)}
+.ed-sig-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.ed-sig-head>span:last-child{font-size:12px;color:var(--faint)}
+.ed-signers{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:28px 32px}
+.ed-sign-line{height:52px;border-bottom:1px solid var(--ink)}
+.ed-signer strong{display:block;font-size:14px;font-weight:600;margin-top:8px}
+.ed-signer span{display:block;font-size:13px;color:var(--muted)}
+
+.ed-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px}
+.ed-card h2{font-size:15px;font-weight:700;line-height:1.3;display:flex;align-items:center;gap:8px}
+.ed-card-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.ed-card-head>span{font-size:12px;color:var(--muted)}
+.ed-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);flex-shrink:0}
+.ed-dot.done{background:var(--green)}
+.ed-card-text{margin:6px 0 0;font-size:14px;color:var(--muted);line-height:1.45}
+.ed-avatar{width:28px;height:28px;border-radius:50%;background:var(--inner);display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0}
+.ed-avatar.dark{background:var(--ink);color:#fff}
+.ed-seg{display:flex;padding:3px;border-radius:9px;background:var(--inner)}
+.ed-seg button{height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;font-size:12px;font-weight:600;white-space:nowrap;color:var(--ink)}
+.ed-seg button[aria-checked=true]{background:#fff;box-shadow:0 1px 2px rgba(14,17,22,.12)}
+.ed-input{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--input);border-radius:8px;background:#fff;font-size:14px;line-height:1.45;outline:none;resize:vertical}
+.ed-input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(14,17,22,.08)}
+.ed-input:focus-visible{outline:none}
+.ed-check{display:flex;align-items:flex-start;gap:8px;font-size:13px;line-height:1.45;cursor:pointer}
+.ed-check input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ink);flex-shrink:0}
+.ed-error{margin:0;font-size:13px;color:var(--red)}
+
+.ed-dialog{width:calc(100% - 32px);max-width:480px;max-height:calc(100dvh - 40px);overflow:auto;border:0;background:#fff;color:var(--text);border-radius:18px;padding:24px;box-shadow:0 30px 80px -30px rgba(14,17,22,.5);animation:shRise .22s var(--ease)}
+.ed-dialog::backdrop{background:rgba(14,17,22,.36)}
+.ed-dialog form{display:flex;flex-direction:column;gap:18px}
+.ed-dialog h2{font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--ink);margin-bottom:4px}
+.ed-dialog-sub{font-size:14px;color:var(--muted)}
+.ed-send-list{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:6px 0 0;padding:0;list-style:none}
+.ed-send-list>li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--inner)}
+.ed-send-list>li:last-child{border-bottom:0}
+.ed-send-list strong{display:block;font-size:14px;font-weight:600;color:var(--ink)}
+.ed-send-list span:not(.ed-avatar){display:block;font-size:13px;color:var(--muted)}
+.ed-dialog-note{font-size:13px;color:var(--muted);line-height:1.45}
+.ed-dialog-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.ed-dialog .ed-btn.large{height:44px;padding:0 16px;border-radius:10px}
+
+.ed-toast-wrap{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:80}
+.ed-toast{display:flex;align-items:center;gap:12px;height:44px;padding:0 16px;border-radius:12px;background:var(--ink);color:#fff;font-size:14px;white-space:nowrap;box-shadow:0 16px 40px -16px rgba(14,17,22,.5);animation:shRise .2s var(--ease)}
+
+/* Signing dialog: web/styles.css .signature-modal, unchanged */
+.signature-modal{width:calc(100% - 24px);max-width:560px;max-height:calc(100dvh - 24px);overflow:auto;background:#fff;border:0;border-radius:20px;padding:22px;margin:auto auto 12px;color:var(--ink);box-shadow:0 12px 60px #0e111626;animation:shIn .25s ease}
+.signature-modal::backdrop{background:#0e111680}
+.signature-modal form{display:flex;flex-direction:column;gap:18px}
+.signature-modal h2{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.field>span{display:block;font-size:13px;font-weight:600;margin:0 0 6px}
+.field input{width:100%;height:46px;padding:0 14px;border:1px solid var(--input);border-radius:10px;background:#fff;font-size:15px;outline:none}
+.field input:focus{border-color:var(--ink);box-shadow:0 0 0 3px #0e111614}
+.draw-label{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:6px;font-size:13px;font-weight:600}
+.draw-area{position:relative}
+.draw-area canvas{display:block;width:100%;height:190px;background:#f8f9fa;border:1px solid var(--input);border-radius:12px;touch-action:none;cursor:crosshair}
+.signature-baseline{position:absolute;left:22px;right:22px;bottom:46px;border-bottom:1px solid #c9ced4;pointer-events:none}
+.signature-cross{position:absolute;left:22px;bottom:52px;font-size:18px;color:var(--faint);pointer-events:none}
+.draw-placeholder{position:absolute;inset:0;display:grid;place-items:center;font-size:14px;color:var(--subtle);pointer-events:none;padding-bottom:40px}
+.sign-submit{width:100%;height:52px;border:0;border-radius:12px;background:var(--accent);color:#fff;font-size:16px;font-weight:700}
+.sign-submit:disabled{background:#b5bbc3;opacity:1}
+.text-button{border:0;background:none;color:var(--muted);font-size:14px;font-weight:500;padding:0}
+.text-button:hover{color:var(--ink)}
+.underlined{text-decoration:underline;text-underline-offset:3px}
+
+/* =================== New: rd-* (recipient document) =================== */
+
+/* Brand lockup for the sender's team (web/styles.css .brand-lockup) */
+.rd-brand{display:flex;align-items:center;gap:10px;min-width:0;flex-shrink:0}
+.rd-brand-mark{width:28px;height:28px;border-radius:7px;background:var(--accent);color:#fff;display:grid;place-items:center;font-size:14px;font-weight:700}
+.rd-brand-text{display:flex;flex-direction:column;gap:1px}
+.rd-brand-text strong{font-size:15px;font-weight:700;letter-spacing:-.02em;line-height:1.1;white-space:nowrap}
+.rd-brand-text small{font-size:10.5px;font-weight:500;color:var(--subtle);line-height:1.1}
+
+/* Stage pill: the only place the state lives in the top bar */
+.rd-pill{display:inline-flex;align-items:center;gap:7px;height:28px;padding:0 11px;border-radius:999px;background:#fff;border:1px solid var(--line);font-size:12.5px;font-weight:600;white-space:nowrap;flex-shrink:0}
+.rd-pill .ed-dot{width:7px;height:7px}
+.rd-who{display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);white-space:nowrap}
+
+/* Bar directly above the document: what is shown, which version, which rendering */
+.rd-stagebar{max-width:800px;margin:0 auto 12px;display:flex;align-items:center;justify-content:space-between;gap:10px 16px;flex-wrap:wrap}
+.rd-stagebar-left{display:flex;align-items:center;gap:10px;flex-wrap:wrap;min-width:0}
+.rd-version{height:30px;border:1px solid var(--input);border-radius:7px;padding:0 6px;background:#fff;font-size:12px;font-weight:600;cursor:pointer}
+.rd-version:focus{outline:none;border-color:var(--ink)}
+
+/* Section comment markers: sit on the block edge where the editor's block toolbar sits */
+.rd-marker{position:absolute;top:-13px;right:14px;z-index:1;height:26px;min-width:26px;padding:0 9px 0 8px;border-radius:999px;border:1px solid var(--input);background:#fff;display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
+.rd-marker:hover{border-color:var(--ink);color:var(--ink)}
+.rd-marker.open{background:var(--ink);border-color:var(--ink);color:#fff}
+.rd-marker.add{opacity:0;font-weight:600;transition:opacity .12s}
+.ed-block:hover>.rd-marker.add,.rd-marker.add:focus-visible{opacity:1}
+.ed-block.selected>.rd-marker{display:none}
+@media (hover:none){.rd-marker.add{display:none}}
+.rd-changed{display:inline-flex;align-items:center;gap:6px;margin-bottom:10px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle)}
+.rd-changed i{width:6px;height:6px;border-radius:50%;background:var(--amber)}
+.ed-block.flash{animation:rdFlash 1.2s var(--ease)}
+@keyframes rdFlash{0%,40%{box-shadow:0 0 0 2px var(--ink)}100%{box-shadow:0 0 0 0 transparent}}
+
+/* Inline state cards that sit above the document without replacing it */
+.rd-callout{max-width:800px;margin:0 auto 14px;background:#fff;border:1px solid var(--line);border-radius:16px;padding:18px 20px;display:flex;gap:14px;align-items:flex-start;animation:shIn .24s var(--ease)}
+.rd-callout h2{font-size:17px;font-weight:700;letter-spacing:-.01em;margin-bottom:4px}
+.rd-callout p{font-size:14px;line-height:1.5;color:var(--secondary)}
+.rd-callout .actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px}
+.rd-callout-icon{width:36px;height:36px;border-radius:50%;background:var(--ink);color:#fff;display:grid;place-items:center;flex-shrink:0}
+.rd-callout.done{background:oklch(.97 .03 155);border-color:oklch(.9 .05 155)}
+.rd-callout.done .rd-callout-icon{background:var(--green)}
+.rd-callout.warn .rd-callout-icon{background:var(--amber);color:var(--ink)}
+.rd-callout .grow{flex:1;min-width:0}
+.rd-sent{font-size:13px!important;color:var(--muted)!important;margin-top:8px}
+
+/* Mobile-only compact status line (the panel's status card on desktop) */
+.rd-mstatus{display:none}
+
+/* Steps: same pattern as web/styles.css .steps */
+.rd-steps{display:flex;align-items:center;gap:8px;margin-top:14px}
+.rd-step{display:flex;align-items:center;gap:6px;flex:1;min-width:0;color:var(--muted);font-size:12px;font-weight:600}
+.rd-step>span{width:20px;height:20px;border-radius:50%;background:#fff;border:1px solid var(--input);display:grid;place-items:center;font-size:10px;font-weight:700;flex-shrink:0}
+.rd-step>i{flex:1;height:1px;background:var(--line);min-width:6px}
+.rd-step.done>span{background:var(--inner);border-color:var(--inner);color:var(--ink)}
+.rd-step.active{color:var(--ink)}
+.rd-step.active>span{background:var(--ink);border-color:var(--ink);color:#fff}
+
+/* Discussion card */
+.rd-discussion h2{margin-bottom:2px}
+.rd-filter{display:flex;align-items:center;gap:6px;margin:12px 0 0;flex-wrap:wrap}
+.rd-chip{height:28px;padding:0 6px 0 10px;border:1px solid var(--line);border-radius:999px;background:var(--page);display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600}
+.rd-chip button{width:20px;height:20px;border:0;border-radius:50%;background:none;display:grid;place-items:center;padding:0;color:var(--muted)}
+.rd-chip button:hover{background:var(--inner);color:var(--ink)}
+.rd-composer{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+.rd-composer textarea{min-height:76px}
+.rd-composer-foot{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.rd-composer-foot span{font-size:12px;color:var(--subtle);min-width:0}
+.rd-threads{display:flex;flex-direction:column;margin:14px -10px 0}
+.rd-thread{padding:12px 10px;border-top:1px solid var(--inner);border-radius:0;transition:background-color .12s}
+.rd-thread.focus{background:var(--page);border-radius:12px;border-top-color:transparent}
+.rd-thread.focus+.rd-thread{border-top-color:transparent}
+.rd-thread-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.rd-anchor{border:0;background:none;padding:0;font-size:12px;font-weight:700;color:var(--ink);text-align:left;display:inline-flex;align-items:center;gap:5px}
+.rd-anchor:hover{text-decoration:underline;text-underline-offset:3px}
+.rd-anchor .pg{font-weight:500;color:var(--muted)}
+.rd-state{font-size:12px;font-weight:600;color:var(--muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.rd-state.resolved{color:var(--green)}
+.rd-comment{display:grid;grid-template-columns:28px minmax(0,1fr);gap:4px 10px;margin-top:10px}
+.rd-comment:first-of-type{margin-top:0}
+.rd-comment .meta{font-size:13px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.rd-comment .meta strong{font-weight:600}
+.rd-comment .meta time{font-size:12px;color:var(--subtle)}
+.rd-comment p{grid-column:2;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.rd-thread.resolved .rd-comment p{color:var(--muted)}
+.rd-thread-actions{display:flex;gap:2px;margin:8px 0 0 30px;flex-wrap:wrap}
+.rd-reply{margin:8px 0 0 38px}
+.rd-empty{margin-top:14px;font-size:14px;color:var(--muted)}
+.rd-older{margin-top:12px;border-top:1px solid var(--inner);padding-top:10px}
+.rd-older summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--muted);list-style:none;display:flex;align-items:center;gap:6px}
+.rd-older summary::-webkit-details-marker{display:none}
+.rd-older summary::before{content:'';width:6px;height:6px;border-right:1.5px solid currentColor;border-bottom:1.5px solid currentColor;transform:rotate(-45deg);margin:0 2px}
+.rd-older[open] summary::before{transform:rotate(45deg)}
+.rd-closed{margin-top:12px;padding:10px 12px;border-radius:10px;background:var(--page);font-size:13px;color:var(--muted);line-height:1.45}
+
+/* Facts list for PDF/receipt cards */
+.rd-facts{margin:12px 0 0;display:flex;flex-direction:column;gap:8px;font-size:13px}
+.rd-facts div{display:flex;justify-content:space-between;gap:12px}
+.rd-facts dt{color:var(--muted)}
+.rd-facts dd{margin:0;font-weight:600;text-align:right;min-width:0;overflow-wrap:anywhere}
+.rd-facts .mono{font-family:var(--mono);font-size:11.5px;font-weight:500}
+.rd-people{display:flex;flex-direction:column;margin:10px 0 0}
+.rd-person{display:flex;align-items:center;gap:10px;padding:8px 0;border-top:1px solid var(--inner)}
+.rd-person:first-child{border-top:0}
+.rd-person>div{flex:1;min-width:0}
+.rd-person strong{display:block;font-size:14px;font-weight:600}
+.rd-person>div>span{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.rd-person .ed-dot{width:6px;height:6px}
+.rd-link-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:10px 0 0;margin-top:12px;border-top:1px solid var(--inner)}
+.rd-link-row>div{flex:1;min-width:0}
+.rd-link-row>.rd-link-actions{display:flex;flex:1 0 100%;gap:2px;padding-left:30px}
+.rd-link-row strong{display:block;font-size:14px;font-weight:600}
+.rd-link-row>div>span{display:block;font-size:12px;color:var(--muted)}
+.rd-receipt{display:flex;align-items:center;gap:12px;margin-top:12px;padding:12px;border:1px solid var(--line);border-radius:12px}
+.rd-receipt svg{width:96px;height:40px;flex-shrink:0}
+.rd-receipt div{min-width:0;font-size:12px;color:var(--muted);line-height:1.55}
+.rd-receipt strong{color:var(--ink);font-size:13px}
+.rd-receipt .mono{font-family:var(--mono);font-size:10.5px}
+.rd-events{margin:12px 0 0;padding:0;list-style:none;display:flex;flex-direction:column}
+.rd-events li{display:grid;grid-template-columns:12px minmax(0,1fr);gap:10px;font-size:13px;line-height:1.4;padding-bottom:10px;position:relative}
+.rd-events li::before{content:'';width:7px;height:7px;border-radius:50%;background:var(--ink);margin-top:5px}
+.rd-events li::after{content:'';position:absolute;left:3px;top:15px;bottom:0;width:1px;background:var(--line)}
+.rd-events li:last-child::after{display:none}
+.rd-events time{display:block;font-family:var(--mono);font-size:11px;color:var(--subtle)}
+
+/* PDF stage: canvas pages from PdfPreview, framed like the editor paper */
+.rd-pdf{max-width:800px;margin:0 auto;display:flex;flex-direction:column;gap:6px}
+.rd-pdf-page{position:relative;container-type:inline-size;aspect-ratio:595.28/841.89;background:#fff;border-radius:4px;box-shadow:0 1px 2px #0e11160f,0 10px 30px -18px #0e111640;overflow:hidden}
+.rd-page-number{display:block;text-align:center;font-family:var(--mono);font-size:11px;color:var(--muted);margin:4px 0 10px}
+/* Simulated pdf-export output: 56pt margins, Noto Sans Regular, faux bold. Stands in for a rendered canvas. */
+.rd-pdf-in{position:absolute;inset:0;padding:9.4cqw 9.4cqw 10.8cqw;font-family:'Signhere PDF','Noto Sans',Arial,sans-serif;font-size:1.68cqw;line-height:1.45;color:#0e1116;font-synthesis:weight}
+.rd-pdf-in b,.rd-pdf-in h3,.rd-pdf-in h4{font-weight:700}
+.rd-pdf-in .eyebrow{font-size:1.5cqw;letter-spacing:.08em;text-transform:uppercase;color:#6b727d}
+.rd-pdf-in h3{font-size:4.4cqw;line-height:1.15;margin:1.6cqw 0 3.2cqw;letter-spacing:-.02em}
+.rd-pdf-in h4{font-size:2.7cqw;margin:4cqw 0 1.4cqw}
+.rd-pdf-in p{margin:0 0 1.4cqw}
+.rd-pdf-in .meta{display:flex;gap:4cqw;padding-top:1.8cqw;border-top:.15cqw solid #dcdfe3;margin-bottom:2cqw}
+.rd-pdf-in .meta span{display:block;font-size:1.4cqw;color:#6b727d}
+.rd-pdf-in .cols{display:grid;grid-template-columns:1fr 1fr;gap:4cqw;margin:3cqw 0 0}
+.rd-pdf-in .small{font-size:1.45cqw;color:#5b626d}
+.rd-pdf-in ul{margin:0;padding-left:3cqw}
+.rd-pdf-in li{margin:.6cqw 0}
+.rd-pdf-in table{width:100%;border-collapse:collapse;font-size:1.55cqw;margin-top:1cqw}
+.rd-pdf-in th{font-weight:400;color:#6b727d;text-align:left;padding:0 0 1cqw;border-bottom:.15cqw solid #0e1116}
+.rd-pdf-in td{padding:1.1cqw 0;border-bottom:.12cqw solid #e6e8eb}
+.rd-pdf-in .r{text-align:right}
+.rd-pdf-in .totals{width:46%;margin:2cqw 0 0 auto}
+.rd-pdf-in .totals div{display:flex;justify-content:space-between;padding:.4cqw 0;color:#5b626d}
+.rd-pdf-in .totals .t{border-top:.15cqw solid #0e1116;margin-top:.6cqw;padding-top:1.2cqw;color:#0e1116;font-size:2.3cqw;font-weight:700}
+.rd-pdf-in .foot{position:absolute;left:9.4cqw;right:9.4cqw;bottom:5cqw;display:flex;justify-content:space-between;font-size:1.3cqw;color:#9aa1ab}
+.rd-pdf-anchor{border-radius:.6cqw;outline:2px solid transparent;outline-offset:1cqw;transition:outline-color .2s}
+.rd-pdf-anchor.focus{outline-color:var(--ink)}
+.rd-pdf-anchor.diff{background:oklch(.97 .04 80);box-shadow:0 0 0 1cqw oklch(.97 .04 80)}
+/* Signatures: shown under the PDF exactly as web/sign.tsx .sign-signatures does today */
+.rd-sigsheet{background:#fff;border-radius:4px;box-shadow:0 1px 2px #0e11160f,0 10px 30px -18px #0e111640;padding:32px 9%;margin-top:8px}
+.rd-sigsheet-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+.rd-sigsheet-head .ed-mono{color:var(--ink);font-weight:500}
+.rd-sigsheet-head span:last-child{font-size:12px;color:var(--muted)}
+.rd-sigsheet-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(min(200px,100%),1fr));gap:24px}
+.rd-sigline{height:64px;border-bottom:1px solid var(--faint);display:flex;align-items:flex-end;padding-bottom:4px}
+.rd-sigline svg{height:56px;width:100%;max-width:200px}
+.rd-sigsheet strong{display:block;font-size:13px;font-weight:600;margin-top:8px}
+.rd-sigsheet p{font-size:12px;color:var(--muted)}
+.rd-zoom-hint{display:none}
+.rd-zoom{width:100%;max-width:none;height:100dvh;max-height:none;margin:0;padding:0;border:0;background:#eceef1;color:var(--ink);display:none;flex-direction:column}
+.rd-zoom[open]{display:flex}
+.rd-zoom-body{flex:1;overflow:auto;padding:16px;touch-action:pan-x pan-y pinch-zoom}
+.rd-zoom-body .rd-pdf-page{width:820px}
+.rd-fingerprint{max-width:800px;margin:16px auto 0;font-size:12px;color:var(--muted)}
+.rd-fingerprint summary{cursor:pointer;font-weight:500}
+.rd-fingerprint p{margin-top:8px;font-family:var(--mono);font-size:11.5px;overflow-wrap:anywhere;line-height:1.6}
+
+/* Bottom action bar: web/styles.css .sign-footer, also used for comments on mobile */
+.rd-bar{position:fixed;left:0;right:0;bottom:0;z-index:40;background:#fff;border-top:1px solid var(--line);padding:12px 16px calc(12px + env(safe-area-inset-bottom))}
+.rd-bar-in{max-width:1240px;margin:0 auto;padding:0 8px;display:flex;align-items:center;gap:12px}
+.rd-bar-text{flex:1;min-width:0}
+.rd-bar-text strong{display:block;font-size:14px}
+.rd-bar-text span{display:block;font-size:13px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rd-bar .rd-comments-btn{display:none}
+.rd-bar.review-only{display:none}
+
+/* Comment sheet (mobile): a native modal <dialog> anchored to the bottom */
+.rd-sheet{width:100%;max-width:none;max-height:86dvh;margin:auto 0 0;padding:0;border:0;border-radius:20px 20px 0 0;background:#fff;color:var(--ink);box-shadow:0 -20px 60px -20px rgba(14,17,22,.4);animation:shSheet .26s var(--ease);display:none;flex-direction:column}
+.rd-sheet[open]{display:flex}
+.rd-sheet::backdrop{background:rgba(14,17,22,.36)}
+.rd-sheet-head{position:sticky;top:0;background:#fff;padding:10px 18px 12px;border-bottom:1px solid var(--inner);display:flex;align-items:center;gap:10px;z-index:1}
+.rd-sheet-head::before{content:'';position:absolute;top:6px;left:50%;width:36px;height:4px;border-radius:2px;background:var(--input);transform:translateX(-50%)}
+.rd-sheet-head h2{flex:1;font-size:17px;font-weight:700;margin-top:8px}
+.rd-sheet-head button{margin-top:8px}
+.rd-sheet-body{overflow-y:auto;padding:4px 18px calc(18px + env(safe-area-inset-bottom))}
+.rd-sheet-body .ed-card{border:0;padding:12px 0 0;border-radius:0}
+.rd-sheet-body .ed-card>h2:first-child,.rd-sheet-body .rd-discussion>.ed-card-head{display:none}
+.rd-x{width:34px;height:34px;border:0;border-radius:8px;background:none;display:grid;place-items:center;color:var(--muted);padding:0}
+.rd-x:hover{background:var(--hover);color:var(--ink)}
+
+/* Responsive */
+@media (max-width:1099px){.ed-panel{flex-basis:300px;width:300px}.ed-main{gap:20px}}
+@media (max-width:859px){
+  .ed-panel{display:none}
+  .ed-main{display:block;padding:16px 12px 120px}
+  .ed-topbar-inner{padding:0 12px;gap:8px;height:56px}
+  .ed-title{font-size:14px}
+  .ed-save,.rd-who-name,.rd-hide-m,.rd-brand-text,.ed-slash.rd-hide-m{display:none}
+  .rd-bar{display:block}
+  .rd-bar.review-only{display:block}
+  .rd-bar .rd-comments-btn{display:inline-flex}
+  .rd-bar .rd-bar-text.hide-m{display:none}
+  .rd-mstatus{display:flex;align-items:flex-start;gap:10px;max-width:800px;margin:0 auto 12px;padding:12px 14px;background:#fff;border:1px solid var(--line);border-radius:14px;font-size:13px;line-height:1.45;color:var(--secondary)}
+  .rd-mstatus .ed-dot{margin-top:5px}
+  .rd-mstatus strong{color:var(--ink)}
+  .ed-paper{padding:28px 20px 40px;border-radius:6px}
+  .ed-block{margin:0 -12px;padding:16px 12px}
+  .ed-block.ed-signatures{margin:28px -12px 0;padding:22px 12px 12px}
+  .ed-signatures::before{left:12px;right:12px}
+  .rd-marker{right:8px}
+  .ed-toolbar{right:8px}
+  .ed-cover-title{font-size:32px}
+  .ed-heading{font-size:21px}
+  .ed-prose{font-size:15.5px}
+  .ed-row{grid-template-columns:minmax(0,1fr) 92px;row-gap:0;font-size:14px}
+  .ed-row-head{display:none}
+  .ed-row>span:nth-child(2),.ed-row>span:nth-child(3),.ed-row>span:nth-child(4){display:none}
+  .ed-row .sub{display:block!important;font-size:12px;color:var(--muted);font-weight:400}
+  .rd-callout{padding:16px;gap:12px;border-radius:14px}
+  .rd-callout-icon{width:32px;height:32px}
+  .rd-sigsheet{padding:24px 18px}
+  .ed-toast-wrap{bottom:100px}
+  .rd-stagebar{gap:8px}
+  .rd-zoom-hint{display:inline}
+  .rd-pdf-page{cursor:zoom-in}
+}
+.ed-row .sub{display:none}
+@media (max-width:420px){
+  .rd-pill .long{display:none}
+  .ed-btn.xl{padding:0 18px}
+}
+@media (min-width:421px){.rd-pill .short{display:none}}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important;scroll-behavior:auto!important}}
+</style>
+</head>
+<body>
+<div class="proto" role="region" aria-label="Prototypkontroller">
+  <strong>Prototyp</strong>
+  <label>Vy <select id="p-who"><option value="client">Klient (Anna)</option><option value="owner">Avsändare (Johan)</option></select></label>
+  <label>Läge <select id="p-stage"><option value="review">1 · Granskning</option><option value="handoff">2 · Skickat för signering (granskningslänk)</option><option value="sign">3 · Redo att signera (signeringslänk)</option><option value="signed">4 · Signerat</option></select></label>
+  <label id="p-variant-wrap">Variant <select id="p-variant"></select></label>
+  <button type="button" id="p-reset">Återställ</button>
+</div>
+<div id="app"></div>
+<dialog class="rd-sheet" id="sheet" aria-labelledby="sheet-title"></dialog>
+<dialog class="ed-dialog" id="send" aria-labelledby="send-title"></dialog>
+<dialog class="signature-modal" id="signmodal" aria-labelledby="sign-title"></dialog>
+<dialog class="rd-zoom" id="zoom" aria-labelledby="zoom-title"></dialog>
+<div class="ed-toast-wrap" id="toast" hidden><div class="ed-toast" role="status"></div></div>
+
+<script>
+/* ---------- Icons (lucide geometry, 2px stroke, as in the app) ---------- */
+const I = (d, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ic = {
+  msg: s => I('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', s),
+  plus: s => I('<path d="M12 5v14M5 12h14"/>', s),
+  check: s => I('<path d="M20 6 9 17l-5-5"/>', s),
+  x: s => I('<path d="M18 6 6 18M6 6l12 12"/>', s),
+  down: s => I('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/>', s),
+  pen: s => I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', s),
+  mail: s => I('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>', s),
+  link: s => I('<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>', s),
+  shield: s => I('<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="m9 12 2 2 4-4"/>', s),
+};
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const kr = n => n.toLocaleString('sv-SE').replace(/ /g, ' ') + ' kr';
+
+/* ---------- Content: one draft, three shared versions and one unshared signing source ---------- */
+const PEOPLE = { anna: { name: 'Anna Lindqvist', short: 'AL', role: 'VD, Bageri Lindqvist AB', email: 'anna@bagerilindqvist.se' }, johan: { name: 'Johan Ekström', short: 'JE', role: 'Projektledare, Norrsken Digital AB', email: 'johan@norrskendigital.se' } };
+const VERSIONS = { 1: '10 okt 2026, 16:05', 2: '14 okt 2026, 15:20', 3: '16 okt 2026, 09:12' };
+const SECTION = { cover: 'Omslag', parties: 'Parter', uppdrag: '1. Uppdraget', tidplan: '2. Tidplan', pris: '3. Pris', villkor: '4. Villkor', null: 'Hela dokumentet' };
+const TYPE = { cover: 'Omslag', parties: 'Parter', uppdrag: 'Text', tidplan: 'Text', pris: 'Priser', villkor: 'Villkor' };
+const PAGE_OF = { cover: 1, parties: 1, uppdrag: 1, tidplan: 2, pris: 2, villkor: 3 };
+const ORDER = ['cover', 'parties', 'uppdrag', 'tidplan', 'pris', 'villkor'];
+const HASH = '3f9a61c0e2b47d18a95c0b7e44f1d2c6b8e03a7795f1c4de28b6a0f91c37e5d2';
+const HASH_X = 'b71c04e9a2f6d35c8e10f97a4b2d6c83e5a9f0172cd4b8e6a31f05c9d7e2b648';
+
+function content(v) {
+  const q = v === 3 || v === 'x';
+  const weeks = q ? ['45', '48'] : ['44', '47'];
+  const lines = [
+    { name: 'Workshop och konceptarbete', sub: 'Halvdag i Umeå, inklusive dokumentation', qty: 1, unit: 'st', price: 18000 },
+    { name: 'Design och utveckling', sub: 'Webbplats, beställningsfunktion och Swish Handel', qty: 1, unit: 'st', price: 96000 },
+    q ? { name: 'Förvaltning och support, faktureras kvartalsvis', sub: '4 kvartal', qty: 4, unit: 'kv', price: v === 'x' ? 7500 : 7200 }
+      : { name: 'Förvaltning och support', sub: '12 månader', qty: 12, unit: 'mån', price: 2400 },
+  ];
+  const net = lines.reduce((s, l) => s + l.qty * l.price, 0);
+  return {
+    lines, net, vat: net * .25, total: net * 1.25,
+    weeks, notice: v === 1 ? 'sex' : 'tre',
+  };
+}
+function same(a, b, id) { return blockHTML(id, a, 'compare') === blockHTML(id, b, 'compare'); }
+
+function blockHTML(id, v, mode) {
+  const c = content(v);
+  switch (id) {
+    case 'cover': return `<div class="ed-cover-body"><span class="ed-cover-eyebrow">Uppdragsavtal</span><h1 class="ed-cover-title">Ny webbplats och löpande förvaltning</h1>
+      <dl class="ed-cover-meta"><div><dt>Avtalsnummer</dt><dd>ND-2026-041</dd></div><div><dt>Datum</dt><dd>16 oktober 2026</dd></div><div><dt>Giltigt till</dt><dd>15 november 2026</dd></div><div><dt>Från</dt><dd>Norrsken Digital AB</dd></div></dl></div>`;
+    case 'parties': return `<div class="ed-parties"><div class="ed-party"><span class="ed-mono">Leverantör</span><strong>Norrsken Digital AB</strong><span>Org.nr 559214-3381</span><span>Storgatan 12, 903 26 Umeå</span><span style="margin-top:8px">Johan Ekström · johan@norrskendigital.se</span></div>
+      <div class="ed-party"><span class="ed-mono">Kund</span><strong>Bageri Lindqvist AB</strong><span>Org.nr 556701-2290</span><span>Rådhusesplanaden 8, 903 28 Umeå</span><span style="margin-top:8px">Anna Lindqvist · anna@bagerilindqvist.se</span></div></div>`;
+    case 'uppdrag': return `<h2 class="ed-heading">1. Uppdraget</h2><div class="ed-prose"${mode === 'owner' ? ' contenteditable="true"' : ''}><p>Norrsken Digital AB (”Leverantören”) tar fram en ny webbplats åt Bageri Lindqvist AB (”Kunden”) med en beställningsfunktion för tårtor och catering. Webbplatsen byggs responsiv och tillgänglighetsanpassad enligt WCAG 2.1 nivå AA.</p><p>I uppdraget ingår workshop, visuell design, utveckling, publicering av innehåll som Kunden levererar samt integration med Swish Handel och Kundens kassasystem.</p><p>Fotografering och texter ingår inte. Kunden levererar material enligt tidplanen i punkt 2.</p></div>`;
+    case 'tidplan': return `<h2 class="ed-heading">2. Tidplan</h2><div class="ed-prose"${mode === 'owner' ? ' contenteditable="true"' : ''}><ul><li>Vecka ${c.weeks[0]} – workshop och konceptarbete i Umeå</li><li>Vecka ${c.weeks[1]} – designförslag för Kundens godkännande</li><li>1 februari 2027 – beställningsfunktionen öppnar</li><li>1 mars 2027 – hela webbplatsen lanseras</li></ul></div>`;
+    case 'pris': return `<h2 class="ed-heading">3. Pris</h2><div class="ed-package-name">Webbplats med beställningsfunktion</div><p class="ed-package-desc">Fast pris för projektet, förvaltning enligt nedan.</p>
+      <div class="ed-table"><div class="ed-row ed-row-head" aria-hidden="true"><span>Beskrivning</span><span class="num">Antal</span><span>Enhet</span><span class="num">À-pris</span><span class="num">Summa</span></div>
+      ${c.lines.map(l => `<div class="ed-row"><span><strong>${l.name}</strong><span class="sub">${l.qty} ${l.unit} × ${kr(l.price)}</span></span><span class="num">${l.qty}</span><span class="muted">${l.unit}</span><span class="num">${l.price.toLocaleString('sv-SE')}</span><span class="num"><strong>${kr(l.qty * l.price)}</strong></span></div>`).join('')}</div>
+      <div class="ed-totals"><div><span>Netto</span><span>${kr(c.net)}</span></div><div><span>Moms 25 %</span><span>${kr(c.vat)}</span></div><div class="total"><span>Totalt</span><strong>${kr(c.total)}</strong></div></div>`;
+    case 'villkor': return `<h2 class="ed-heading">4. Villkor</h2><div class="ed-prose"${mode === 'owner' ? ' contenteditable="true"' : ''}><p>Betalning sker mot faktura, 30 dagar netto. 40 % av det fasta priset faktureras vid uppstart och resterande del vid lansering.</p><p>Förvaltningen löper i tolv månader från lansering och förlängs därefter med tolv månader i taget. Uppsägningstiden är ${c.notice} månader.</p><p>Upphovsrätten till design och kod som tagits fram för Kunden övergår till Kunden när full betalning har skett.</p><p>Avtalet lyder under svensk rätt. Tvist avgörs av allmän domstol med Umeå tingsrätt som första instans.</p></div>`;
+  }
+}
+
+/* ---------- Discussion data (matches server/review-schema.ts: thread = version + optional block) ---------- */
+const initialThreads = () => [
+  { id: 't0', v: 1, block: 'villkor', resolved: true, comments: [
+    { who: 'anna', at: '11 okt 08:14', body: 'Kan uppsägningstiden för förvaltningen vara tre månader i stället för sex?' },
+    { who: 'johan', at: '11 okt 10:02', body: 'Ja, det är ändrat i version 2.' }] },
+  { id: 't1', v: 2, block: 'pris', resolved: false, comments: [
+    { who: 'anna', at: '15 okt 09:41', body: 'Kan förvaltningen faktureras kvartalsvis i stället för varje månad? Det passar vår bokföring bättre.' },
+    { who: 'johan', at: '15 okt 11:05', body: 'Det går bra. Jag lägger in det i nästa version, totalen blir densamma.' }] },
+  { id: 't2', v: 2, block: 'tidplan', resolved: true, comments: [
+    { who: 'anna', at: '15 okt 09:47', body: 'Vecka 44 är höstlov här. Kan workshopen flyttas till vecka 45?' },
+    { who: 'johan', at: '15 okt 11:07', body: 'Vecka 45 fungerar. Designförslaget flyttas då till vecka 48.' }] },
+  { id: 't3', v: 2, block: null, resolved: false, comments: [
+    { who: 'anna', at: '15 okt 16:30', body: 'Ser bra ut överlag! Vem blir vår kontaktperson efter lanseringen?' }] },
+];
+
+/* ---------- State ---------- */
+const fresh = () => ({ who: 'client', stage: 'review', variant: '', shared: 2, view: null, selected: null, filter: null, ref: false, threads: initialThreads(), drafts: {}, reply: null, handoffSent: false, sig: null, johanSigned: false, pdfFocus: null, focusKey: null });
+let S = fresh();
+const mobile = () => matchMedia('(max-width: 859px)').matches;
+const latest = () => S.stage === 'review' ? S.shared : 3;
+const viewed = () => S.view ?? latest();
+const signingSource = () => S.variant === 'changed' ? 'x' : 3;
+const isPdf = () => (S.stage === 'sign' || S.stage === 'signed') && S.who === 'client' && !S.ref;
+const canComment = () => S.who === 'owner' ? S.stage === 'review' : (S.stage === 'review' && viewed() === latest()) || S.stage === 'sign';
+const visibleThreads = () => S.stage === 'review' || S.who === 'owner' ? S.threads.filter(t => t.v === viewed()) : S.threads.filter(t => t.v >= 2);
+const openCount = list => list.filter(t => !t.resolved).length;
+const anchorLabel = id => SECTION[id];
+
+/* ---------- Pieces ---------- */
+function pill() {
+  const map = {
+    review: ['', 'Utkast för granskning', 'Utkast'],
+    handoff: ['', 'Klar för signering', 'Signering'],
+    sign: ['', 'Väntar på din signatur', 'Att signera'],
+    signed: ['done', S.variant === 'all' ? 'Signerat av alla' : 'Du har signerat', 'Signerat'],
+  };
+  if (S.who === 'owner') { map.review = ['', `Version ${S.shared} delad`, `v${S.shared} delad`]; map.handoff = ['', 'Skickat för signering', 'Skickat']; }
+  const [cls, long, short] = map[S.stage] ?? map.review;
+  return `<span class="rd-pill"><span class="ed-dot ${cls}" aria-hidden="true"></span><span class="long">${long}</span><span class="short">${short}</span></span>`;
+}
+
+function topbar() {
+  if (S.who === 'owner') {
+    const changed = privateChanges().length;
+    return `<header class="ed-topbar"><div class="ed-topbar-inner">
+      <button type="button" class="ed-logo" aria-label="Tillbaka till dokument"><span><i></i></span></button>
+      <span class="ed-slash" aria-hidden="true">/</span>
+      <input class="ed-title" aria-label="Dokumentnamn" value="Uppdragsavtal – Bageri Lindqvist">
+      <span class="ed-save" role="status">${ic.check(13)}Sparat</span>
+      ${pill()}
+      <div class="ed-topbar-actions">
+        ${S.stage === 'review' ? `<button type="button" class="ed-btn large rd-hide-m" data-act="share" ${changed ? '' : 'disabled'}>${changed ? `Dela version ${S.shared + 1}` : 'Inga nya ändringar'}</button>
+        <button type="button" class="ed-btn primary large" data-act="open-send">Skicka</button>` : `<button type="button" class="ed-btn large" data-act="toast" data-msg="Öppnar dokumentets sida">Visa signering</button>`}
+      </div></div></header>`;
+  }
+  return `<header class="ed-topbar"><div class="ed-topbar-inner">
+    <div class="rd-brand"><span class="rd-brand-mark" aria-hidden="true">N</span><span class="rd-brand-text"><strong>Norrsken Digital</strong><small>via signhere</small></span></div>
+    <span class="ed-slash rd-hide-m" aria-hidden="true">/</span>
+    <h1 class="ed-title" title="Uppdragsavtal – ny webbplats och förvaltning">Uppdragsavtal – ny webbplats och förvaltning</h1>
+    ${pill()}
+    <div class="ed-topbar-actions"><span class="rd-who"><span class="ed-avatar" aria-hidden="true">AL</span><span class="rd-who-name">Anna Lindqvist</span></span></div>
+  </div></header>`;
+}
+
+function steps(active) {
+  const names = ['Granskning', 'Signering', 'Signerat'];
+  return `<ol class="rd-steps" aria-label="Steg" style="list-style:none;padding:0;margin-left:0">${names.map((n, i) => {
+    const st = i < active ? 'done' : i === active ? 'active' : '';
+    return `<li class="rd-step ${st}"${i === active ? ' aria-current="step"' : ''}><span>${i < active ? ic.check(11) : i + 1}</span><strong>${n}</strong>${i < 2 ? '<i></i>' : ''}</li>`;
+  }).join('')}</ol>`;
+}
+
+function statusCard() {
+  if (S.who === 'owner') return ownerShareCard();
+  const v = viewed();
+  if (S.stage === 'review') return `<section class="ed-card" aria-live="polite"><h2><span class="ed-dot" aria-hidden="true"></span>Utkast för granskning</h2>
+    <p class="ed-card-text">Johan Ekström har delat version ${latest()} med dig. Kommentera ett avsnitt eller hela dokumentet. Inget signeras här.</p>${steps(0)}</section>`;
+  if (S.stage === 'handoff') return `<section class="ed-card"><h2><span class="ed-dot" aria-hidden="true"></span>Klar för signering</h2>
+    <p class="ed-card-text">Version 3 har skickats för signering. Du signerar via en personlig länk, så att ingen annan kan signera i ditt namn.</p>${steps(1)}</section>`;
+  if (S.stage === 'sign') return `<section class="ed-card"><h2><span class="ed-dot" aria-hidden="true"></span>Redo att signera</h2>
+    <p class="ed-card-text">Johan skickade avtalet för signering 16 okt 13:40. Läs PDF:en och signera när du är klar.</p>${steps(1)}
+    <button type="button" class="ed-btn primary large block" style="margin-top:14px" data-act="open-sign">${ic.pen(15)}${S.ref ? 'Visa PDF och signera' : 'Signera'}</button></section>`;
+  return `<section class="ed-card"><h2><span class="ed-dot done" aria-hidden="true"></span>${S.variant === 'all' ? 'Alla parter har signerat' : 'Du har signerat'}</h2>
+    <p class="ed-card-text">${S.variant === 'all' ? 'Den signerade PDF:en är förseglad och kan laddas ner.' : 'Väntar på Johan Ekström. Du kan alltid återvända till den här länken.'}</p>${steps(S.variant === 'all' ? 3 : 2)}</section>`;
+}
+
+function mobileStatus() {
+  if (S.who === 'owner') {
+    const n = privateChanges().length;
+    return S.stage === 'review' ? `<div class="rd-mstatus"><span class="ed-dot" aria-hidden="true"></span><span><strong>Version ${S.shared} är delad med Anna.</strong> ${n ? `Privata ändringar i ${n} avsnitt syns först när du delar version ${S.shared + 1}.` : 'Inga privata ändringar.'}</span></div>` : '';
+  }
+  if (S.stage === 'review') return `<div class="rd-mstatus"><span class="ed-dot" aria-hidden="true"></span><span><strong>Utkast för granskning.</strong> Tryck på ett avsnitt för att kommentera. Inget signeras här.</span></div>`;
+  if (S.stage === 'sign') return `<div class="rd-mstatus"><span class="ed-dot" aria-hidden="true"></span><span><strong>Redo att signera.</strong> Läs PDF:en nedan. Den är exakt det du signerar.</span></div>`;
+  return '';
+}
+
+function commentCTA(id) {
+  const list = visibleThreads().filter(t => t.block === id);
+  const label = anchorLabel(id);
+  if (list.length) {
+    const open = openCount(list);
+    return `<button type="button" class="rd-marker${open ? ' open' : ''}" data-act="comment" data-block="${id}" aria-label="${label}: ${list.length} ${list.length === 1 ? 'kommentarstråd' : 'kommentarstrådar'}, ${open} öppna">${ic.msg(13)}${list.length}</button>`;
+  }
+  if (!canComment()) return '';
+  return `<button type="button" class="rd-marker add" data-act="comment" data-block="${id}" aria-label="Kommentera ${label}">${ic.plus(13)}Kommentera</button>`;
+}
+
+function privateChanges() { return S.who === 'owner' && S.stage === 'review' ? ORDER.filter(id => !same(3, S.shared, id)) : []; }
+
+function paper(v) {
+  const owner = S.who === 'owner';
+  const changed = privateChanges();
+  const blocks = ORDER.map(id => {
+    const sel = S.selected === id;
+    const list = visibleThreads().filter(t => t.block === id);
+    const toolbar = sel ? `<div class="ed-toolbar" role="toolbar" aria-label="${anchorLabel(id)}"><span class="ed-toolbar-label">${TYPE[id]}</span>
+      ${list.length ? `<button type="button" data-act="comment" data-block="${id}">${ic.msg(13)}${list.length}</button><span class="sep"></span>` : ''}
+      ${canComment() ? `<button type="button" data-act="comment" data-block="${id}" data-compose="1">${ic.plus(13)}Kommentera</button>` : ''}</div>` : '';
+    const tag = changed.includes(id) ? `<div class="rd-changed"><i aria-hidden="true"></i>Ändrat sedan version ${S.shared}</div>` : '';
+    return `<section class="ed-block${sel ? ' selected' : ''}" data-block="${id}" data-act="select" tabindex="0" aria-label="${anchorLabel(id)}">${toolbar}${sel ? '' : commentCTA(id)}${tag}${blockHTML(id, owner ? 3 : v, owner ? 'owner' : '')}</section>`;
+  }).join('');
+  const sig = `<section class="ed-block ed-signatures" aria-label="Signaturer"><div class="ed-sig-head"><span class="ed-mono">Signaturer</span><span>${owner ? 'Läggs alltid sist · följer mottagarlistan' : 'Signeras som PDF i nästa steg'}</span></div>
+    <div class="ed-signers"><div class="ed-signer"><div class="ed-sign-line"></div><strong>Anna Lindqvist</strong><span>Bageri Lindqvist AB</span></div><div class="ed-signer"><div class="ed-sign-line"></div><strong>Johan Ekström</strong><span>Norrsken Digital AB</span></div></div></section>`;
+  return `<article class="ed-paper" aria-label="Dokument, version ${v}">${blocks}${sig}</article>`;
+}
+
+/* The PDF stage. In the product these are PdfPreview canvases of /api/sign/pdf after the SHA-256 check. */
+function pdfStage() {
+  const src = signingSource();
+  const c = content(src);
+  const diff = S.variant === 'changed' ? ORDER.filter(id => !same(src, 3, id)) : [];
+  const A = (id, html) => `<div class="rd-pdf-anchor${S.pdfFocus === id ? ' focus' : ''}${diff.includes(id) ? ' diff' : ''}" data-pdf-anchor="${id}">${html}</div>`;
+  const foot = n => `<div class="foot"><span>Uppdragsavtal – ny webbplats och förvaltning</span><span>${n} / 3</span></div>`;
+  const p1 = `<div class="rd-pdf-in">${A('cover', `<div class="eyebrow">Uppdragsavtal</div><h3>Ny webbplats och löpande förvaltning</h3><div class="meta"><div><span>Avtalsnummer</span>ND-2026-041</div><div><span>Datum</span>16 oktober 2026</div><div><span>Giltigt till</span>15 november 2026</div></div>`)}
+    ${A('parties', `<div class="cols"><div><div class="eyebrow">Leverantör</div><b>Norrsken Digital AB</b><div class="small">Org.nr 559214-3381<br>Storgatan 12, 903 26 Umeå<br>Johan Ekström</div></div><div><div class="eyebrow">Kund</div><b>Bageri Lindqvist AB</b><div class="small">Org.nr 556701-2290<br>Rådhusesplanaden 8, 903 28 Umeå<br>Anna Lindqvist</div></div></div>`)}
+    ${A('uppdrag', `<h4>1. Uppdraget</h4><p>Norrsken Digital AB (”Leverantören”) tar fram en ny webbplats åt Bageri Lindqvist AB (”Kunden”) med en beställningsfunktion för tårtor och catering. Webbplatsen byggs responsiv och tillgänglighetsanpassad enligt WCAG 2.1 nivå AA.</p><p>I uppdraget ingår workshop, visuell design, utveckling, publicering av innehåll som Kunden levererar samt integration med Swish Handel och Kundens kassasystem.</p><p>Fotografering och texter ingår inte. Kunden levererar material enligt tidplanen i punkt 2.</p>`)}${foot(1)}</div>`;
+  const p2 = `<div class="rd-pdf-in">${A('tidplan', `<h4 style="margin-top:0">2. Tidplan</h4><ul><li>Vecka ${c.weeks[0]} – workshop och konceptarbete i Umeå</li><li>Vecka ${c.weeks[1]} – designförslag för Kundens godkännande</li><li>1 februari 2027 – beställningsfunktionen öppnar</li><li>1 mars 2027 – hela webbplatsen lanseras</li></ul>`)}
+    ${A('pris', `<h4>3. Pris</h4><b>Webbplats med beställningsfunktion</b><div class="small">Fast pris för projektet, förvaltning enligt nedan.</div><table><thead><tr><th>Beskrivning</th><th class="r">Antal</th><th>&nbsp;Enhet</th><th class="r">À-pris</th><th class="r">Summa</th></tr></thead><tbody>${c.lines.map(l => `<tr><td>${l.name}</td><td class="r">${l.qty}</td><td>&nbsp;${l.unit}</td><td class="r">${l.price.toLocaleString('sv-SE')}</td><td class="r">${kr(l.qty * l.price)}</td></tr>`).join('')}</tbody></table>
+      <div class="totals"><div><span>Netto</span><span>${kr(c.net)}</span></div><div><span>Moms 25 %</span><span>${kr(c.vat)}</span></div><div class="t"><span>Totalt</span><span>${kr(c.total)}</span></div></div>`)}${foot(2)}</div>`;
+  const p3 = `<div class="rd-pdf-in">${A('villkor', `<h4 style="margin-top:0">4. Villkor</h4><p>Betalning sker mot faktura, 30 dagar netto. 40 % av det fasta priset faktureras vid uppstart och resterande del vid lansering.</p><p>Förvaltningen löper i tolv månader från lansering och förlängs därefter med tolv månader i taget. Uppsägningstiden är tre månader.</p><p>Upphovsrätten till design och kod som tagits fram för Kunden övergår till Kunden när full betalning har skett.</p><p>Avtalet lyder under svensk rätt. Tvist avgörs av allmän domstol med Umeå tingsrätt som första instans.</p>`)}${foot(3)}</div>`;
+  const pages = [p1, p2, p3].map((p, i) => `<div class="rd-pdf-page" role="img" aria-label="PDF för signering, sida ${i + 1} av 3" data-page="${i + 1}" data-act="zoom">${p}</div><span class="rd-page-number" aria-hidden="true">${i + 1}<span class="rd-zoom-hint"> · tryck för att förstora</span></span>`).join('');
+  const signed = S.stage === 'signed';
+  const sig = `<section class="rd-sigsheet" aria-label="Signaturer"><div class="rd-sigsheet-head"><span class="ed-mono">Signaturer</span><span>Läggs till som sista sida när alla har signerat</span></div><div class="rd-sigsheet-grid">
+    <div><div class="rd-sigline">${signed ? sigSVG(S.sig) : ''}</div><strong>Anna Lindqvist</strong><p>${signed ? '16 okt 2026, 14:02' : 'Väntar på signatur'}</p></div>
+    <div><div class="rd-sigline">${signed && S.variant === 'all' ? sigSVG(JOHAN) : ''}</div><strong>Johan Ekström</strong><p>${signed && S.variant === 'all' ? '16 okt 2026, 14:31' : 'Väntar på signatur'}</p></div></div></section>`;
+  return `<div class="rd-pdf" aria-label="PDF för signering, 3 sidor">${pages}${sig}</div>
+    <details class="rd-fingerprint"><summary>Dokumentets fingeravtryck (SHA-256)</summary><p>${S.variant === 'changed' ? HASH_X : HASH}</p></details>`;
+}
+
+function stagebar() {
+  const v = viewed();
+  if (S.who === 'owner') return `<div class="rd-stagebar"><div class="rd-stagebar-left"><span class="ed-mono">Ditt utkast · privat</span></div><span class="ed-mono" style="color:var(--faint)">${S.stage === 'review' ? `Senast delad: version ${S.shared}` : 'Version 3 signeras'}</span></div>`;
+  if (S.stage === 'sign' || S.stage === 'signed') {
+    return `<div class="rd-stagebar"><div class="rd-stagebar-left"><span class="ed-mono">${S.ref ? 'Webbvisning · version 3' : S.stage === 'signed' ? 'PDF du signerade · 3 sidor' : 'PDF för signering · 3 sidor'}</span></div>
+      <div class="ed-seg" role="radiogroup" aria-label="Visning"><button type="button" role="radio" aria-checked="${!S.ref}" data-act="ref" data-ref="0">PDF</button><button type="button" role="radio" aria-checked="${S.ref}" data-act="ref" data-ref="1">Webbvisning</button></div></div>
+      ${S.ref ? `<p class="ed-preview-note"><span aria-hidden="true"></span>Webbvisningen av version 3 hjälper dig följa diskussionen. Det är PDF:en du signerar.</p>`
+        : `<p class="ed-preview-note"><span aria-hidden="true" style="background:var(--green)"></span>${S.variant === 'changed' ? 'Exakt den PDF du signerar. Fingeravtrycket är kontrollerat i din webbläsare.' : 'Exakt den PDF du signerar, skapad från version 3. Fingeravtrycket är kontrollerat i din webbläsare.'}</p>`}`;
+  }
+  const options = Array.from({ length: latest() }, (_, i) => latest() - i).map(n => `<option value="${n}"${n === v ? ' selected' : ''}>Version ${n}${n === latest() ? ' (senaste)' : ''} · ${VERSIONS[n]}</option>`).join('');
+  return `<div class="rd-stagebar"><div class="rd-stagebar-left"><span class="ed-mono">${S.stage === 'handoff' ? 'Skickad för signering' : 'Utkast'}</span>
+    <select class="rd-version" aria-label="Delad version" data-act="version">${options}</select></div></div>
+    ${v !== latest() ? `<p class="ed-preview-note"><span aria-hidden="true" style="background:var(--amber)"></span>Du tittar på version ${v}. Kommentarer görs på den senaste versionen.&nbsp;<button type="button" class="text-button underlined" style="font-size:13px" data-act="version-latest">Visa version ${latest()}</button></p>` : ''}`;
+}
+
+function callouts() {
+  if (S.who === 'owner') {
+    if (S.stage === 'review') return '';
+    return `<div class="rd-callout"><span class="rd-callout-icon">${ic.mail(16)}</span><div class="grow"><h2>Version 3 signeras nu</h2><p>Ändringar här påverkar inte signeringen. Anna öppnar sin personliga signeringslänk och ser samma dokument med diskussionen.</p>
+      <div class="actions"><button type="button" class="ed-btn" data-act="toast" data-msg="Annas signeringslänk kopierad">${ic.link(14)}Kopiera Annas signeringslänk</button></div></div></div>`;
+  }
+  if (S.stage === 'handoff') {
+    const email = S.variant !== 'noemail';
+    return `<div class="rd-callout"><span class="rd-callout-icon">${ic.pen(16)}</span><div class="grow"><h2>Avtalet är klart för signering</h2>
+      <p>Johan har skickat version 3 för signering. Du signerar via din personliga signeringslänk. Den öppnar samma dokument, med diskussionen kvar.</p>
+      ${email ? (S.handoffSent ? `<p class="rd-sent" role="status">${ic.check(13)} Länken är skickad till a•••@bagerilindqvist.se. Kolla inkorgen.</p>`
+        : `<div class="actions"><button type="button" class="ed-btn primary large" data-act="handoff">${ic.mail(15)}Skicka länken till min e-post</button></div><p class="rd-sent">Den går till a•••@bagerilindqvist.se, adressen Johan angav för signeringen.</p>`)
+        : `<p class="rd-sent">Johan delar länken med dig direkt. Hör av dig till johan@norrskendigital.se om du inte har fått den.</p>`}
+    </div></div>`;
+  }
+  if (S.stage === 'sign' && S.variant === 'changed' && !S.ref) return `<div class="rd-callout warn"><span class="rd-callout-icon">!</span><div class="grow"><h2>Ändrat efter version 3</h2><p>PDF:en innehåller en ändring i <strong>3. Pris</strong> som inte fanns i versionen du granskade: förvaltningen är 7 500 kr per kvartal i stället för 7 200 kr.</p>
+    <div class="actions"><button type="button" class="ed-btn" data-act="jump" data-block="pris">Visa på sida 2</button></div></div></div>`;
+  if (S.stage === 'signed') {
+    const all = S.variant === 'all';
+    return `<div class="rd-callout done" role="status"><span class="rd-callout-icon">${ic.check(18)}</span><div class="grow"><h2>${all ? 'Avtalet är signerat av alla' : 'Du har signerat'}</h2>
+      <p>${all ? 'Johan Ekström signerade 16 okt 14:31. Den förseglade PDF:en kan laddas ner.' : 'Signerat 16 okt 2026, 14:02. Väntar på Johan Ekström. Du kan alltid komma tillbaka hit via samma länk.'}</p>
+      <div class="actions">${all ? `<button type="button" class="ed-btn primary large" data-act="toast" data-msg="Laddar ner signerad PDF">${ic.down(15)}Ladda ner signerad PDF</button>` : `<button type="button" class="ed-btn large" data-act="toast" data-msg="Laddar ner PDF:en du signerade">${ic.down(15)}Ladda ner PDF:en du signerade</button>`}</div></div></div>`;
+  }
+  return '';
+}
+
+/* Discussion card: used in the desktop panel and inside the mobile sheet */
+function discussion(inSheet) {
+  const list = visibleThreads();
+  const shown = S.filter !== null && S.filter !== undefined && S.filter !== 'all' ? list.filter(t => t.block === S.filter) : list;
+  const owner = S.who === 'owner';
+  const signStage = S.stage === 'sign' || S.stage === 'signed';
+  const target = S.filter && S.filter !== 'all' ? S.filter : null;
+  const key = `new:${target}`;
+  const placeholder = signStage ? 'Fråga Johan innan du signerar…' : target ? `Kommentera ${anchorLabel(target)}…` : 'Kommentera hela dokumentet…';
+  const title = signStage ? 'Diskussion' : 'Kommentarer';
+  const composer = canComment() && (S.stage !== 'signed') ? `<form class="rd-composer" data-act="post" data-key="${key}">
+      <label class="visually-hidden" for="c-${inSheet ? 's' : 'p'}">${placeholder}</label>
+      <textarea id="c-${inSheet ? 's' : 'p'}" class="ed-input" rows="3" maxlength="5000" placeholder="${placeholder}" data-key="${key}" data-focus-key="${key}${inSheet ? ':s' : ''}">${esc(S.drafts[key] ?? '')}</textarea>
+      <div class="rd-composer-foot"><span>${signStage ? 'Frågor ändrar inte PDF:en.' : owner ? 'Svarar som Johan Ekström' : 'Du kommenterar som Anna Lindqvist'}</span><button class="ed-btn primary" data-send="${key}" ${(S.drafts[key] ?? '').trim() ? '' : 'disabled'}>Skicka</button></div></form>` : '';
+  const filter = target ? `<div class="rd-filter"><span class="rd-chip">${anchorLabel(target)}<button type="button" data-act="clear-filter" aria-label="Visa alla kommentarer">${ic.x(12)}</button></span><span class="ed-text-btn" style="padding:0;height:auto;cursor:default">${shown.length ? `${shown.length} av ${list.length}` : 'Inga kommentarer här ännu'}</span></div>` : '';
+  const older = S.stage === 'review' || owner ? S.threads.filter(t => t.v < viewed()) : signStage ? S.threads.filter(t => t.v < 2) : [];
+  const closed = S.stage === 'handoff' && !owner ? `<p class="rd-closed">Diskussionen är stängd medan avtalet signeras. Frågor? Skriv till johan@norrskendigital.se.</p>`
+    : S.stage === 'signed' ? `<p class="rd-closed">Diskussionen ingår inte i det signerade dokumentet.</p>` : '';
+  return `<section class="ed-card rd-discussion" aria-label="${title}"><div class="ed-card-head"><h2>${title}</h2><span>${S.stage === 'review' || S.stage === 'sign' ? `${openCount(list)} öppna` : `${list.length} trådar`}</span></div>
+    ${filter}${composer}${closed}
+    ${shown.length ? `<div class="rd-threads">${shown.map(thread).join('')}</div>` : target ? '' : '<p class="rd-empty">Inga kommentarer ännu.</p>'}
+    ${older.length ? `<details class="rd-older"><summary>Tidigare versioner (${older.length})</summary><div class="rd-threads">${older.map(thread).join('')}</div></details>` : ''}
+  </section>`;
+}
+
+function thread(t) {
+  const owner = S.who === 'owner';
+  const pdf = isPdf();
+  const focus = S.selected && S.selected === t.block;
+  const anchor = t.block ? `<button type="button" class="rd-anchor" data-act="jump" data-block="${t.block}" data-v="${t.v}">${anchorLabel(t.block)}${pdf ? ` <span class="pg">· sida ${PAGE_OF[t.block]}</span>` : ''}${t.v !== viewed() || (S.stage !== 'review' && S.who === 'client') ? ` <span class="pg">· v${t.v}</span>` : ''}</button>` : `<span class="rd-anchor" style="cursor:default">Hela dokumentet${t.v !== viewed() || S.stage !== 'review' ? ` <span class="pg">· v${t.v}</span>` : ''}</span>`;
+  const state = t.resolved ? `<span class="rd-state resolved">${ic.check(12)}Löst</span>` : '<span class="rd-state">Öppen</span>';
+  const replyable = !t.resolved && t.v === viewed() && S.stage === 'review';
+  const key = `reply:${t.id}`;
+  const actions = (replyable || (owner && S.stage === 'review')) ? `<div class="rd-thread-actions">${replyable && S.reply !== t.id ? `<button type="button" class="ed-text-btn" data-act="reply" data-id="${t.id}">Svara</button>` : ''}${owner && S.stage === 'review' ? `<button type="button" class="ed-text-btn" data-act="resolve" data-id="${t.id}">${t.resolved ? 'Öppna igen' : 'Markera som löst'}</button>` : ''}</div>` : '';
+  const reply = S.reply === t.id ? `<form class="rd-composer rd-reply" data-act="post" data-key="${key}"><label class="visually-hidden" for="r-${t.id}">Svara</label><textarea id="r-${t.id}" class="ed-input" rows="2" placeholder="Svara…" data-key="${key}" data-focus-key="${key}">${esc(S.drafts[key] ?? '')}</textarea><div class="rd-composer-foot"><button type="button" class="ed-text-btn" data-act="reply" data-id="">Avbryt</button><button class="ed-btn primary" data-send="${key}" ${(S.drafts[key] ?? '').trim() ? '' : 'disabled'}>Svara</button></div></form>` : '';
+  return `<article class="rd-thread${t.resolved ? ' resolved' : ''}${focus ? ' focus' : ''}" aria-label="Tråd om ${anchorLabel(t.block)}"><div class="rd-thread-head">${anchor}${state}</div>
+    ${t.comments.map(c => `<div class="rd-comment"><span class="ed-avatar${c.who === 'johan' ? ' dark' : ''}" aria-hidden="true">${PEOPLE[c.who].short}</span><div class="meta"><strong>${PEOPLE[c.who].name}</strong><time>${c.at}</time></div><p>${esc(c.body)}</p></div>`).join('')}
+    ${actions}${reply}</article>`;
+}
+
+function ownerShareCard() {
+  const changed = privateChanges();
+  if (S.stage !== 'review') return `<section class="ed-card"><h2><span class="ed-dot" aria-hidden="true"></span>Signering pågår</h2><p class="ed-card-text">Version 3 skickades 16 okt 13:40.</p>
+    <div class="rd-people"><div class="rd-person"><span class="ed-avatar" aria-hidden="true">AL</span><div><strong>Anna Lindqvist</strong><span><i class="ed-dot" aria-hidden="true"></i>Väntar på signatur</span></div></div><div class="rd-person"><span class="ed-avatar dark" aria-hidden="true">JE</span><div><strong>Johan Ekström (du)</strong><span><i class="ed-dot" aria-hidden="true"></i>Signerar efter Anna</span></div></div></div></section>`;
+  return `<section class="ed-card" aria-live="polite"><h2><span class="ed-dot" aria-hidden="true"></span>Delad för granskning</h2>
+    <p class="ed-card-text">Version ${S.shared} är delad sedan ${VERSIONS[S.shared]}. ${changed.length ? `Privata ändringar i ${changed.map(anchorLabel).join(' och ')} syns för Anna först när du delar.` : 'Anna ser samma innehåll som du.'}</p>
+    ${changed.length ? `<button type="button" class="ed-btn large block" style="margin-top:12px" data-act="share">Dela version ${S.shared + 1}</button>` : ''}
+    <div class="rd-link-row"><span class="ed-avatar" aria-hidden="true">AL</span><div><strong>Anna Lindqvist</strong><span>Privat granskningslänk · giltig till 13 nov</span></div><div class="rd-link-actions"><button type="button" class="ed-text-btn" data-act="toast" data-msg="Granskningslänken kopierad">${ic.link(13)} Kopiera länk</button><button type="button" class="ed-text-btn" data-act="toast" data-msg="Länken återkallades">Återkalla</button><button type="button" class="ed-text-btn" data-act="toast" data-msg="Ny granskningslänk">Ny länk</button></div></div></section>`;
+}
+
+function pdfCard() {
+  if (S.who === 'owner' || !(S.stage === 'sign' || S.stage === 'signed')) return '';
+  const signed = S.stage === 'signed';
+  return `<section class="ed-card"><h2>${signed ? 'Kvitto' : 'Det här signerar du'}</h2>
+    ${signed ? `<div class="rd-receipt">${sigSVG(S.sig)}<div><strong>Anna Lindqvist</strong><div class="mono">16 okt 2026, 14:02</div><div class="mono">ND-2026-041</div></div></div>` : ''}
+    <dl class="rd-facts"><div><dt>Dokument</dt><dd>PDF, 3 sidor + signatursida</dd></div><div><dt>Skapad från</dt><dd>${S.variant === 'changed' ? 'Version 3 med ändring' : 'Version 3'}</dd></div><div><dt>Fingeravtryck</dt><dd class="mono">${(S.variant === 'changed' ? HASH_X : HASH).slice(0, 16)}…</dd></div></dl>
+    <div class="rd-people" style="margin-top:12px;border-top:1px solid var(--inner);padding-top:4px">
+      <div class="rd-person"><span class="ed-avatar" aria-hidden="true">AL</span><div><strong>Anna Lindqvist (du)</strong><span><i class="ed-dot${signed ? ' done' : ''}" aria-hidden="true"></i>${signed ? 'Signerade 14:02' : 'Väntar på din signatur'}</span></div></div>
+      <div class="rd-person"><span class="ed-avatar dark" aria-hidden="true">JE</span><div><strong>Johan Ekström</strong><span><i class="ed-dot${S.variant === 'all' ? ' done' : ''}" aria-hidden="true"></i>${S.variant === 'all' ? 'Signerade 14:31' : 'Väntar på signatur'}</span></div></div></div>
+    ${signed ? `<ol class="rd-events" aria-label="Händelser"><li><div>Johan skickade avtalet för signering.<time>16 okt 13:40</time></div></li><li><div>Anna öppnade dokumentet.<time>16 okt 13:52</time></div></li><li><div>Anna signerade.<time>16 okt 14:02</time></div></li>${S.variant === 'all' ? '<li><div>Johan signerade. Dokumentet förseglades.<time>16 okt 14:31</time></div></li>' : ''}</ol>` : ''}
+  </section>`;
+}
+
+function bar() {
+  const open = openCount(visibleThreads());
+  const comments = `<button type="button" class="ed-btn large rd-comments-btn" data-act="sheet" aria-haspopup="dialog">${ic.msg(15)}${S.stage === 'sign' || S.stage === 'signed' ? 'Diskussion' : 'Kommentarer'}<span class="ed-count">${open || visibleThreads().length}</span></button>`;
+  if (S.who === 'owner') {
+    if (S.stage !== 'review') return `<div class="rd-bar review-only"><div class="rd-bar-in">${comments}</div></div>`;
+    const n = privateChanges().length;
+    return `<div class="rd-bar review-only"><div class="rd-bar-in">${comments}<span style="flex:1"></span>${n ? `<button type="button" class="ed-btn primary large" data-act="share">Dela version ${S.shared + 1}</button>` : ''}</div></div>`;
+  }
+  if (S.stage === 'review') return `<div class="rd-bar review-only"><div class="rd-bar-in">${comments}<span style="flex:1"></span>${canComment() ? `<button type="button" class="ed-btn primary large" data-act="compose-general">${ic.plus(15)}Kommentera</button>` : ''}</div></div>`;
+  if (S.stage === 'handoff') return `<div class="rd-bar review-only"><div class="rd-bar-in">${comments}</div></div>`;
+  if (S.stage === 'sign') return `<div class="rd-bar"><div class="rd-bar-in"><div class="rd-bar-text hide-m"><strong>Anna Lindqvist</strong><span>PDF, 3 sidor · fingeravtryck kontrollerat</span></div>${comments}<span style="flex:0 0 0"></span><button type="button" class="ed-btn primary xl" data-act="open-sign" style="margin-left:auto">${ic.pen(16)}${S.ref ? 'Visa PDF och signera' : 'Signera'}</button></div></div>`;
+  return `<div class="rd-bar"><div class="rd-bar-in"><div class="rd-bar-text hide-m"><strong>${S.variant === 'all' ? 'Signerat av alla parter' : 'Du har signerat'}</strong><span>${S.variant === 'all' ? 'Förseglad PDF klar' : 'Väntar på Johan Ekström'}</span></div>${comments}<button type="button" class="ed-btn large" data-act="toast" data-msg="Laddar ner PDF" style="margin-left:auto">${ic.down(15)}${S.variant === 'all' ? 'Signerad PDF' : 'Ladda ner PDF'}</button></div></div>`;
+}
+
+/* Signatures from strokes, as web/ui.tsx <Signature> does */
+const JOHAN = [[[60, 120], [80, 70], [95, 128], [110, 80], [130, 118], [160, 92], [200, 104], [250, 90], [300, 100]], [[90, 140], [280, 132]]];
+function sigSVG(strokes) {
+  if (!strokes) return '';
+  return `<svg viewBox="0 0 500 190" preserveAspectRatio="xMidYMid meet" aria-hidden="true"><g fill="none" stroke="#0e1116" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">${strokes.map(s => `<polyline points="${s.map(p => p.join(',')).join(' ')}"/>`).join('')}</g></svg>`;
+}
+
+/* ---------- Render ---------- */
+function render() {
+  const app = document.getElementById('app');
+  const sY = window.scrollY;
+  const v = viewed();
+  app.className = S.who === 'owner' ? 'is-owner' : '';
+  const canvas = isPdf() ? pdfStage() : paper(v);
+  app.innerHTML = `${topbar()}<div class="ed-main"><main class="ed-canvas" aria-label="Dokument">${mobileStatus()}${callouts()}${stagebar()}${canvas}</main>
+    <aside class="ed-panel" aria-label="${S.stage === 'sign' || S.stage === 'signed' ? 'Signering och diskussion' : 'Granskning och kommentarer'}">${statusCard()}${pdfCard()}${discussion(false)}</aside></div>${bar()}`;
+  window.scrollTo(0, sY);
+  const sheet = document.getElementById('sheet');
+  if (sheet.open) sheet.innerHTML = sheetHTML();
+  restoreFocus();
+  syncProto();
+}
+function sheetHTML() {
+  const sign = S.stage === 'sign' || S.stage === 'signed';
+  return `<div class="rd-sheet-head"><h2 id="sheet-title">${sign ? 'Diskussion' : 'Kommentarer'} <span style="font-weight:500;color:var(--muted);font-size:14px">· ${S.who === 'client' && sign ? 'version 1–3' : `version ${viewed()}`}</span></h2><button type="button" class="rd-x" data-act="close-sheet" aria-label="Stäng">${ic.x(18)}</button></div>
+    <div class="rd-sheet-body">${discussion(true)}</div>`;
+}
+function restoreFocus() {
+  if (!S.focusKey) return;
+  // Only a visible field: the panel is hidden on mobile, where the sheet takes over.
+  const el = [...document.querySelectorAll(`[data-focus-key="${S.focusKey}"],[data-focus-key="${S.focusKey}:s"]`)].find(e => e.getClientRects().length);
+  if (!el) return;
+  el.focus({ preventScroll: !mobile() }); el.setSelectionRange?.(el.value.length, el.value.length); if (!mobile()) el.scrollIntoView({ block: 'nearest' });
+  S.focusKey = null;
+}
+function openSheet() { const sheet = document.getElementById('sheet'); sheet.innerHTML = sheetHTML(); if (!sheet.open) sheet.showModal(); restoreFocus(); S.focusKey = null; }
+function closeSheet() { const sheet = document.getElementById('sheet'); if (sheet.open) sheet.close(); }
+/* Mobile: an A4 canvas at phone width is too small to read, so a page opens in a pannable, pinch-zoomable viewer. */
+function openZoom(page) {
+  const d = document.getElementById('zoom');
+  d.innerHTML = `<div class="rd-sheet-head" style="border-radius:0"><h2 id="zoom-title">Sida ${page.dataset.page} av 3</h2><button type="button" class="rd-x" data-act="close-zoom" aria-label="Stäng">${ic.x(18)}</button></div><div class="rd-zoom-body">${page.outerHTML.replace('data-act="zoom"', '')}</div>`;
+  d.showModal();
+}
+let toastTimer;
+function toast(msg) { const w = document.getElementById('toast'); w.firstElementChild.textContent = msg; w.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { w.hidden = true; }, 2600); }
+
+function scrollToBlock(id) {
+  requestAnimationFrame(() => {
+    const el = isPdf() ? document.querySelector(`[data-pdf-anchor="${id}"]`) : document.querySelector(`.ed-block[data-block="${id}"]`);
+    if (!el) return;
+    const top = el.getBoundingClientRect().top + window.scrollY - (mobile() ? 80 : 110);
+    window.scrollTo({ top, behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' });
+    if (!isPdf()) { el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+  });
+}
+
+/* ---------- Actions ---------- */
+function act(name, el, event) {
+  const id = el.dataset.block ?? null;
+  switch (name) {
+    case 'select':
+      if (event.target.closest('button,[contenteditable],a,select,textarea,input')) return;
+      if (S.selected === id) return;
+      S.selected = id; S.filter = id; render(); return;
+    case 'comment':
+      S.selected = id; S.filter = id;
+      // Existing threads open for reading; an empty section or the explicit Kommentera starts typing.
+      if (canComment() && (el.dataset.compose || !visibleThreads().some(t => t.block === id))) S.focusKey = `new:${id}`;
+      render(); if (mobile()) openSheet(); return;
+    case 'compose-general': S.selected = null; S.filter = null; S.focusKey = 'new:null'; render(); openSheet(); return;
+    case 'clear-filter': S.filter = null; S.selected = null; render(); return;
+    case 'sheet': S.filter = S.selected ?? null; openSheet(); return;
+    case 'close-sheet': closeSheet(); return;
+    case 'jump': {
+      const v = Number(el.dataset.v);
+      if (S.stage === 'review' && v && v !== viewed()) S.view = v === latest() ? null : v;
+      S.selected = id; S.filter = S.filter === null ? null : id; S.pdfFocus = isPdf() ? id : null;
+      closeSheet(); render(); scrollToBlock(id);
+      if (isPdf()) setTimeout(() => { S.pdfFocus = null; document.querySelectorAll('.rd-pdf-anchor.focus').forEach(a => a.classList.remove('focus')); }, 2200);
+      return;
+    }
+    case 'reply': S.reply = el.dataset.id || null; if (S.reply) S.focusKey = `reply:${S.reply}`; render(); if (document.getElementById('sheet').open) openSheet(); return;
+    case 'resolve': { const t = S.threads.find(t => t.id === el.dataset.id); t.resolved = !t.resolved; render(); toast(t.resolved ? 'Tråden är markerad som löst' : 'Tråden är öppen igen'); return; }
+    case 'version-latest': S.view = null; render(); return;
+    case 'ref': S.ref = el.dataset.ref === '1'; S.selected = null; render(); return;
+    case 'share': S.shared += 1; S.view = null; render(); toast(`Version ${S.shared} är delad med Anna`); return;
+    case 'handoff': S.handoffSent = true; render(); return;
+    case 'open-send': openSend(); return;
+    case 'open-sign':
+      if (S.ref) { S.ref = false; render(); window.scrollTo({ top: 0 }); toast('Läs PDF:en och signera'); return; }
+      openSign(); return;
+    case 'toast': toast(el.dataset.msg); return;
+    case 'zoom': if (mobile()) openZoom(el); return;
+    case 'close-zoom': document.getElementById('zoom').close(); return;
+  }
+}
+function post(key) {
+  const body = (S.drafts[key] ?? '').trim();
+  if (!body) return;
+  const who = S.who === 'owner' ? 'johan' : 'anna';
+  const now = new Date().toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+  const comment = { who, at: `16 okt ${now}`, body };
+  if (key.startsWith('reply:')) { S.threads.find(t => t.id === key.slice(6)).comments.push(comment); S.reply = null; }
+  else { const block = key.slice(4) === 'null' ? null : key.slice(4); S.threads.push({ id: 't' + Date.now(), v: S.stage === 'review' ? viewed() : 3, block, resolved: false, comments: [comment] }); }
+  S.drafts[key] = '';
+  render(); if (document.getElementById('sheet').open) openSheet();
+  toast(key.startsWith('reply:') ? 'Svaret är skickat' : 'Kommentaren är skickad');
+}
+
+document.addEventListener('click', event => {
+  const el = event.target.closest('[data-act]');
+  if (!el || el.tagName === 'FORM' || el.tagName === 'SELECT') return;
+  act(el.dataset.act, el, event);
+});
+document.addEventListener('keydown', event => {
+  const block = event.target.closest?.('.ed-block[data-act="select"]');
+  if (block && event.target === block && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); act('comment', block, event); }
+  if (event.key === 'Escape' && S.selected && !document.querySelector('dialog[open]') && !event.target.closest('textarea,input,[contenteditable]')) { S.selected = null; S.filter = null; render(); }
+});
+document.addEventListener('input', event => {
+  const key = event.target.dataset?.key; if (!key) return;
+  S.drafts[key] = event.target.value;
+  document.querySelectorAll(`[data-send="${CSS.escape(key)}"]`).forEach(b => { b.disabled = !event.target.value.trim(); });
+  document.querySelectorAll(`textarea[data-key="${CSS.escape(key)}"]`).forEach(t => { if (t !== event.target) t.value = event.target.value; });
+});
+document.addEventListener('submit', event => { const form = event.target.closest('form[data-act="post"]'); if (!form) return; event.preventDefault(); post(form.dataset.key); });
+document.addEventListener('change', event => {
+  if (event.target.dataset?.act === 'version') { const n = Number(event.target.value); S.view = n === latest() ? null : n; S.selected = null; S.filter = null; render(); }
+});
+document.addEventListener('keydown', event => {
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && event.target.matches('textarea[data-key]')) { event.preventDefault(); post(event.target.dataset.key); }
+});
+document.getElementById('sheet').addEventListener('click', event => { if (event.target.id === 'sheet') closeSheet(); });
+
+/* ---------- Owner: send for signing, mapping the review link to a signer ---------- */
+function openSend() {
+  const d = document.getElementById('send');
+  const unshared = privateChanges().length > 0;
+  d.innerHTML = `<form method="dialog"><div><h2 id="send-title">Skicka för signering</h2><p class="ed-dialog-sub">Uppdragsavtal – Bageri Lindqvist</p></div>
+    <div><p class="ed-mono">Signerar</p><ul class="ed-send-list"><li><span class="ed-avatar" aria-hidden="true">AL</span><div><strong>Anna Lindqvist</strong><span>VD · anna@bagerilindqvist.se</span></div></li><li><span class="ed-avatar dark" aria-hidden="true">JE</span><div><strong>Johan Ekström (du)</strong><span>Du signerar i nästa steg</span></div></li></ul></div>
+    <div><p class="ed-mono">Granskning</p><ul class="ed-send-list"><li><span class="ed-avatar" aria-hidden="true">${ic.link(13)}</span><div><strong>Annas granskningslänk</strong><span>Visar att avtalet väntar på signering. Den kan inte signera.</span></div></li></ul></div>
+    <p class="ed-dialog-note">Signerarna ser granskningens diskussion bredvid PDF:en och kan ställa frågor där.</p>
+    ${unshared ? `<label class="ed-check"><input type="checkbox" required>Jag vill skicka mitt nuvarande utkast, med ändringar i ${privateChanges().map(anchorLabel).join(' och ')} som Anna inte har granskat. Anna ser vad som ändrats.</label>` : `<p class="ed-dialog-note">PDF:en skapas från version ${S.shared}, samma innehåll som Anna har granskat.</p>`}
+    <p class="ed-dialog-note">Inga e-postmeddelanden skickas. Du får en personlig signeringslänk per mottagare att dela. En signatursida läggs till sist.</p>
+    <div class="ed-dialog-actions"><button type="button" class="ed-btn large" value="cancel" onclick="this.closest('dialog').close()">Avbryt</button><button class="ed-btn primary large" value="ok">Skicka och signera</button></div></form>`;
+  d.showModal();
+  d.querySelector('form').onsubmit = () => { setTimeout(() => { S.variant = unshared ? 'changed' : ''; S.stage = 'handoff'; S.shared = 3; S.view = null; S.selected = null; S.filter = null; render(); toast('Skickat för signering'); }, 0); };
+}
+
+/* ---------- Client: signing dialog, as web/sign.tsx SignatureModal ---------- */
+let strokes = [];
+function openSign() {
+  const d = document.getElementById('signmodal');
+  strokes = [];
+  d.innerHTML = `<form><div style="display:flex;justify-content:space-between;align-items:center;gap:12px"><h2 id="sign-title">Signera</h2><button type="button" class="text-button" data-close>Avbryt</button></div>
+    <p class="ed-dialog-note" style="margin-top:-8px">Du signerar <strong style="color:var(--ink)">Uppdragsavtal – ny webbplats och förvaltning</strong>, PDF med 3 sidor, fingeravtryck <span style="font-family:var(--mono);font-size:12px">${(S.variant === 'changed' ? HASH_X : HASH).slice(0, 12)}…</span></p>
+    <label class="field"><span>Ditt fullständiga namn</span><input value="Anna Lindqvist" autocomplete="name" required></label>
+    <div><div class="draw-label"><span>Rita din signatur</span><button type="button" class="text-button underlined" style="font-size:13px" data-clear>Rensa</button></div>
+      <div class="draw-area"><canvas aria-label="Rita din signatur med mus eller finger" tabindex="0"></canvas><div class="signature-baseline"></div><span class="signature-cross">×</span><span class="draw-placeholder">Rita med mus eller finger</span></div></div>
+    <label class="ed-check" style="font-size:14px"><input type="checkbox" data-consent>Jag har läst dokumentet och godkänner innehållet. Jag förstår att min elektroniska signatur är bindande.</label>
+    <button class="sign-submit" disabled>Signera dokumentet</button>
+    <p class="ed-dialog-note" style="text-align:center;font-size:12.5px">Tidpunkt, IP-adress och enhet sparas som bevis för din signatur.</p></form>`;
+  d.showModal();
+  const canvas = d.querySelector('canvas'), ctx = canvas.getContext('2d'), submit = d.querySelector('.sign-submit'), consent = d.querySelector('[data-consent]'), ph = d.querySelector('.draw-placeholder');
+  const size = () => { const r = canvas.getBoundingClientRect(); canvas.width = r.width * 2; canvas.height = r.height * 2; paint(); };
+  const paint = () => { ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.clearRect(0, 0, canvas.width, canvas.height); ctx.setTransform(canvas.width / 500, 0, 0, canvas.height / 190, 0, 0); ctx.strokeStyle = '#0e1116'; ctx.lineWidth = 2.6 * 500 / canvas.getBoundingClientRect().width; ctx.lineCap = ctx.lineJoin = 'round'; strokes.forEach(s => { ctx.beginPath(); s.forEach(([x, y], i) => i ? ctx.lineTo(x, y) : ctx.moveTo(x, y)); ctx.stroke(); }); ph.style.display = strokes.length ? 'none' : ''; check(); };
+  const check = () => { submit.disabled = !(consent.checked && strokes.some(s => s.length > 3)); };
+  const pt = e => { const r = canvas.getBoundingClientRect(); return [Math.round((e.clientX - r.left) / r.width * 500), Math.round((e.clientY - r.top) / r.height * 190)]; };
+  let drawing = false;
+  canvas.onpointerdown = e => { drawing = true; canvas.setPointerCapture(e.pointerId); strokes.push([pt(e)]); e.preventDefault(); };
+  canvas.onpointermove = e => { if (drawing) { strokes.at(-1).push(pt(e)); paint(); } };
+  canvas.onpointerup = canvas.onpointercancel = () => { drawing = false; paint(); };
+  consent.onchange = check;
+  d.querySelector('[data-clear]').onclick = () => { strokes = []; paint(); };
+  d.querySelector('[data-close]').onclick = () => d.close();
+  d.__demo = () => { strokes = DEMO_SIG.map(s => s.map(p => [...p])); consent.checked = true; paint(); };
+  d.querySelector('form').onsubmit = e => { e.preventDefault(); S.sig = strokes; S.stage = 'signed'; S.variant = 'waiting'; S.ref = false; d.close(); render(); window.scrollTo({ top: 0 }); };
+  requestAnimationFrame(size);
+}
+const DEMO_SIG = [[[40, 128], [62, 64], [78, 132], [92, 92], [118, 96], [104, 132], [140, 106], [150, 70], [158, 128], [176, 104], [196, 126], [222, 98], [238, 124], [262, 96], [292, 116], [330, 104], [380, 110]], [[70, 150], [360, 140]]];
+
+/* ---------- Prototype controls ---------- */
+const VARIANTS = {
+  review: [],
+  handoff: [['', 'E-post konfigurerad'], ['noemail', 'Utan e-post (avsändaren delar länken)']],
+  sign: [['', 'Samma innehåll som version 3'], ['changed', 'Ändrat efter granskning']],
+  signed: [['waiting', 'Väntar på avsändaren'], ['all', 'Alla har signerat']],
+};
+function syncProto() {
+  document.getElementById('p-who').value = S.who;
+  document.getElementById('p-stage').value = S.stage;
+  const opts = VARIANTS[S.stage];
+  const wrap = document.getElementById('p-variant-wrap');
+  wrap.hidden = !opts.length || S.who === 'owner';
+  const sel = document.getElementById('p-variant');
+  sel.innerHTML = opts.map(([k, l]) => `<option value="${k}"${k === S.variant ? ' selected' : ''}>${l}</option>`).join('');
+  const hash = `#${S.who}/${S.stage}${S.variant ? '/' + S.variant : ''}`;
+  if (location.hash !== hash) history.replaceState(null, '', hash);
+}
+function setStage(stage, variant) {
+  S.stage = stage; S.variant = variant ?? (VARIANTS[stage][0]?.[0] ?? '');
+  S.view = null; S.selected = null; S.filter = null; S.ref = false; S.reply = null; S.pdfFocus = null;
+  if (stage !== 'review') S.shared = 3;
+  if (stage === 'signed' && !S.sig) S.sig = DEMO_SIG;
+  closeSheet(); render(); window.scrollTo(0, 0);
+}
+document.getElementById('p-who').onchange = e => { S.who = e.target.value; if (S.who === 'owner' && (S.stage === 'sign' || S.stage === 'signed')) S.stage = 'handoff'; setStage(S.stage, S.variant); };
+document.getElementById('p-stage').onchange = e => { if (S.who === 'owner' && (e.target.value === 'sign' || e.target.value === 'signed')) S.who = 'client'; setStage(e.target.value); };
+document.getElementById('p-variant').onchange = e => setStage(S.stage, e.target.value);
+document.getElementById('p-reset').onclick = () => { S = fresh(); closeSheet(); render(); window.scrollTo(0, 0); };
+window.addEventListener('resize', () => { if (!mobile()) closeSheet(); });
+
+/* Deep links for review and screenshots: #client/sign/changed, #owner/review … */
+(function boot() {
+  const [who, stage, variant] = location.hash.slice(1).split('/');
+  if (who === 'owner' || who === 'client') S.who = who;
+  if (VARIANTS[stage]) { S.stage = stage; S.variant = variant ?? (VARIANTS[stage][0]?.[0] ?? ''); if (stage !== 'review') S.shared = 3; if (stage === 'signed') S.sig = DEMO_SIG; }
+  render();
+})();
+window.proto = { get state() { return S; }, render, openSheet, act: (name, data = {}) => { const el = document.createElement('button'); Object.assign(el.dataset, data); act(name, el, { target: document.body }); }, demoSign: () => document.getElementById('signmodal').__demo?.() };
+</script>
+</body>
+</html>

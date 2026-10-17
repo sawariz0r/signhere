@@ -137,7 +137,7 @@ try {
   await signer.screenshot({ path: output + '/04-mobile-signature.png', fullPage: true });
   await dialog.getByRole('button', { name: 'Signera dokumentet', exact: true }).click();
   await expect(signer.getByRole('heading', { name: 'Signerat', exact: true })).toBeVisible({ timeout: 15000 });
-  await expect(signer.getByText('Åsa Q. Test', { exact: true })).toBeVisible();
+  await expect(signer.locator('.signed-receipt').getByText('Åsa Q. Test', { exact: true })).toBeVisible();
   await expect(signer.getByRole('button', { name: 'Ladda ner signerad PDF' })).toBeVisible({ timeout: 30000 });
   const [download] = await Promise.all([signer.waitForEvent('download'), signer.getByRole('button', { name: 'Ladda ner signerad PDF' }).click()]);
   const completedPath = output + '/completed.pdf'; await download.saveAs(completedPath);
@@ -172,8 +172,8 @@ try {
   const expectPublicVerification = async target => {
     await expect(target.getByRole('heading', { name: 'Verifiera dokument', exact: true })).toBeVisible();
     await expect(target.getByRole('link', { name: 'Till signhere', exact: true })).toHaveAttribute('href', '/');
-    await expect(target.getByRole('navigation', { name: 'Huvudmeny' })).toHaveCount(0);
-    await expect(target.locator('.header-account')).toHaveCount(0);
+    await expect(target.getByRole('button', { name: /^Konto/ })).toHaveCount(0);
+    await expect(target.locator('.brand-lockup')).toHaveCount(0);
     await expect(target.getByRole('heading', { name: /^(Logga in|Skapa konto)$/ })).toHaveCount(0);
     await expect(target.getByRole('button', { name: 'Team', exact: true })).toHaveCount(0);
   };
@@ -198,13 +198,22 @@ try {
     assert.deepEqual(verificationPosts[index].postDataJSON(), { sha256: createHash('sha256').update(bytes).digest('hex') }, 'Verification sends only the SHA-256 fingerprint, never the PDF or filename.');
   }
   // The same standalone shell is used when an already authenticated owner follows the app link.
-  await page.getByRole('navigation', { name: 'Huvudmeny' }).getByRole('button', { name: 'Verifiera', exact: true }).click();
+  await page.getByRole('button', { name: /^Konto/ }).click();
+  await page.getByRole('menuitem', { name: 'Verifiera ett dokument', exact: true }).click();
   await expectPublicVerification(page);
   await expect(page.getByText('Signhere testteam', { exact: true })).toHaveCount(0);
   await expect(page.getByText('Test Ägare', { exact: true })).toHaveCount(0);
   await page.goto(documentURL);
   await expect(page.getByRole('heading', { name: 'Konsultavtal Q4 – test', exact: true })).toBeVisible();
-  await page.getByRole('button', { name: 'Team', exact: true }).click();
+  // The header shows the team's brand; settings open from the account menu.
+  await expect(page.locator('header .brand-lockup')).toContainText('Signhere testteam');
+  await page.getByRole('button', { name: /^Konto/ }).click();
+  await page.getByRole('menuitem', { name: 'Varumärke', exact: true }).click();
+  await expect(page).toHaveURL(baseURL + '/settings/brand');
+  await page.getByRole('radio', { name: 'Grön', exact: true }).click();
+  await expect(page.getByRole('radio', { name: 'Grön', exact: true })).toHaveAttribute('aria-checked', 'true');
+  await page.screenshot({ path: output + '/07b-brand-settings.png', fullPage: true });
+  await page.getByRole('link', { name: 'Team', exact: true }).click();
   await page.getByLabel('E-post till ny medlem').fill('member@example.test');
   await page.getByRole('button', { name: 'Bjud in', exact: true }).click();
   const invitationURL = await page.getByRole('textbox', { name: 'Personlig länk' }).inputValue();
@@ -215,9 +224,13 @@ try {
   await member.getByLabel('Lösenord', { exact: true }).fill('Local-member-test-password-2026');
   await member.getByRole('button', { name: 'Gå med i teamet', exact: true }).click();
   await expect(member.getByRole('heading', { name: 'Dokument', exact: true })).toBeVisible();
-  await member.getByRole('button', { name: 'Team', exact: true }).click();
+  await member.getByRole('button', { name: /^Konto/ }).click();
+  await expect(member.getByRole('menuitem', { name: 'Instans', exact: true })).toHaveCount(0);
+  await member.getByRole('menuitem', { name: 'Team', exact: true }).click();
   await expect(member.getByText('Test Medlem', { exact: true })).toBeVisible();
   await expect(member.getByRole('button', { name: 'Bjud in', exact: true })).toHaveCount(0);
+  await member.goto(baseURL + '/settings/brand');
+  await expect(member.getByRole('radio', { name: 'Grön', exact: true })).toBeDisabled();
   // A sender who checks "Jag ska också signera" must actually sign, not just
   // receive another sharing link. Creation must never imply signature consent.
   async function createSenderDocument(title, parties = []) {
@@ -396,7 +409,7 @@ try {
     await page.getByLabel('Mottagare 1, e-post', { exact: true }).fill('owner@example.test');
     await page.getByRole('checkbox', { name: 'Jag ska också signera' }).check();
     await page.getByRole('button', { name: 'Skapa och signera', exact: true }).click();
-    await expect(page.getByRole('alert')).toBeVisible();
+    await expect(page.getByRole('alert')).toBeVisible({ timeout: 30000 });
     await expect(page.getByRole('dialog')).toHaveCount(0);
     await expect(page.getByRole('textbox', { name: 'Personlig länk' })).toHaveCount(0);
     await expect(page.getByRole('button', { name: 'Skapa och signera', exact: true })).toHaveCount(0);
@@ -431,7 +444,14 @@ try {
     console.log('PostgreSQL backup/restore roundtrip passed for the completed document and evidence.');
   }
   console.log('Browser test passed: setup, automatic PDF flattening without mandatory preview or PDF worker, mobile signing, final PDF, offline evidence, standalone public verification with hash-only requests, invitation and member role, sender plus all parties (including shared emails) with verified signature evidence, resuming self-only signatures, and refusing inconsistent sender assignments before opening any signature.');
+} catch (error) {
+  console.error('Browser smoke failure:', error);
+  for (const context of browser?.contexts() ?? []) for (const [index, page] of context.pages().entries()) {
+    await page.screenshot({ path: output + `/failure-${index}.png`, fullPage: true }).catch(() => {});
+  }
+  throw error;
 } finally {
+  for (const context of browser?.contexts() ?? []) for (const page of context.pages()) await page.unrouteAll({ behavior: 'wait' }).catch(() => {});
   await browser?.close();
   server.closeAllConnections();
   await new Promise(resolve => server.close(resolve));

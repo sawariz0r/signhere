@@ -25,7 +25,6 @@ const errors = [];
 // The current step, so a browser error in CI says where it happened.
 let step = 'setup';
 const polyfill = () => { if (!Map.prototype.getOrInsertComputed) Map.prototype.getOrInsertComputed = function (key, make) { if (!this.has(key)) this.set(key, make(key)); return this.get(key); }; if (!WeakMap.prototype.getOrInsertComputed) WeakMap.prototype.getOrInsertComputed = Map.prototype.getOrInsertComputed; };
-const draftKey = id => 'signhere.drafts.v1.' + id;
 const company = { id: 'c1', name: 'Kund AB', orgNr: '556000-0000', address: 'Gatan 1', zip: '111 11', city: 'Stockholm', contacts: [
   { id: 'p1', name: 'Anna Andersson', email: 'anna@example.test', role: 'VD', signs: true },
   { id: 'p2', name: 'Cecilia Copy', email: 'cecilia@example.test', role: 'Ekonomi', signs: false },
@@ -45,16 +44,14 @@ try {
   /** Opens a new draft with some text, the customer and its signers, and the given title. */
   async function draft(id, title, senderSigns) {
     step = `draft ${id}`;
-    await page.goto(`${baseURL}/editor/${id}`);
+    await page.goto(`${baseURL}/editor/${id}?new=1`);
     await page.getByRole('button', { name: /Tomt dokument/ }).click();
     await page.locator('.ProseMirror').first().click();
     await page.keyboard.type('Leverantören sköter service av anläggningen under 2027.');
-    // The typed text reaches the saved draft.
-    await page.waitForFunction(key => (localStorage.getItem(key) ?? '').includes('under 2027.'), draftKey(id));
-    await page.evaluate(({ key, company, title, senderSigns }) => {
-      const stored = JSON.parse(localStorage.getItem(key));
-      localStorage.setItem(key, JSON.stringify({ ...stored, title, company, settings: { ...stored.settings, senderSigns } }));
-    }, { key: draftKey(id), company, title, senderSigns });
+    // Wait for server autosave before adding the test customer through the API.
+    await expect.poll(async () => JSON.stringify(await (await api.get(`${baseURL}/api/drafts/${id}?optional=1`)).json())).toContain('under 2027.');
+    const saved = await (await api.get(`${baseURL}/api/drafts/${id}`)).json();
+    assert.equal((await api.put(`${baseURL}/api/drafts/${id}`, { headers: { Origin: baseURL }, data: { expectedRevision: saved.revision, draft: { ...saved.draft, title, company, settings: { ...saved.draft.settings, senderSigns } } } })).status(), 200);
     await page.reload();
     await expect(page.getByRole('button', { name: 'Skicka' })).toBeVisible();
   }
@@ -88,7 +85,7 @@ try {
   await page.screenshot({ path: output + '/02-error.png', fullPage: true });
   await sheet.getByRole('button', { name: 'Avbryt' }).click();
   await expect(sheet).toHaveCount(0);
-  assert.ok(await page.evaluate(key => localStorage.getItem(key), draftKey('e2esend000000001')), 'A failed send keeps the draft.');
+  assert.equal((await api.get(`${baseURL}/api/drafts/e2esend000000001`)).status(), 200, 'A failed send keeps the draft.');
   await page.unroute('**/api/documents');
   step = 'send and sign';
   await page.getByRole('button', { name: 'Skicka' }).click();
@@ -119,7 +116,7 @@ try {
   assert.ok(detail.recipients.find(recipient => recipient.id === detail.senderRecipientId).signedAt);
   const pdf = await PDFDocument.load(await (await api.get(`${baseURL}/api/documents/${documentId}/pdf?version=original`)).body());
   assert.equal(pdf.getPageCount(), 1, 'The editor renders the draft to a PDF that the server prepared for signing.');
-  assert.equal(await page.evaluate(key => localStorage.getItem(key), draftKey('e2esend000000001')), null, 'A sent draft leaves the drafts list.');
+  assert.equal((await (await api.get(`${baseURL}/api/drafts/e2esend000000001`)).json()).signings[0].documentId, documentId, 'A sent draft retains its source and signing reference.');
   step = 'open document';
   await page.getByRole('button', { name: 'Till dokumentet' }).click();
   await expect(page.getByRole('heading', { name: 'Serviceavtal 2027' })).toBeVisible();
@@ -133,7 +130,7 @@ try {
   await expect(page.getByRole('heading', { name: 'Redo att signeras' })).toBeVisible({ timeout: 30000 });
   await expect(page.locator('.share-card')).toHaveCount(1);
   await page.screenshot({ path: output + '/04-sent-no-sender.png', fullPage: true });
-  // Back leaves the sent page without reopening the deleted draft.
+  // Back leaves the sent page without reopening the sent editor.
   step = 'back';
   await page.goBack();
   await expect(page).not.toHaveURL(/e2esend000000002/);

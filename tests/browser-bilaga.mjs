@@ -60,7 +60,7 @@ try {
   await page.getByRole('button', { name: /Använd som bilaga/ }).click();
   await expect(page.getByText(/Tomt fält/).first()).toBeVisible();
   // Empty customer fields block use, like sending. Start again from a blank draft.
-  await page.goto(`${baseURL}/editor/e2eblank0000001?bilaga=${created.document.id}`);
+  await page.goto(`${baseURL}/editor/e2eblank0000001?new=1&bilaga=${created.document.id}`);
   await page.getByLabel('Dokumentnamn').fill('Prisbilaga 2027');
   await page.getByRole('button', { name: /Tomt dokument/ }).click();
   const prose = page.locator('.ProseMirror').first();

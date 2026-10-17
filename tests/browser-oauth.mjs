@@ -1,0 +1,130 @@
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { createHash, randomBytes } from 'node:crypto';
+import { mkdir } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { chromium, expect } from '@playwright/test';
+import { Client, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import { createApp } from '../dist/server/app.js';
+
+const databaseUrl = process.env.TEST_DATABASE_URL;
+if (!databaseUrl) throw new Error('Set TEST_DATABASE_URL to a disposable PostgreSQL database.');
+const schema = 'oauth_browser_' + randomBytes(8).toString('hex');
+const output = resolve('.test-artifacts/browser-oauth');
+await mkdir(output, { recursive: true });
+const server = createServer();
+await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+const baseURL = `http://127.0.0.1:${server.address().port}`;
+const setupToken = randomBytes(32).toString('base64url');
+const clientId = 'https://chatgpt.com/oauth/client.json';
+const redirectUri = 'https://chatgpt.com/connector_platform_oauth_redirect';
+// A deterministic published-client fixture exercises the real server protocol,
+// session and consent routes; this does not connect to an actual ChatGPT account.
+const runtime = await createApp({ databaseUrl, schema, dataDir: output, baseUrl: baseURL, setupToken, legacyCreation: true, rateLimit: false,
+  oauth: { metadataLoader: async id => ({ client_id: id, redirect_uris: [redirectUri], token_endpoint_auth_methods_supported: ['none', 'private_key_jwt'], token_endpoint_auth_method: 'private_key_jwt', grant_types: ['authorization_code', 'refresh_token'], response_types: ['code'], client_name: 'ChatGPT' }) },
+});
+server.on('request', runtime.app);
+const browser = await chromium.launch({ headless: true });
+const client = new Client({ name: 'signhere-human-oauth-journey', version: '1.0.0' });
+const errors = [];
+try {
+  const setupContext = await browser.newContext();
+  assert.equal((await setupContext.request.post(baseURL + '/api/setup', { headers: { Origin: baseURL }, data: { setupToken, name: 'Sara Sender', email: 'sara@example.test', password: 'correct horse battery staple', teamName: 'PRPL' } })).status(), 201);
+  await setupContext.close();
+  const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
+  const page = await context.newPage();
+  page.on('pageerror', error => errors.push(error.stack));
+  await context.route('https://chatgpt.com/**', route => route.fulfill({ status: 200, contentType: 'text/html', body: '<h1>Agent callback received</h1>' }));
+  const scopes = ['drafts:read', 'drafts:write', 'discussion:read'];
+  const authorization = () => {
+    const verifier = randomBytes(32).toString('base64url');
+    const state = randomBytes(24).toString('base64url');
+    const params = new URLSearchParams({ response_type: 'code', client_id: clientId, redirect_uri: redirectUri, resource: baseURL + '/mcp/oauth', scope: scopes.join(' '), state, code_challenge: createHash('sha256').update(verifier).digest('base64url'), code_challenge_method: 'S256' });
+    return { verifier, state, url: baseURL + '/oauth/authorize?' + params };
+  };
+  const approved = authorization();
+  await page.goto(approved.url);
+  await expect(page.getByRole('heading', { name: 'Välkommen tillbaka' })).toBeVisible();
+  const pending = new URL(page.url()).searchParams.get('request');
+  assert.match(pending, /^[A-Za-z0-9_-]{43}$/);
+  // Login resumes only the known consent route, never an arbitrary returnTo URL.
+  await page.goto(baseURL + '/oauth/consent?request=' + pending + '&returnTo=https%3A%2F%2Fevil.example');
+  await page.getByLabel('E-post', { exact: true }).fill('sara@example.test');
+  await page.getByLabel('Lösenord', { exact: true }).fill('correct horse battery staple');
+  await page.getByRole('button', { name: 'Logga in', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Ge ChatGPT åtkomst?' })).toBeVisible();
+  assert.equal(new URL(page.url()).pathname, '/oauth/consent');
+  assert.equal(new URL(page.url()).searchParams.get('request'), pending);
+  assert.equal(new URL(page.url()).searchParams.has('returnTo'), false);
+  await expect(page).toHaveTitle('Anslut agent · signhere');
+  await expect(page.getByText('Sara Sender', { exact: true })).toBeVisible();
+  await expect(page.getByText('PRPL', { exact: true })).toBeVisible();
+  await expect(page.locator('.oauth-permission-list li')).toHaveCount(scopes.length);
+  await expect(page.locator('.oauth-permission-list')).not.toContainText('Skriva kommentarer');
+  await expect(page.locator('.oauth-permission-list')).not.toContainText('Uppdatera delade versioner');
+  await expect(page.getByRole('checkbox')).toHaveCount(0);
+  await expect(page.getByLabel('Åtkomstens giltighet')).toHaveValue('60');
+  assert.equal((await (await context.request.get(baseURL + '/api/oauth/connections')).json()).connections.length, 0, 'login and reading the screen do not grant access');
+  await page.screenshot({ path: output + '/01-human-consent-desktop.png', fullPage: true });
+  await page.setViewportSize({ width: 390, height: 844 });
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: output + '/02-human-consent-mobile.png', fullPage: true });
+  await page.getByLabel('Åtkomstens giltighet').selectOption('15');
+  await page.getByRole('button', { name: 'Godkänn åtkomst', exact: true }).click();
+  await page.waitForURL(redirectUri + '?**');
+  const callback = new URL(page.url());
+  assert.equal(callback.searchParams.get('state'), approved.state);
+  assert.equal(callback.searchParams.get('iss'), baseURL);
+  const code = callback.searchParams.get('code');
+  assert.match(code, /^[A-Za-z0-9_-]{43}$/);
+  const exchanged = await fetch(baseURL + '/oauth/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams({ grant_type: 'authorization_code', client_id: clientId, redirect_uri: redirectUri, code, code_verifier: approved.verifier, resource: baseURL + '/mcp/oauth' }) });
+  assert.equal(exchanged.status, 200, await exchanged.clone().text());
+  const token = await exchanged.json();
+  assert.equal(token.refresh_token, undefined);
+  assert.equal(token.scope, scopes.join(' '));
+  assert.ok(token.expires_in > 0 && token.expires_in <= 15 * 60);
+  await client.connect(new StreamableHTTPClientTransport(new URL(baseURL + '/mcp/oauth'), { requestInit: { headers: { Authorization: 'Bearer ' + token.access_token } } }));
+  const workspace = await client.callTool({ name: 'signhere_workspace', arguments: {} });
+  assert.equal(workspace.isError, undefined);
+  assert.equal(workspace.structuredContent.workspace.name, 'PRPL');
+  assert.deepEqual(workspace.structuredContent.scopes, scopes);
+  assert.equal((await (await context.request.get(baseURL + '/api/agent-keys')).json()).keys.length, 0, 'OAuth grants do not become visible manual API keys');
+  const connections = (await (await context.request.get(baseURL + '/api/oauth/connections')).json()).connections;
+  assert.equal(connections.length, 1);
+  assert.equal(Date.parse(connections[0].expiresAt) - Date.parse(connections[0].createdAt), 15 * 60000);
+
+  const denied = authorization();
+  await page.goto(denied.url);
+  await expect(page.getByRole('heading', { name: 'Ge ChatGPT åtkomst?' })).toBeVisible();
+  await page.getByRole('button', { name: 'Avböj', exact: true }).click();
+  await page.waitForURL(redirectUri + '?**');
+  const denial = new URL(page.url());
+  assert.equal(denial.searchParams.get('error'), 'access_denied');
+  assert.equal(denial.searchParams.get('state'), denied.state);
+  assert.equal(denial.searchParams.has('code'), false);
+  assert.equal((await (await context.request.get(baseURL + '/api/oauth/connections')).json()).connections.length, 1, 'declining does not issue a connection');
+
+  await page.goto(baseURL + '/settings/agents');
+  await expect(page.getByLabel('ChatGPT MCP-adress')).toHaveValue(baseURL + '/mcp/oauth');
+  await expect(page.getByLabel('MCP-adress', { exact: true })).toHaveValue(baseURL + '/mcp');
+  const list = page.getByRole('region', { name: 'Dina OAuth-anslutningar' });
+  await expect(list).toContainText('ChatGPT');
+  await expect(list.getByText('Aktiv', { exact: true })).toBeVisible();
+  assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+  await page.screenshot({ path: output + '/03-connections-mobile.png', fullPage: true });
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.screenshot({ path: output + '/04-connections-desktop.png', fullPage: true });
+  await list.getByRole('button', { name: 'Återkalla', exact: true }).click();
+  await list.getByRole('button', { name: 'Återkalla anslutning', exact: true }).click();
+  await expect(list.getByText('Återkallad', { exact: true })).toBeVisible();
+  await assert.rejects(client.callTool({ name: 'signhere_workspace', arguments: {} }));
+  assert.equal(await page.evaluate(value => JSON.stringify(localStorage).includes(value), token.access_token), false);
+  assert.deepEqual(errors, []);
+  console.log('OAuth browser journey passed: human login resumes consent, exact scopes, explicit approval/denial, fixed expiry without refresh, real MCP, separate settings and revocation. Screenshots: ' + output);
+} finally {
+  await client.close().catch(() => {});
+  await browser.close();
+  await runtime.db.query('DROP SCHEMA "' + schema + '" CASCADE').catch(() => {});
+  await runtime.close();
+  await new Promise(resolve => server.close(resolve));
+}

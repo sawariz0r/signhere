@@ -7,7 +7,7 @@ export interface MailMessage {
   /** Stable per logical delivery. Providers that support it use it to suppress duplicates. */
   idempotencyKey: string;
 }
-export interface Mailer { provider: 'smtp' | 'resend' | 'test'; send(message: MailMessage): Promise<{ messageId?: string }> }
+export interface Mailer { provider: 'smtp' | 'resend' | 'test'; host?: string; send(message: MailMessage): Promise<{ messageId?: string }> }
 
 /** A permanent failure is not retried; everything else is treated as transient. */
 export class MailPermanentError extends Error {
@@ -95,7 +95,7 @@ export function smtpMailer(options: { host: string; port: number; secure: boolea
     disableFileAccess: true, disableUrlAccess: true,
   });
   return {
-    provider: 'smtp',
+    provider: 'smtp', host: options.host,
     async send(message) {
       try {
         const info = await transport.sendMail({

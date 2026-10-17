@@ -188,4 +188,14 @@ test('flattening tagged links removes dead annotation references and keeps text 
   const rootDict = flat.catalog.lookup(PDFName.of('StructTreeRoot'),PDFDict);
   const struct = rootDict.lookup(PDFName.of('K'),PDFArray).lookup(0,PDFDict);
   assert.equal(struct.lookup(PDFName.of('K'),PDFArray).size(),1);
+});test('PDF signature page carries the team brand, and an undecodable logo falls back to the name', async () => {
+  const original = await fixture();
+  const signer = { name: 'Åsa Öberg', email: 'asa@example.test', signedAt: '2026-09-23T10:00:00.000Z', strokes: [[[0.1,0.1],[0.9,0.2]]], methodId: 'draw', methodVersion: '1.0.0' };
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==';
+  const images = async (bytes: Buffer) => { const page = (await PDFDocument.load(bytes)).getPage(1); const xObjects = page.node.Resources()?.lookup(PDFName.of('XObject'), PDFDict); return xObjects?.keys().length ?? 0; };
+  const branded = await finalizePdf(original, 'Avtal', 'SH-brand', sha256(original), { version: 'v1', text: 'Jag godkänner.' }, [signer], undefined, false, undefined, { name: 'Lind & Co AB', showName: true, accent: '#1b589e', logoPngBase64: png });
+  assert.equal(await images(branded), 1);
+  const broken = await finalizePdf(original, 'Avtal', 'SH-brand', sha256(original), { version: 'v1', text: 'Jag godkänner.' }, [signer], undefined, false, undefined, { name: 'Lind & Co AB', showName: false, accent: 'not-a-colour', logoPngBase64: Buffer.from('not a png').toString('base64') });
+  assert.equal(await images(broken), 0);
+  assert.equal((await PDFDocument.load(broken)).getPageCount(), 2);
 });

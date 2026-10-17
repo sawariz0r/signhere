@@ -1,0 +1,821 @@
+<!DOCTYPE html>
+<html lang="sv">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Spara utkast och dela med klient · prototyp · signhere</title>
+<!--
+  Editor save / client / share flow. Standalone prototype.
+  Tokens and .ed-* rules are copied from web/editor/editor.css (via design/recipient-document.html).
+  New rules are prefixed sh-. Handoff: design/editor-share.md.
+-->
+<style>
+@font-face{font-family:'Schibsted Grotesk';font-weight:400 900;font-display:swap;src:url(../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-wght-normal.woff2) format('woff2')}
+@font-face{font-family:'Schibsted Grotesk';font-weight:400 900;font-display:swap;unicode-range:U+0100-02AF;src:url(../node_modules/@fontsource-variable/schibsted-grotesk/files/schibsted-grotesk-latin-ext-wght-normal.woff2) format('woff2')}
+@font-face{font-family:'JetBrains Mono';font-weight:400;src:url(../node_modules/@fontsource/jetbrains-mono/files/jetbrains-mono-latin-400-normal.woff2) format('woff2')}
+/* ---------- Shared editor base: copied from design/recipient-document.html (web/editor/editor.css) ---------- */
+:root{
+  --ink:#0e1116;--ink-hover:#2a3039;--text:#2a3039;--secondary:#3a4049;--muted:#5b626d;--subtle:#6b727d;--faint:#9aa1ab;
+  --line:#e3e6ea;--input:#d9dde2;--dash:#c4cad1;--inner:#eef0f2;--track:#e9ecef;--page:#f6f7f9;--hover:#f1f3f5;
+  --green:oklch(0.56 0.13 155);--amber:oklch(0.72 0.15 70);--red:oklch(0.52 0.18 25);
+  --ui:'Schibsted Grotesk',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;--ease:cubic-bezier(.2,.7,.2,1);
+  --accent:var(--ink);
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{min-width:320px;background:var(--page);color:var(--ink);font-family:var(--ui);-webkit-font-smoothing:antialiased;font-synthesis:weight}
+button,input,textarea,select{font:inherit;color:inherit}
+button{cursor:pointer}button:disabled{cursor:not-allowed;opacity:.55}
+button:focus-visible,a:focus-visible,summary:focus-visible,[tabindex]:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+h1,h2,h3,p{margin:0}
+.ed-mono{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted)}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;border:0;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap}
+@keyframes shIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@keyframes shFade{from{opacity:0}to{opacity:1}}
+@keyframes shRise{from{opacity:0;transform:translateY(12px) scale(.98)}to{opacity:1;transform:none}}
+@keyframes shSheet{from{transform:translateY(100%)}to{transform:none}}
+
+.ed-pulse{width:6px;height:6px;border-radius:50%;background:var(--faint);animation:shPulse 1s ease-in-out infinite;flex-shrink:0}
+@keyframes shPulse{0%,100%{opacity:1}50%{opacity:.25}}
+/* Comment pieces from design/recipient-document.html (web/document/document.css) */
+.rd-marker{position:absolute;top:-13px;right:14px;z-index:1;height:26px;min-width:26px;padding:0 9px 0 8px;border-radius:999px;border:1px solid var(--input);background:#fff;display:inline-flex;align-items:center;gap:5px;font-size:12px;font-weight:700;color:var(--muted);font-variant-numeric:tabular-nums}
+.rd-marker:hover{border-color:var(--ink);color:var(--ink)}
+.rd-marker.open{background:var(--ink);border-color:var(--ink);color:#fff}
+.rd-marker.add{opacity:0;font-weight:600;transition:opacity .12s}
+.rd-discussion h2{margin-bottom:2px}
+.rd-filter{display:flex;align-items:center;gap:6px;margin:12px 0 0;flex-wrap:wrap}
+.rd-chip{height:28px;padding:0 6px 0 10px;border:1px solid var(--line);border-radius:999px;background:var(--page);display:inline-flex;align-items:center;gap:4px;font-size:12px;font-weight:600}
+.rd-chip button{width:20px;height:20px;border:0;border-radius:50%;background:none;display:grid;place-items:center;padding:0;color:var(--muted)}
+.rd-chip button:hover{background:var(--inner);color:var(--ink)}
+.rd-threads{display:flex;flex-direction:column;margin:14px -10px 0}
+.rd-thread{padding:12px 10px;border-top:1px solid var(--inner);border-radius:0;transition:background-color .12s}
+.rd-thread.focus{background:var(--page);border-radius:12px;border-top-color:transparent}
+.rd-thread.focus+.rd-thread{border-top-color:transparent}
+.rd-thread-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
+.rd-anchor{border:0;background:none;padding:0;font-size:12px;font-weight:700;color:var(--ink);text-align:left;display:inline-flex;align-items:center;gap:5px}
+.rd-anchor:hover{text-decoration:underline;text-underline-offset:3px}
+.rd-anchor .pg{font-weight:500;color:var(--muted)}
+.rd-state{font-size:12px;font-weight:600;color:var(--muted);display:inline-flex;align-items:center;gap:5px;white-space:nowrap}
+.rd-state.resolved{color:var(--green)}
+.rd-comment{display:grid;grid-template-columns:28px minmax(0,1fr);gap:4px 10px;margin-top:10px}
+.rd-comment:first-of-type{margin-top:0}
+.rd-comment .meta{font-size:13px;display:flex;align-items:baseline;gap:8px;flex-wrap:wrap}
+.rd-comment .meta strong{font-weight:600}
+.rd-comment .meta time{font-size:12px;color:var(--subtle)}
+.rd-comment p{grid-column:2;font-size:14px;line-height:1.5;color:var(--text);white-space:pre-wrap;overflow-wrap:anywhere}
+.rd-thread.resolved .rd-comment p{color:var(--muted)}
+.rd-thread-actions{display:flex;gap:2px;margin:8px 0 0 30px;flex-wrap:wrap}
+.rd-empty{margin-top:14px;font-size:14px;color:var(--muted)}
+@media (hover:none){.rd-marker.add{display:none}}
+
+/* ---------- Prototype controls (not product UI) ---------- */
+.proto{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 16px;background:#fff;border-bottom:1px dashed var(--dash);font-size:12px;color:var(--muted)}
+.proto strong{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+.proto label{display:flex;align-items:center;gap:6px}
+.proto select{height:28px;border:1px solid var(--input);border-radius:7px;background:#fff;padding:0 6px;font-size:12px;font-weight:600}
+.proto button{height:28px;border:0;background:none;color:var(--muted);text-decoration:underline;text-underline-offset:3px;font-size:12px}
+
+/* ---------- Editor primitives reused as-is ---------- */
+.ed-btn{height:36px;padding:0 12px;border:1px solid var(--input);border-radius:8px;background:#fff;color:var(--ink);font-size:13px;font-weight:600;display:inline-flex;align-items:center;justify-content:center;gap:8px;white-space:nowrap;text-decoration:none}
+.ed-btn:hover:not(:disabled){background:var(--hover)}
+.ed-btn.primary{background:var(--accent);border-color:var(--accent);color:#fff;padding:0 14px}
+.ed-btn.primary:hover:not(:disabled){background:var(--ink-hover);border-color:var(--ink-hover)}
+.ed-btn.large{height:38px;padding:0 14px;border-radius:9px;font-size:14px}
+.ed-btn.xl{height:48px;padding:0 24px;border-radius:12px;font-size:16px;font-weight:700}
+.ed-btn.block{width:100%}
+.ed-btn svg{flex-shrink:0}
+.ed-count{min-width:20px;height:20px;padding:0 6px;border-radius:999px;background:rgba(255,255,255,.18);font-size:12px;display:grid;place-items:center}
+.ed-btn:not(.primary) .ed-count{background:var(--inner)}
+.ed-text-btn{height:28px;padding:0 8px;border:0;border-radius:6px;background:none;font-size:12px;font-weight:600;color:var(--muted);white-space:nowrap}
+.ed-text-btn:hover:not(:disabled){background:var(--hover);color:var(--ink)}
+
+.ed-topbar{position:sticky;top:0;z-index:20;background:rgba(246,247,249,.88);backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);border-bottom:1px solid var(--line)}
+.ed-topbar-inner{max-width:1240px;margin:0 auto;padding:0 24px;height:60px;display:flex;align-items:center;gap:14px}
+.ed-logo{width:34px;height:34px;border:0;border-radius:9px;background:none;display:grid;place-items:center;flex-shrink:0;padding:0}
+.ed-logo:hover{background:#eceef1}
+.ed-logo span{width:22px;height:22px;border-radius:6px;background:var(--ink);display:grid;place-items:center}
+.ed-logo i{width:8px;height:8px;border-radius:50%;background:#fff}
+.ed-slash{color:var(--dash);font-size:18px;flex-shrink:0}
+.ed-title{min-width:0;flex:0 1 360px;height:36px;padding:0 8px;margin-left:-8px;border:0;border-radius:8px;background:none;font-size:15px;font-weight:600;outline:none;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;align-items:center}
+input.ed-title:hover{background:#eceef1}
+input.ed-title:focus{background:#fff;box-shadow:0 0 0 1px var(--input)}
+.ed-save{display:flex;align-items:center;gap:6px;font-size:13px;color:var(--subtle);white-space:nowrap}
+.ed-save svg{color:var(--green)}
+.ed-topbar-actions{margin-left:auto;display:flex;align-items:center;gap:8px;flex-shrink:0}
+
+.ed-main{max-width:1240px;margin:0 auto;padding:28px 24px 120px;display:flex;gap:28px;align-items:flex-start}
+.ed-canvas{flex:1 1 480px;min-width:0}
+.ed-panel{flex:0 0 340px;width:340px;position:sticky;top:84px;max-height:calc(100vh - 100px);overflow-y:auto;display:flex;flex-direction:column;gap:14px;padding:2px 2px 90px}
+.ed-preview-note{max-width:800px;margin:0 auto 14px;display:flex;align-items:center;gap:8px;font-size:13px;color:var(--muted);line-height:1.4}
+.ed-preview-note>span:first-child{width:7px;height:7px;border-radius:50%;background:var(--ink);flex-shrink:0}
+
+.ed-paper{--pad-x:clamp(24px,6vw,72px);--doc-accent:var(--ink);max-width:800px;margin:0 auto;background:#fff;border:1px solid var(--line);border-radius:6px;padding:clamp(28px,6vw,64px) var(--pad-x) 56px;box-shadow:0 24px 60px -40px rgba(14,17,22,.28);color:var(--ink);font-size:16px}
+.ed-block{position:relative;margin:0 -20px;padding:18px 20px;border-radius:10px;transition:background-color .12s;cursor:pointer;outline:none}
+.ed-block:hover{background:#fafbfc}
+.ed-block.selected{box-shadow:0 0 0 1.5px var(--ink)}
+.ed-block:focus-visible{box-shadow:0 0 0 2px var(--ink)}
+.is-owner .ed-block{cursor:text}
+.ed-toolbar{position:absolute;top:-15px;right:14px;z-index:2;height:30px;padding:0 4px 0 12px;border:1px solid var(--ink);border-radius:999px;background:#fff;display:flex;align-items:center;gap:2px;color:var(--ink);cursor:default;animation:shFade .14s ease-out}
+.ed-toolbar-label{font-family:var(--mono);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-right:6px}
+.ed-toolbar button{height:24px;border:0;border-radius:6px;background:none;display:inline-flex;align-items:center;gap:6px;padding:0 8px;color:var(--ink);font-size:12px;font-weight:600}
+.ed-toolbar button:hover{background:var(--hover)}
+.ed-toolbar .sep{width:1px;height:14px;background:var(--line);margin:0 2px}
+
+.ed-cover-body{display:flex;flex-direction:column;padding:8px 0 4px}
+.ed-cover-eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--doc-accent)}
+.ed-cover-title{margin:12px 0 0;font-size:44px;font-weight:700;letter-spacing:-.04em;line-height:1.1;text-wrap:balance}
+.ed-cover-meta{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:14px 20px;margin:32px 0 0;padding-top:18px;border-top:1px solid var(--line)}
+.ed-cover-meta dt{font-size:12px;color:var(--muted);margin-bottom:3px}
+.ed-cover-meta dd{margin:0;font-size:14px;font-weight:600}
+.ed-parties{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:24px}
+.ed-party{display:flex;flex-direction:column;gap:3px;font-size:14px;color:var(--muted)}
+.ed-party .ed-mono{margin-bottom:8px}
+.ed-party strong{font-size:16px;font-weight:700;color:var(--ink)}
+.ed-heading{margin:0 0 10px;font-size:24px;font-weight:700;letter-spacing:-.03em;line-height:1.2}
+.ed-prose{font-size:16px;line-height:1.65;color:var(--text);outline:none}
+.ed-prose p{margin:0 0 12px;text-wrap:pretty}
+.ed-prose>*:last-child{margin-bottom:0}
+.ed-prose ul{padding-left:1.35em;margin:0}
+.ed-prose li{margin:.25em 0}
+.ed-prose li::marker{color:var(--doc-accent)}
+.is-owner .ed-prose[contenteditable]:focus{background:transparent}
+.ed-row{display:grid;grid-template-columns:minmax(0,1fr) 56px 52px 84px 104px;gap:4px;align-items:center;padding:8px 0;border-bottom:1px solid var(--inner);font-size:15px}
+.ed-row>span{padding:0 6px;min-width:0}
+.ed-row-head{padding:0 0 8px;border-bottom:1px solid var(--ink);font-size:12px;color:var(--muted)}
+.ed-row .num{text-align:right;font-variant-numeric:tabular-nums}
+.ed-row .muted{color:var(--muted)}
+.ed-row strong{font-weight:600}
+.ed-package-name{font-size:18px;font-weight:700;letter-spacing:-.02em}
+.ed-package-desc{margin:2px 0 12px;font-size:14px;color:var(--muted)}
+.ed-totals{width:min(100%,320px);margin:14px 0 0 auto;display:flex;flex-direction:column;gap:6px;font-size:14px;font-variant-numeric:tabular-nums}
+.ed-totals div{display:flex;justify-content:space-between;gap:12px;color:var(--muted)}
+.ed-totals .total{align-items:baseline;padding-top:10px;margin-top:4px;border-top:1px solid var(--ink);color:var(--ink)}
+.ed-totals .total span{font-weight:700}
+.ed-totals .total strong{font-size:22px;font-weight:700;letter-spacing:-.02em}
+.ed-block.ed-signatures{margin:36px -20px 0;padding:24px 20px 18px;cursor:default}
+.ed-block.ed-signatures:hover{background:none}
+.ed-signatures::before{content:'';position:absolute;left:20px;right:20px;top:0;border-top:1px solid var(--line)}
+.ed-sig-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.ed-sig-head>span:last-child{font-size:12px;color:var(--faint)}
+.ed-signers{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:28px 32px}
+.ed-sign-line{height:52px;border-bottom:1px solid var(--ink)}
+.ed-signer strong{display:block;font-size:14px;font-weight:600;margin-top:8px}
+.ed-signer span{display:block;font-size:13px;color:var(--muted)}
+
+.ed-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:16px 18px}
+.ed-card h2{font-size:15px;font-weight:700;line-height:1.3;display:flex;align-items:center;gap:8px}
+.ed-card-head{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.ed-card-head>span{font-size:12px;color:var(--muted)}
+.ed-dot{width:8px;height:8px;border-radius:50%;background:var(--amber);flex-shrink:0}
+.ed-dot.done{background:var(--green)}
+.ed-card-text{margin:6px 0 0;font-size:14px;color:var(--muted);line-height:1.45}
+.ed-avatar{width:28px;height:28px;border-radius:50%;background:var(--inner);display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0}
+.ed-avatar.dark{background:var(--ink);color:#fff}
+.ed-seg{display:flex;padding:3px;border-radius:9px;background:var(--inner)}
+.ed-seg button{height:28px;padding:0 10px;border:0;border-radius:7px;background:transparent;font-size:12px;font-weight:600;white-space:nowrap;color:var(--ink)}
+.ed-seg button[aria-checked=true]{background:#fff;box-shadow:0 1px 2px rgba(14,17,22,.12)}
+.ed-input{width:100%;min-width:0;padding:9px 10px;border:1px solid var(--input);border-radius:8px;background:#fff;font-size:14px;line-height:1.45;outline:none;resize:vertical}
+.ed-input:focus{border-color:var(--ink);box-shadow:0 0 0 3px rgba(14,17,22,.08)}
+.ed-input:focus-visible{outline:none}
+.ed-check{display:flex;align-items:flex-start;gap:8px;font-size:13px;line-height:1.45;cursor:pointer}
+.ed-check input{width:16px;height:16px;margin:1px 0 0;accent-color:var(--ink);flex-shrink:0}
+.ed-error{margin:0;font-size:13px;color:var(--red)}
+
+.ed-dialog{width:calc(100% - 32px);max-width:480px;max-height:calc(100dvh - 40px);overflow:auto;border:0;background:#fff;color:var(--text);border-radius:18px;padding:24px;box-shadow:0 30px 80px -30px rgba(14,17,22,.5);animation:shRise .22s var(--ease)}
+.ed-dialog::backdrop{background:rgba(14,17,22,.36)}
+.ed-dialog form{display:flex;flex-direction:column;gap:18px}
+.ed-dialog h2{font-size:22px;font-weight:700;letter-spacing:-.02em;color:var(--ink);margin-bottom:4px}
+.ed-dialog-sub{font-size:14px;color:var(--muted)}
+.ed-send-list{border:1px solid var(--line);border-radius:12px;overflow:hidden;margin:6px 0 0;padding:0;list-style:none}
+.ed-send-list>li{display:flex;align-items:center;gap:12px;padding:12px 14px;border-bottom:1px solid var(--inner)}
+.ed-send-list>li:last-child{border-bottom:0}
+.ed-send-list strong{display:block;font-size:14px;font-weight:600;color:var(--ink)}
+.ed-send-list span:not(.ed-avatar){display:block;font-size:13px;color:var(--muted)}
+.ed-dialog-note{font-size:13px;color:var(--muted);line-height:1.45}
+.ed-dialog-actions{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
+.ed-dialog .ed-btn.large{height:44px;padding:0 16px;border-radius:10px}
+
+.ed-toast-wrap{position:fixed;left:50%;bottom:96px;transform:translateX(-50%);z-index:80}
+.ed-toast{display:flex;align-items:center;gap:12px;height:44px;padding:0 16px;border-radius:12px;background:var(--ink);color:#fff;font-size:14px;white-space:nowrap;box-shadow:0 16px 40px -16px rgba(14,17,22,.5);animation:shRise .2s var(--ease)}
+
+/* Signing dialog: web/styles.css .signature-modal, unchanged */
+
+
+/* ---------- Prototype controls (not product UI) ---------- */
+.proto{display:flex;flex-wrap:wrap;align-items:center;gap:6px 14px;padding:8px 16px;background:#fff;border-bottom:1px dashed var(--dash);font-size:12px;color:var(--muted)}
+.proto strong{font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink)}
+.proto label{display:flex;align-items:center;gap:6px}
+.proto select{height:28px;border:1px solid var(--input);border-radius:7px;background:#fff;padding:0 6px;font-size:12px;font-weight:600}
+.proto button{height:28px;border:0;background:none;color:var(--muted);text-decoration:underline;text-underline-offset:3px;font-size:12px}
+
+/* ---------- Editor pieces not in the shared base ---------- */
+.ed-tile{width:32px;height:32px;border-radius:8px;background:var(--inner);display:grid;place-items:center;font-size:11px;font-weight:700;flex-shrink:0}
+.ed-tile.dark{background:var(--ink);color:#fff}
+.ed-hits{display:flex;flex-direction:column;margin:0 -8px}
+.ed-hits button{display:flex;align-items:center;gap:10px;width:100%;padding:8px;border:0;border-radius:9px;background:none;text-align:left;color:var(--ink)}
+.ed-hits button:hover{background:var(--page)}
+.ed-hit-text{min-width:0;display:flex;flex-direction:column;gap:1px}
+.ed-hit-text strong{font-size:14px;font-weight:600}
+.ed-hit-text span{font-size:12px;color:var(--muted)}
+.ed-dashed{height:40px;padding:0 12px;border:1px dashed var(--dash);border-radius:9px;background:#fff;font-size:13px;font-weight:600;text-align:left;color:var(--ink);width:100%}
+.ed-dashed:hover{border-color:var(--ink)}
+.ed-form{display:flex;flex-direction:column;gap:10px}
+.ed-form label{display:flex;flex-direction:column;gap:4px;min-width:0}
+.ed-form label>span{font-size:12px;font-weight:600;color:var(--secondary)}
+.ed-form label em{font-style:normal;font-weight:400;color:var(--subtle)}
+.ed-form.dashed{gap:8px;padding:12px;border:1px dashed var(--dash);border-radius:12px}
+.ed-form .ed-input{height:38px;resize:none}
+.ed-form-actions{display:flex;justify-content:flex-end;gap:8px}
+.ed-company{display:flex;align-items:center;gap:10px;padding:10px;border:1px solid var(--line);border-radius:12px}
+.ed-company>div{flex:1;min-width:0}
+.ed-company strong{display:block;font-size:14px;font-weight:600}
+.ed-company span:not(.ed-tile){display:block;font-size:12px;color:var(--muted)}
+.ed-contact{display:flex;align-items:center;gap:10px;padding:8px 2px;border-top:1px solid var(--inner)}
+.ed-contact-text{flex:1;min-width:0;display:flex;flex-direction:column}
+.ed-contact-text strong{font-size:14px;font-weight:600}
+.ed-contact-text span{font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ed-contact input{width:18px;height:18px;accent-color:var(--ink)}
+.ed-status-card .ed-dot{background:var(--green)}
+.ed-outline-row{display:flex;gap:10px;align-items:center;height:32px;font-size:13px;color:var(--muted)}
+
+/* ---------- New: sh-* ---------- */
+/* Status chip in the topbar: replaces .ed-save, says where the edits live */
+.sh-chip{display:inline-flex;align-items:center;gap:7px;height:30px;padding:0 10px;border-radius:999px;font-size:13px;color:var(--subtle);white-space:nowrap;border:0;background:none;cursor:help}
+.sh-chip:hover{background:#eceef1;color:var(--ink)}
+.sh-chip .ed-dot{width:7px;height:7px}
+.sh-chip svg{color:var(--green)}
+.sh-chip.error{color:var(--red)}
+.sh-short{display:none}
+/* Spara utkast: a quiet dot when there is something to save */
+.sh-save-dot{width:7px;height:7px;border-radius:50%;background:var(--amber);flex-shrink:0}
+
+/* Changed-section tag in the document */
+.sh-changed{display:inline-flex;align-items:center;gap:6px;margin-bottom:8px;font-family:var(--mono);font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--subtle)}
+.sh-changed[hidden]{display:none}
+.sh-changed i{width:6px;height:6px;border-radius:50%;background:var(--amber)}
+.ed-block[contenteditable],.sh-edit{outline:none;border-radius:4px}
+.sh-edit:focus{box-shadow:0 0 0 2px var(--ink);box-shadow:0 0 0 6px #fff,0 0 0 7px var(--input)}
+.sh-num{display:inline-block;min-width:56px;padding:2px 6px;border-radius:6px;background:var(--page);text-align:right}
+.sh-missing{font-size:14px;color:var(--faint);border:1px dashed var(--input);border-radius:8px;padding:10px 12px}
+
+/* Granskning card */
+.sh-review .ed-card-head{margin-bottom:2px}
+.sh-line{display:flex;align-items:flex-start;gap:8px;margin-top:8px;font-size:14px;line-height:1.45;color:var(--secondary)}
+.sh-line .ed-dot{margin-top:6px;width:7px;height:7px}
+.sh-line.warn{padding:10px 12px;border-radius:10px;background:oklch(.97 .04 80);color:var(--ink)}
+.sh-line.warn .ed-dot{background:var(--amber)}
+.sh-sub{margin-top:14px;font-size:12px;font-weight:600;color:var(--muted)}
+.sh-links{display:flex;flex-direction:column;margin-top:6px}
+.sh-link{padding:10px 0;border-top:1px solid var(--inner)}
+.sh-link:first-child{border-top:0;padding-top:4px}
+.sh-link-main{display:flex;align-items:center;gap:10px}
+.sh-link-main>div{flex:1;min-width:0}
+.sh-link-main strong{display:block;font-size:14px;font-weight:600}
+.sh-link-main span:not(.ed-avatar){display:block;font-size:12px;color:var(--muted);line-height:1.4}
+.sh-link-main .stale{color:var(--red)}
+.sh-link-actions{display:flex;gap:2px;margin:4px 0 0 30px;flex-wrap:wrap}
+.sh-confirm{margin:8px 0 0 38px;padding:10px 12px;border-radius:10px;background:var(--page);font-size:13px;line-height:1.45}
+.sh-confirm .ed-form-actions{margin-top:8px;justify-content:flex-start}
+.ed-btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+.ed-btn.danger:hover:not(:disabled){filter:brightness(1.1);background:var(--red)}
+.sh-older{margin-top:8px;border-top:1px solid var(--inner);padding-top:8px}
+.sh-older summary{cursor:pointer;font-size:12px;font-weight:600;color:var(--muted)}
+.sh-older .sh-link{opacity:.75}
+
+/* Dialogs */
+.sh-dialog{width:calc(100% - 32px);max-width:500px;max-height:calc(100dvh - 40px);padding:0;border:0;border-radius:18px;background:#fff;color:var(--ink);box-shadow:0 30px 80px -30px rgba(14,17,22,.5);display:none;flex-direction:column;overflow:hidden}
+.sh-dialog[open]{display:flex;animation:shRise .22s var(--ease)}
+.sh-dialog::backdrop{background:rgba(14,17,22,.36)}
+.sh-dialog form{display:flex;flex-direction:column;min-height:0;flex:1}
+.sh-dialog-head{padding:22px 24px 6px;display:flex;gap:12px;align-items:flex-start}
+.sh-dialog-head>div{flex:1;min-width:0}
+.sh-dialog-head h2{font-size:21px;font-weight:700;letter-spacing:-.02em;line-height:1.2}
+.sh-dialog-head p{margin-top:4px;font-size:14px;color:var(--muted);line-height:1.45}
+.sh-dialog-body{padding:12px 24px 18px;overflow-y:auto;display:flex;flex-direction:column;gap:18px}
+.sh-dialog-foot{padding:14px 24px;border-top:1px solid var(--inner);display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap;align-items:center;background:#fff}
+.sh-dialog-foot .ed-btn{height:44px;padding:0 16px;border-radius:10px;font-size:14px}
+.sh-dialog-foot .grow{flex:1;min-width:160px;font-size:13px;color:var(--muted);line-height:1.4}
+.sh-field-label{display:block;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin-bottom:8px}
+.sh-contacts{border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.sh-contact{display:flex;align-items:center;gap:12px;padding:12px 14px;border-top:1px solid var(--inner);cursor:pointer}
+.sh-contact:first-child{border-top:0}
+.sh-contact:hover{background:#fafbfc}
+.sh-contact input{width:18px;height:18px;margin:0;accent-color:var(--ink);flex-shrink:0}
+.sh-contact>div{flex:1;min-width:0}
+.sh-contact strong{display:block;font-size:14px;font-weight:600}
+.sh-contact>div>span{display:block;font-size:12px;color:var(--muted);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sh-contact .tag{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:999px;background:var(--inner);font-size:11px;font-weight:600;color:var(--secondary);vertical-align:1px}
+.sh-contact:has(input:checked){background:var(--page)}
+.sh-contact input:focus-visible{outline:2px solid var(--ink);outline-offset:3px}
+.sh-add{margin-top:8px}
+.sh-note{font-size:13px;color:var(--muted);line-height:1.45}
+.sh-note.strong{color:var(--ink)}
+.sh-sees{display:flex;gap:10px;padding:12px 14px;border-radius:12px;background:var(--page);font-size:13.5px;line-height:1.5;color:var(--secondary)}
+.sh-sees strong{color:var(--ink)}
+.sh-sees svg{flex-shrink:0;margin-top:2px;color:var(--muted)}
+.sh-search{height:40px!important}
+/* Created state */
+.sh-done{width:40px;height:40px;border-radius:50%;background:var(--green);color:#fff;display:grid;place-items:center;flex-shrink:0}
+.sh-url{display:flex;gap:8px;flex-wrap:wrap}
+.sh-url input{flex:1 1 220px;min-width:0;height:44px;padding:0 12px;border:1px solid var(--input);border-radius:10px;background:var(--page);font-family:var(--mono);font-size:12px;color:var(--secondary);outline:none}
+.sh-url input:focus{border-color:var(--ink);background:#fff}
+.sh-url .ed-btn{height:44px;padding:0 16px;border-radius:10px;font-size:14px;min-width:132px}
+.sh-facts{list-style:none;margin:0;padding:0;display:flex;flex-direction:column;border:1px solid var(--line);border-radius:12px}
+.sh-facts li{display:flex;gap:10px;padding:10px 14px;border-top:1px solid var(--inner);font-size:13.5px;line-height:1.45;color:var(--secondary)}
+.sh-facts li:first-child{border-top:0}
+.sh-facts svg{flex-shrink:0;margin-top:2px;color:var(--muted)}
+.sh-guard{flex:1 1 100%;font-size:13px;color:var(--ink);font-weight:600}
+.sh-diff{margin:0;padding:0;list-style:none;border:1px solid var(--line);border-radius:12px}
+.sh-diff li{display:flex;gap:10px;align-items:flex-start;padding:10px 14px;border-top:1px solid var(--inner);font-size:13.5px;line-height:1.45}
+.sh-diff li:first-child{border-top:0}
+.sh-diff .ed-avatar{width:24px;height:24px;font-size:10px}
+.sh-diff li.warn{background:oklch(.97 .04 80)}
+
+/* Toast with action */
+.ed-toast-wrap{bottom:28px}
+.ed-toast{padding:0 6px 0 16px;gap:12px}
+.ed-toast:not(:has(button)){padding-right:16px}
+.ed-toast button{height:32px;padding:0 12px;border:0;border-radius:8px;background:rgba(255,255,255,.14);color:#fff;font-size:13px;font-weight:600}
+.ed-toast button:hover{background:rgba(255,255,255,.22)}
+
+/* Mobile bar and sheet */
+.sh-bar{display:none;position:fixed;left:0;right:0;bottom:0;z-index:40;background:#fff;border-top:1px solid var(--line);padding:10px 12px calc(10px + env(safe-area-inset-bottom))}
+.sh-bar-in{display:flex;gap:8px;align-items:center}
+.sh-bar .ed-btn{height:44px;border-radius:10px;font-size:14px}
+.sh-sheet{width:100%;max-width:none;max-height:88dvh;margin:auto 0 0;padding:0;border:0;border-radius:20px 20px 0 0;background:#fff;color:var(--ink);display:none;flex-direction:column}
+.sh-sheet[open]{display:flex;animation:shSheet .26s var(--ease)}
+.sh-sheet::backdrop{background:rgba(14,17,22,.36)}
+.sh-sheet-head{position:relative;padding:18px 18px 12px;display:flex;align-items:center;gap:10px;border-bottom:1px solid var(--inner)}
+.sh-sheet-head::before{content:'';position:absolute;top:7px;left:50%;width:36px;height:4px;border-radius:2px;background:var(--input);transform:translateX(-50%)}
+.sh-sheet-head h2{flex:1;font-size:17px;font-weight:700}
+.sh-sheet-body{overflow-y:auto;padding:12px 14px calc(18px + env(safe-area-inset-bottom));display:flex;flex-direction:column;gap:12px;background:var(--page)}
+.sh-x{width:40px;height:40px;border:0;border-radius:10px;background:none;display:grid;place-items:center;color:var(--muted);padding:0}
+.sh-x:hover{background:var(--hover);color:var(--ink)}
+@keyframes shSheet{from{transform:translateY(100%)}to{transform:none}}
+
+@media (max-width:1099px){.ed-panel{flex-basis:300px;width:300px}}
+@media (max-width:859px){
+  .ed-panel{display:none}
+  .ed-main{display:block;padding:16px 12px 110px}
+  .ed-topbar-inner{padding:0 12px;gap:8px;height:56px}
+  .ed-title{font-size:14px;flex:1 1 auto}
+  .sh-hide-m{display:none!important}
+  .sh-long{display:none}.sh-short{display:inline}
+  .sh-chip{padding:0 6px}
+  .sh-bar{display:block}
+  .ed-paper{padding:28px 20px 40px}
+  .ed-block{margin:0 -12px;padding:16px 12px}
+  .ed-cover-title{font-size:30px}
+  .ed-heading{font-size:21px}
+  .ed-prose{font-size:15.5px}
+  .rd-marker{right:8px}
+  .sh-dialog{width:100%;max-width:none;max-height:92dvh;margin:auto 0 0;border-radius:20px 20px 0 0}
+  .sh-dialog[open]{animation:shSheet .26s var(--ease)}
+  .sh-dialog-head{padding:18px 18px 4px}
+  .sh-dialog-body{padding:10px 18px 16px}
+  .sh-dialog-foot{padding:12px 18px calc(12px + env(safe-area-inset-bottom))}
+  .sh-dialog-foot .ed-btn{flex:1}
+  .sh-dialog-foot .grow{flex-basis:100%}
+  .ed-toast-wrap{bottom:84px;width:calc(100% - 24px)}
+  .ed-toast{white-space:normal;height:auto;min-height:44px;padding-top:6px;padding-bottom:6px}
+}
+@media (prefers-reduced-motion:reduce){*,*::before,*::after{animation:none!important;transition:none!important}}
+</style>
+</head>
+<body>
+<div class="proto" role="region" aria-label="Prototypkontroller">
+  <strong>Prototyp</strong>
+  <label>Läge <select id="p-scenario">
+    <option value="shared">Delad med Anna, privata ändringar</option>
+    <option value="synced">Delad med Anna, inget nytt</option>
+    <option value="first">Nytt utkast, ingen klient</option>
+    <option value="switched">Mottagaren bytt efter delning</option>
+  </select></label>
+  <button type="button" id="p-comment">Simulera ny kommentar (bakgrund)</button>
+  <button type="button" id="p-reset">Återställ</button>
+</div>
+<div id="app" class="ed"></div>
+<dialog class="sh-dialog" id="share" aria-labelledby="share-title"></dialog>
+<dialog class="sh-dialog" id="save" aria-labelledby="save-title"></dialog>
+<dialog class="sh-sheet" id="sheet" aria-labelledby="sheet-title"></dialog>
+<div class="ed-toast-wrap" id="toast" hidden><div class="ed-toast" role="status"></div></div>
+<div class="visually-hidden" aria-live="polite" id="live"></div>
+
+<script>
+const I = (d, s = 14) => `<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${d}</svg>`;
+const ic = {
+  check: s => I('<path d="M20 6 9 17l-5-5"/>', s), x: s => I('<path d="M18 6 6 18M6 6l12 12"/>', s),
+  msg: s => I('<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>', s),
+  link: s => I('<path d="M10 13a5 5 0 0 0 7.5.5l3-3a5 5 0 0 0-7-7l-1.7 1.7"/><path d="M14 11a5 5 0 0 0-7.5-.5l-3 3a5 5 0 0 0 7 7l1.7-1.7"/>', s),
+  eye: s => I('<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>', s),
+  pen: s => I('<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/>', s),
+  clock: s => I('<circle cx="12" cy="12" r="10"/><path d="M12 6v6l4 2"/>', s),
+  users: s => I('<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/>', s),
+  mail: s => I('<rect x="2" y="4" width="20" height="16" rx="2"/><path d="m22 7-10 6L2 7"/>', s),
+  copy: s => I('<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/>', s),
+};
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const initials = n => (n || '?').split(/\s+/).filter(Boolean).slice(0, 2).map(w => w[0].toUpperCase()).join('');
+const coInitials = n => initials(n.replace(/\b(AB|HB|KB)\b/g, ''));
+const mobile = () => matchMedia('(max-width: 859px)').matches;
+const now = () => new Date().toLocaleTimeString('sv-SE', { hour: '2-digit', minute: '2-digit' });
+const first = name => name.split(' ')[0];
+
+/* ---------- Address book (web/editor/model.ts loadBook) ---------- */
+const BOOK = [
+  { id: 'c1', name: 'Bageri Lindqvist AB', orgNr: '556701-2290', city: 'Umeå', contacts: [
+    { id: 'p1', name: 'Anna Lindqvist', role: 'VD', email: 'anna@bagerilindqvist.se' },
+    { id: 'p2', name: 'Erik Lindqvist', role: 'Ekonomiansvarig', email: 'erik@bagerilindqvist.se' }] },
+  { id: 'c2', name: 'Fjällbagarna AB', orgNr: '559301-4471', city: 'Skellefteå', contacts: [{ id: 'p3', name: 'Maria Öberg', role: 'Marknadschef', email: 'maria@fjallbagarna.se' }] },
+  { id: 'c3', name: 'Umeå Kaffe HB', orgNr: '969781-1204', city: 'Umeå', contacts: [{ id: 'p4', name: 'Jonas Berg', role: 'Delägare', email: 'jonas@umeakaffe.se' }] },
+];
+const company = id => BOOK.find(c => c.id === id);
+
+/* ---------- Document content: four editable sections ---------- */
+const SECTIONS = { parter: 'Parter', uppdrag: '1. Uppdraget', pris: '2. Pris', villkor: '3. Villkor' };
+const TEXT = {
+  uppdrag: 'Norrsken Digital AB tar fram en ny webbplats med en beställningsfunktion för tårtor och catering. I uppdraget ingår workshop, design, utveckling och integration med Swish Handel.',
+  villkor: 'Betalning sker mot faktura, 30 dagar netto. Förvaltningen löper i tolv månader från lansering. Uppsägningstiden är tre månader.',
+};
+const snap = d => ({ parter: d.companyId ?? '', uppdrag: d.uppdrag, pris: String(d.pris), villkor: d.villkor });
+const days = n => { const t = new Date(2026, 9, 16 + n); return t.toLocaleDateString('sv-SE', { day: 'numeric', month: 'short' }).replace('.', ''); };
+const fullDay = n => new Date(2026, 9, 16 + n).toLocaleDateString('sv-SE', { day: 'numeric', month: 'long', year: 'numeric' });
+const token = () => Array.from(crypto.getRandomValues(new Uint8Array(32)), b => 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'[b % 64]).join('').slice(0, 43);
+
+function scenario(name) {
+  const base = { companyId: 'c1', uppdrag: TEXT.uppdrag, pris: 7200, villkor: TEXT.villkor };
+  const v1 = { n: 1, at: '10 okt 16:05', snap: snap({ ...base, pris: 6900, villkor: TEXT.villkor.replace('tre', 'sex') }) };
+  const v2 = { n: 2, at: '14 okt 15:20', snap: snap({ ...base, pris: 6900 }) };
+  const anna = { id: 'l1', contactId: 'p1', companyId: 'c1', name: 'Anna Lindqvist', from: 1, until: 28, state: 'active' };
+  const erik = { id: 'l0', contactId: 'p2', companyId: 'c1', name: 'Erik Lindqvist', from: 1, until: 20, state: 'revoked', when: '12 okt' };
+  const threads = [
+    { id: 't1', v: 2, block: 'pris', resolved: false, comments: [{ who: 'Anna Lindqvist', at: '15 okt 09:41', body: 'Kan förvaltningen faktureras kvartalsvis i stället för varje månad?' }, { who: 'Johan Ekström', at: '15 okt 11:05', body: 'Det går bra. Jag ändrar det i nästa version.' }] },
+    { id: 't2', v: 2, block: null, resolved: false, comments: [{ who: 'Anna Lindqvist', at: '15 okt 16:30', body: 'Ser bra ut! Vem blir vår kontaktperson efter lanseringen?' }] },
+  ];
+  const S = { draft: { ...base }, versions: [v1, v2], links: [anna, erik], threads, auto: 'saved', autoAt: '14:32', revokeAsk: null, switchAsk: false, picking: false, filter: null };
+  if (name === 'synced') S.draft.pris = 6900;
+  if (name === 'first') Object.assign(S, { draft: { ...base, companyId: null }, versions: [], links: [], threads: [] });
+  if (name === 'switched') S.draft.companyId = 'c2';
+  S.draft.signer = S.draft.companyId ? company(S.draft.companyId).contacts[0].id : null;
+  return S;
+}
+let SC = location.hash.slice(1) || 'shared';
+let S = scenario(SC);
+
+/* ---------- Derived ---------- */
+const latest = () => S.versions.at(-1) ?? null;
+const changed = () => { const l = latest(); const d = snap(S.draft); return Object.keys(SECTIONS).filter(k => !l || l.snap[k] !== d[k]); };
+const dirty = () => !latest() || changed().length > 0;
+const active = () => S.links.filter(l => l.state === 'active');
+const sameClient = () => active().filter(l => l.companyId === S.draft.companyId);
+const stale = () => active().filter(l => l.companyId !== S.draft.companyId);
+const openThreads = () => S.threads.filter(t => !t.resolved).length;
+const seesVersion = l => latest()?.n ?? l.from;
+
+/* ---------- Topbar ---------- */
+function chip() {
+  if (S.auto === 'saving') return `<span class="sh-chip" role="status"><span class="ed-pulse" aria-hidden="true"></span>Sparar…</span>`;
+  const l = latest();
+  const title = 'Utkastet sparas automatiskt och syns bara för dig. Klienter med länk ser den senast sparade versionen.';
+  if (!dirty()) return `<button type="button" class="sh-chip" role="status" title="${title}" data-act="explain">${ic.check(13)}<span class="sh-long">Version ${l.n} sparad</span><span class="sh-short">v${l.n}</span></button>`;
+  return `<button type="button" class="sh-chip" role="status" title="${title}" data-act="explain"><span class="ed-dot" aria-hidden="true"></span><span class="sh-long">${l ? 'Ändringar sparade för dig' : 'Utkast sparat för dig'}</span><span class="sh-short">Sparat</span></button>`;
+}
+function saveButton(cls = 'ed-btn large') {
+  const can = dirty();
+  const label = can ? (latest() ? `Spara utkastet som version ${latest().n + 1}` : 'Spara utkastet som version 1') : `Inga ändringar sedan version ${latest().n}`;
+  return `<button type="button" class="${cls}" data-act="save" ${can ? '' : 'disabled'} title="${label}" aria-label="Spara utkast. ${label}">${can ? '<span class="sh-save-dot" aria-hidden="true"></span>' : ''}Spara utkast</button>`;
+}
+function topbar() {
+  return `<header class="ed-topbar"><div class="ed-topbar-inner">
+    <button type="button" class="ed-logo" aria-label="Tillbaka till dokument"><span><i></i></span></button>
+    <span class="ed-slash sh-hide-m" aria-hidden="true">/</span>
+    <input class="ed-title" aria-label="Dokumentnamn" value="Uppdragsavtal – ${esc(S.draft.companyId ? company(S.draft.companyId).name.replace(/ (AB|HB)$/, '') : 'ny kund')}">
+    ${chip()}
+    <div class="ed-topbar-actions">
+      <button type="button" class="ed-btn large sh-hide-m" data-act="toast" data-msg="Förhandsgranskning">Förhandsgranska</button>
+      <span class="sh-hide-m">${saveButton()}</span>
+      <button type="button" class="ed-btn primary large" data-act="toast" data-msg="Skicka för signering öppnas (oförändrat)">Skicka</button>
+    </div></div></header>`;
+}
+
+/* ---------- Paper ---------- */
+function tag(id) { return latest() && changed().includes(id) ? `<div class="sh-changed" data-tag="${id}"><i aria-hidden="true"></i>Ändrat sedan version ${latest().n}</div>` : `<div class="sh-changed" data-tag="${id}" hidden><i aria-hidden="true"></i>Ändrat sedan version ${latest()?.n ?? ''}</div>`; }
+function marker(id) { const n = S.threads.filter(t => t.block === id).length; if (!n) return ''; const open = S.threads.filter(t => t.block === id && !t.resolved).length; return `<button type="button" class="rd-marker${open ? ' open' : ''}" data-act="filter" data-block="${id}" aria-label="${SECTIONS[id]}: ${n} kommentarer">${ic.msg(13)}${n}</button>`; }
+function paper() {
+  const c = S.draft.companyId ? company(S.draft.companyId) : null;
+  const signer = c?.contacts.find(p => p.id === S.draft.signer);
+  return `<article class="ed-paper" aria-label="Ditt utkast">
+    <section class="ed-block"><div class="ed-cover-body"><span class="ed-cover-eyebrow">Uppdragsavtal</span><h1 class="ed-cover-title">Ny webbplats och löpande förvaltning</h1></div></section>
+    <section class="ed-block" data-block="parter">${tag('parter')}<div class="ed-parties"><div class="ed-party"><span class="ed-mono">Leverantör</span><strong>Norrsken Digital AB</strong><span>Johan Ekström</span></div>
+      <div class="ed-party"><span class="ed-mono">Kund</span>${c ? `<strong>${c.name}</strong><span>Org.nr ${c.orgNr}</span><span>${signer?.name ?? ''}</span>` : `<span class="sh-missing">Välj mottagare i panelen</span>`}</div></div></section>
+    <section class="ed-block" data-block="uppdrag">${marker('uppdrag')}${tag('uppdrag')}<h2 class="ed-heading">1. Uppdraget</h2><div class="ed-prose"><p class="sh-edit" contenteditable="true" data-field="uppdrag">${esc(S.draft.uppdrag)}</p></div></section>
+    <section class="ed-block" data-block="pris">${marker('pris')}${tag('pris')}<h2 class="ed-heading">2. Pris</h2>
+      <div class="ed-row ed-row-head" aria-hidden="true"><span>Beskrivning</span><span class="num">Antal</span><span>Enhet</span><span class="num">À-pris</span><span class="num">Summa</span></div>
+      <div class="ed-row"><span><strong>Design och utveckling</strong></span><span class="num">1</span><span class="muted">st</span><span class="num">96 000</span><span class="num"><strong>96 000 kr</strong></span></div>
+      <div class="ed-row"><span><strong>Förvaltning, per kvartal</strong></span><span class="num">4</span><span class="muted">kv</span><span class="num"><span class="sh-edit sh-num" contenteditable="true" inputmode="numeric" data-field="pris" aria-label="À-pris förvaltning">${S.draft.pris.toLocaleString('sv-SE')}</span></span><span class="num"><strong data-sum>${(S.draft.pris * 4).toLocaleString('sv-SE')} kr</strong></span></div></section>
+    <section class="ed-block" data-block="villkor">${marker('villkor')}${tag('villkor')}<h2 class="ed-heading">3. Villkor</h2><div class="ed-prose"><p class="sh-edit" contenteditable="true" data-field="villkor">${esc(S.draft.villkor)}</p></div></section>
+  </article>`;
+}
+
+/* ---------- Panel cards ---------- */
+function reviewCard() {
+  const l = latest(), ch = changed(), act = active(), st = stale(), same = sameClient();
+  const head = `<div class="ed-card-head"><h2>Granskning</h2><span>${l ? `Version ${l.n} · ${l.at}` : 'Ingen version än'}</span></div>`;
+  let line;
+  if (st.length) line = `<p class="sh-line warn"><span class="ed-dot" aria-hidden="true"></span><span>Mottagaren är nu <strong>${company(S.draft.companyId).name}</strong>. ${st.map(x => first(x.name)).join(' och ')}s länk slutar fungera när du sparar utkastet.</span></p>`;
+  else if (!act.length) line = `<p class="sh-line">${l ? `Version ${l.n} är sparad. ` : ''}Bara du ser utkastet och dess versioner. Dela med en klient för att få kommentarer.</p>`;
+  else if (ch.length && l) line = `<p class="sh-line"><span class="ed-dot" aria-hidden="true"></span><span>Ändringar i ${ch.map(k => SECTIONS[k]).join(' och ')} syns för ${same.map(x => first(x.name)).join(' och ')} när du sparar utkastet.</span></p>`;
+  else line = `<p class="sh-line"><span class="ed-dot done" aria-hidden="true" style="background:var(--green)"></span><span>${same.map(x => first(x.name)).join(' och ')} ser version ${l.n}.</span></p>`;
+  const row = (x, older) => {
+    const co = company(x.companyId);
+    const sub = x.state === 'revoked' ? `Återkallad ${x.when ?? 'nyss'}` : x.state === 'expired' ? 'Utgången' : `${co.name} · ser version ${seesVersion(x)} · till ${days(x.until)}`;
+    const staleNote = x.state === 'active' && x.companyId !== S.draft.companyId ? `<span class="stale">Slutar fungera när du sparar</span>` : '';
+    const confirm = S.revokeAsk === x.id ? `<div class="sh-confirm" role="group" aria-label="Bekräfta återkallning">${first(x.name)} kan inte längre öppna utkastet. Kommentarerna finns kvar.<div class="ed-form-actions"><button type="button" class="ed-btn" data-act="revoke-cancel">Avbryt</button><button type="button" class="ed-btn danger" data-act="revoke-confirm" data-id="${x.id}">Återkalla</button></div></div>` : '';
+    return `<div class="sh-link"><div class="sh-link-main"><span class="ed-avatar" aria-hidden="true">${initials(x.name)}</span><div><strong>${x.name}</strong><span>${sub}</span>${staleNote}</div></div>
+      ${!older && S.revokeAsk !== x.id ? `<div class="sh-link-actions"><button type="button" class="ed-text-btn" data-act="rotate" data-id="${x.id}">Ny länk</button><button type="button" class="ed-text-btn" data-act="revoke" data-id="${x.id}">Återkalla</button></div>` : ''}${confirm}</div>`;
+  };
+  const old = S.links.filter(x => x.state !== 'active');
+  return `<section class="ed-card sh-review" aria-labelledby="rv-h"><span id="rv-h" hidden>Granskning</span>${head}${line}
+    ${act.length ? `<p class="sh-sub">Klientlänkar</p><div class="sh-links">${act.map(x => row(x, false)).join('')}</div>` : ''}
+    ${act.length ? `<button type="button" class="ed-text-btn" style="margin:4px 0 0 -8px;height:32px;font-size:13px" data-act="share">+ Dela med fler</button>` : `<button type="button" class="ed-btn large" style="width:100%;margin-top:12px" data-act="share">${ic.link(15)}Dela med klient…</button>`}
+    ${old.length ? `<details class="sh-older"><summary>Äldre länkar (${old.length})</summary><div class="sh-links">${old.map(x => row(x, true)).join('')}</div></details>` : ''}
+  </section>`;
+}
+function commentsCard() {
+  const list = S.filter ? S.threads.filter(t => t.block === S.filter) : S.threads;
+  if (!S.threads.length && !active().length) return '';
+  return `<section class="ed-card rd-discussion" aria-label="Kommentarer"><div class="ed-card-head"><h2>Kommentarer</h2><span>${openThreads()} öppna</span></div>
+    ${S.filter ? `<div class="rd-filter"><span class="rd-chip">${SECTIONS[S.filter]}<button type="button" data-act="filter" data-block="" aria-label="Visa alla kommentarer">${ic.x(12)}</button></span></div>` : ''}
+    ${list.length ? `<div class="rd-threads">${list.map(t => `<article class="rd-thread${t.fresh ? ' focus' : ''}"><div class="rd-thread-head"><span class="rd-anchor">${t.block ? SECTIONS[t.block] : 'Hela dokumentet'} <span class="pg">· v${t.v}</span></span><span class="rd-state">Öppen</span></div>
+      ${t.comments.map(c => `<div class="rd-comment"><span class="ed-avatar${c.who.startsWith('Johan') ? ' dark' : ''}" aria-hidden="true">${initials(c.who)}</span><div class="meta"><strong>${c.who}</strong><time>${c.at}</time></div><p>${esc(c.body)}</p></div>`).join('')}
+      <div class="rd-thread-actions"><button type="button" class="ed-text-btn" data-act="toast" data-msg="Svarsfält öppnas (oförändrat)">Svara</button><button type="button" class="ed-text-btn" data-act="toast" data-msg="Markerad som löst">Markera som löst</button></div></article>`).join('')}</div>`
+      : `<p class="rd-empty">Inga kommentarer ännu. De dyker upp här av sig själva.</p>`}
+  </section>`;
+}
+function recipientsCard() {
+  const c = S.draft.companyId ? company(S.draft.companyId) : null;
+  const sameLinks = sameClient();
+  let body;
+  if (!c || S.picking) body = `<input class="ed-input sh-search" placeholder="Sök företag, org.nr eller kontakt" aria-label="Sök mottagare"><div class="ed-hits" style="margin-top:6px">${BOOK.map(b => `<button type="button" data-act="pick-recipient" data-id="${b.id}"><span class="ed-tile">${coInitials(b.name)}</span><span class="ed-hit-text"><strong>${b.name}</strong><span>${b.orgNr} · ${b.contacts.length === 1 ? b.contacts[0].name : b.contacts.length + ' kontakter'}</span></span></button>`).join('')}</div>${S.picking ? `<button type="button" class="ed-text-btn" data-act="switch-cancel" style="margin-top:6px">Avbryt</button>` : ''}`;
+  else body = `<div class="ed-company"><span class="ed-tile dark">${coInitials(c.name)}</span><div><strong>${c.name}</strong><span>Org.nr ${c.orgNr} · ${c.city}</span></div></div>
+    ${S.switchAsk ? `<div class="sh-confirm" style="margin-left:0">${sameLinks.map(x => first(x.name)).join(' och ')} har en aktiv länk. Den slutar fungera när du sparar utkastet med en ny mottagare. Den nya mottagaren får en egen länk när du delar.<div class="ed-form-actions"><button type="button" class="ed-btn" data-act="switch-cancel">Avbryt</button><button type="button" class="ed-btn primary" data-act="switch-go">Välj ny mottagare</button></div></div>`
+      : `<div style="display:flex;gap:2px;margin:6px 0 0 34px"><button type="button" class="ed-text-btn" data-act="toast" data-msg="Ändra uppgifter (oförändrat)">Ändra uppgifter</button><button type="button" class="ed-text-btn" data-act="switch">Byt mottagare</button></div>`}
+    <div style="margin-top:10px">${c.contacts.map(p => `<label class="ed-contact"><span class="ed-avatar" aria-hidden="true">${initials(p.name)}</span><span class="ed-contact-text"><strong>${p.name}</strong><span>${p.role} · ${p.email}</span></span><input type="checkbox" ${p.id === S.draft.signer ? 'checked' : ''} aria-label="${p.name} signerar"></label>`).join('')}</div>`;
+  return `<section class="ed-card" data-rec-card><div class="ed-card-head"><h2>Mottagare</h2><span>Blir parter och signerare</span></div><div style="margin-top:10px">${body}</div></section>`;
+}
+function statusCard() { return `<section class="ed-card ed-status-card"><h2><span class="ed-dot" aria-hidden="true"></span>Klart att skicka</h2><p class="ed-card-text">Mottagare, fält och priser är ifyllda.</p></section>`; }
+
+/* ---------- Render ---------- */
+function render(keepPaper = false) {
+  const app = document.getElementById('app');
+  if (!keepPaper || !app.querySelector('.ed-paper')) {
+    const y = scrollY;
+    app.innerHTML = `<div id="top"></div><div class="ed-main"><main class="ed-canvas" aria-label="Dokument">${paper()}</main><aside class="ed-panel" aria-label="Granskning och utskick" id="panel"></aside></div><div class="sh-bar" id="bar"></div>`;
+    scrollTo(0, y);
+  } else updateTags();
+  document.getElementById('top').innerHTML = topbar();
+  document.getElementById('panel').innerHTML = panel();
+  document.getElementById('bar').innerHTML = `<div class="sh-bar-in"><button type="button" class="ed-btn" data-act="sheet" aria-haspopup="dialog">${ic.msg(15)}Granskning${openThreads() ? `<span class="ed-count">${openThreads()}</span>` : ''}</button><span style="flex:1"></span>${saveButton('ed-btn primary')}</div>`;
+  const sheet = document.getElementById('sheet'); if (sheet.open) sheet.querySelector('.sh-sheet-body').innerHTML = panel(true);
+  document.getElementById('p-scenario').value = SC;
+}
+const panel = m => `${m ? '' : statusCard()}${reviewCard()}${commentsCard()}${recipientsCard()}`;
+function updateTags() {
+  const ch = changed();
+  document.querySelectorAll('[data-tag]').forEach(t => { t.hidden = !latest() || !ch.includes(t.dataset.tag); t.lastChild.textContent = `Ändrat sedan version ${latest()?.n ?? ''}`; });
+}
+
+let toastTimer;
+function toast(msg, action) {
+  const w = document.getElementById('toast');
+  w.firstElementChild.innerHTML = `<span>${msg}</span>${action ? `<button type="button" data-act="${action[1]}">${action[0]}</button>` : ''}`;
+  w.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { w.hidden = true; }, action ? 6000 : 2800);
+}
+
+/* ---------- Saving: autosave is private, Spara utkast creates the next version ---------- */
+let autoTimer;
+document.addEventListener('input', e => {
+  const f = e.target.dataset?.field; if (!f) return;
+  const v = e.target.textContent;
+  S.draft[f] = f === 'pris' ? (Number(v.replace(/\D/g, '')) || 0) : v;
+  if (f === 'pris') document.querySelector('[data-sum]').textContent = (S.draft.pris * 4).toLocaleString('sv-SE') + ' kr';
+  S.auto = 'saving'; render(true);
+  clearTimeout(autoTimer); autoTimer = setTimeout(() => { S.auto = 'saved'; S.autoAt = now(); render(true); }, 700);
+});
+
+function doSave() {
+  const st = stale();
+  const n = (latest()?.n ?? 0) + 1;
+  S.versions.push({ n, at: `16 okt ${now()}`, snap: snap(S.draft) });
+  st.forEach(l => { l.state = 'revoked'; l.when = 'nyss'; });
+  render();
+  const same = sameClient();
+  if (same.length) toast(`Version ${n} sparad. ${same.map(x => first(x.name)).join(' och ')} ser den nu.`);
+  else if (st.length) toast(`Version ${n} sparad. ${st.map(x => first(x.name)).join(' och ')}s länk är återkallad.`, ['Dela med klient', 'share']);
+  else toast(`Version ${n} sparad. Bara du ser den.`, ['Dela med klient', 'share']);
+  live(`Version ${n} sparad`);
+}
+function openSaveConfirm(opener) {
+  const d = document.getElementById('save'), n = (latest()?.n ?? 0) + 1, same = sameClient(), st = stale();
+  d.innerHTML = `<form method="dialog"><div class="sh-dialog-head"><div><h2 id="save-title">Spara version ${n}?</h2><p>Versionen kan inte ändras i efterhand. Du fortsätter redigera i ditt utkast som vanligt.</p></div></div>
+    <div class="sh-dialog-body"><ul class="sh-diff">
+      <li>${ic.pen(15)}<span>Ändrat sedan version ${latest().n}: <strong>${changed().map(k => SECTIONS[k]).join(', ')}</strong></span></li>
+      ${same.map(x => `<li><span class="ed-avatar" aria-hidden="true">${initials(x.name)}</span><span><strong>${x.name}</strong> ser version ${n} nästa gång länken öppnas.</span></li>`).join('')}
+      ${st.map(x => `<li class="warn"><span class="ed-avatar" aria-hidden="true">${initials(x.name)}</span><span><strong>${x.name}s länk slutar fungera.</strong> ${company(x.companyId).name} är inte längre mottagare. ${company(S.draft.companyId).name} får ingen länk förrän du delar.</span></li>`).join('')}
+    </ul></div>
+    <div class="sh-dialog-foot"><button type="button" class="ed-btn" data-close>Avbryt</button><button class="ed-btn ${st.length ? 'danger' : 'primary'}" value="ok">${st.length ? 'Spara och återkalla länken' : `Spara version ${n}`}</button></div></form>`;
+  show(d, opener, d.querySelector('[value=ok]'));
+  d.querySelector('form').onsubmit = e => { e.preventDefault(); d.close(); doSave(); };
+}
+function show(d, opener, focus) {
+  d.__opener = opener; d.showModal(); (focus ?? d.querySelector('input,button')).focus();
+  d.querySelector('[data-close]')?.addEventListener('click', () => d.close());
+}
+['share', 'save', 'sheet'].forEach(id => document.getElementById(id).addEventListener('close', e => { const o = e.target.__opener; if (o && document.contains(o)) o.focus(); }));
+
+/* ---------- Dela med klient ---------- */
+let SH = null;
+function openShare(opener, rotateId) {
+  const d = document.getElementById('share');
+  if (rotateId) {
+    const old = S.links.find(l => l.id === rotateId);
+    old.state = 'revoked'; old.when = 'nyss';
+    const link = { id: 'l' + Date.now(), contactId: old.contactId, companyId: old.companyId, name: old.name, from: latest().n, until: 30, state: 'active' };
+    S.links.unshift(link); render();
+    SH = { step: 'created', link, rotated: true, url: 'https://sign.prpl.se/review#' + token(), copied: false, guard: false };
+  } else {
+    SH = { step: S.draft.companyId ? 'contact' : 'client', contactId: null, days: 30, adding: false, query: '' };
+    const c = S.draft.companyId && company(S.draft.companyId);
+    if (c) { const free = c.contacts.find(p => !sameClient().some(l => l.contactId === p.id)); SH.contactId = free?.id ?? null; }
+  }
+  d.__opener = opener; drawShare(); d.showModal(); focusShare();
+}
+function focusShare() {
+  const d = document.getElementById('share');
+  const t = SH.step === 'created' ? d.querySelector('[data-act=copy]') : SH.step === 'client' || SH.step === 'new' ? d.querySelector('input') : d.querySelector('input[name=contact]:checked') ?? d.querySelector('input[name=contact]');
+  t?.focus();
+}
+function drawShare() {
+  const d = document.getElementById('share');
+  const close = `<button type="button" class="sh-x" data-act="share-close" aria-label="Stäng">${ic.x(18)}</button>`;
+  if (SH.step === 'client') {
+    d.innerHTML = `<div class="sh-dialog-head"><div><h2 id="share-title">Dela med klient</h2><p>Välj vilket företag som ska granska. Det blir också mottagare i dokumentet.</p></div>${close}</div>
+      <div class="sh-dialog-body"><div><label class="sh-field-label" for="sh-q">Klient</label><input id="sh-q" class="ed-input sh-search" placeholder="Sök företag, org.nr eller kontakt" value="${esc(SH.query)}" data-sh="query">
+      <div class="ed-hits" style="margin-top:8px">${BOOK.filter(b => !SH.query || (b.name + b.orgNr + b.contacts.map(c => c.name).join()).toLowerCase().includes(SH.query.toLowerCase())).map(b => `<button type="button" data-act="sh-pick" data-id="${b.id}"><span class="ed-tile">${coInitials(b.name)}</span><span class="ed-hit-text"><strong>${b.name}</strong><span>${b.orgNr} · ${b.contacts.length === 1 ? b.contacts[0].name : b.contacts.length + ' kontakter'}</span></span></button>`).join('')}</div>
+      <button type="button" class="ed-dashed" style="margin-top:8px" data-act="sh-new">+ Nytt företag${SH.query ? ` ”${esc(SH.query)}”` : ''}</button></div></div>
+      <div class="sh-dialog-foot"><button type="button" class="ed-btn" data-act="share-close">Avbryt</button></div>`;
+    return;
+  }
+  if (SH.step === 'new') {
+    d.innerHTML = `<div class="sh-dialog-head"><div><h2 id="share-title">Ny klient</h2><p>Sparas i dina kontakter och blir mottagare i dokumentet.</p></div>${close}</div>
+      <form class="ed-form" id="sh-newform" novalidate><div class="sh-dialog-body">
+        <label><span>Företagsnamn</span><input class="ed-input" name="name" value="${esc(SH.query)}" placeholder="Företag AB" required></label>
+        <label><span>Organisationsnummer <em>valfritt</em></span><input class="ed-input" name="org" placeholder="556123-4567" inputmode="numeric"></label>
+        <span class="sh-field-label" style="margin:4px 0 -4px">Kontaktperson som får länken</span>
+        <label><span>Namn</span><input class="ed-input" name="cname" placeholder="För- och efternamn" required autocomplete="off"></label>
+        <label><span>E-post</span><input class="ed-input" name="cmail" type="email" placeholder="namn@foretag.se" required autocomplete="off"></label>
+        <label><span>Roll <em>valfritt</em></span><input class="ed-input" name="crole" placeholder="T.ex. VD"></label>
+        <p class="ed-error" role="alert" id="sh-err"></p>
+      </div><div class="sh-dialog-foot"><button type="button" class="ed-btn" data-act="sh-back">Tillbaka</button><button class="ed-btn primary">Lägg till klient</button></div></form>`;
+    d.querySelector('#sh-newform').onsubmit = e => {
+      e.preventDefault(); const f = new FormData(e.target), err = d.querySelector('#sh-err');
+      if (!f.get('name').trim()) return void (err.textContent = 'Ange företagets namn.');
+      if (!f.get('cname').trim()) return void (err.textContent = 'Ange kontaktpersonens namn.');
+      if (!/^\S+@\S+\.\S+$/.test(f.get('cmail'))) return void (err.textContent = 'Ange en giltig e-postadress.');
+      const id = 'c' + Date.now(), pid = 'p' + Date.now();
+      BOOK.unshift({ id, name: f.get('name').trim(), orgNr: f.get('org').trim() || 'saknas', city: '', contacts: [{ id: pid, name: f.get('cname').trim(), role: f.get('crole').trim() || 'Kontakt', email: f.get('cmail').trim() }] });
+      setRecipient(id); SH.step = 'contact'; SH.contactId = pid; drawShare(); focusShare();
+    };
+    return;
+  }
+  if (SH.step === 'contact') {
+    const c = company(S.draft.companyId), l = latest(), ch = dirty();
+    const has = p => sameClient().some(x => x.contactId === p.id);
+    const chosen = c.contacts.find(p => p.id === SH.contactId);
+    const nextN = (l?.n ?? 0) + 1;
+    const sees = !l ? `Utkastet sparas som <strong>version 1</strong> när du skapar länken.`
+      : ch ? `Dina ändringar sparas som <strong>version ${nextN}</strong>. Länken visar version ${nextN} och de versioner du sparar senare, inte tidigare versioner.`
+      : `<strong>Version ${l.n}</strong> och de versioner du sparar senare. Tidigare versioner visas inte.`;
+    d.innerHTML = `<div class="sh-dialog-head"><div><h2 id="share-title">Dela med klient</h2><p>Klienten kan läsa och kommentera. Inte signera.</p></div>${close}</div>
+      <form id="sh-form" style="display:contents"><div class="sh-dialog-body">
+        <div><span class="sh-field-label">Klient</span><div class="ed-company"><span class="ed-tile dark">${coInitials(c.name)}</span><div><strong>${c.name}</strong><span>Org.nr ${c.orgNr}${c.city ? ' · ' + c.city : ''}</span></div><button type="button" class="ed-text-btn" data-act="sh-change">Byt</button></div></div>
+        <fieldset style="border:0;margin:0;padding:0"><legend class="sh-field-label">Vem får länken?</legend>
+          <div class="sh-contacts">${c.contacts.map(p => `<label class="sh-contact"><input type="radio" name="contact" value="${p.id}" ${p.id === SH.contactId ? 'checked' : ''}><span class="ed-avatar" aria-hidden="true">${initials(p.name)}</span><div><strong>${p.name}${has(p) ? '<span class="tag">Har en länk</span>' : ''}</strong><span>${p.role} · ${p.email}</span></div></label>`).join('')}</div>
+          ${chosen && has(chosen) ? `<p class="sh-note" style="margin-top:8px">${first(chosen.name)}s nuvarande länk slutar fungera när du skapar en ny.</p>` : ''}
+          ${SH.adding ? `<div class="ed-form dashed sh-add" role="group" aria-label="Ny kontaktperson"><input class="ed-input" id="nc-name" placeholder="För- och efternamn" aria-label="Namn" autocomplete="off"><input class="ed-input" id="nc-mail" type="email" placeholder="E-post" aria-label="E-post" autocomplete="off"><input class="ed-input" id="nc-role" placeholder="Roll (valfritt)" aria-label="Roll"><p class="ed-error" role="alert" id="nc-err"></p><div class="ed-form-actions"><button type="button" class="ed-btn" data-act="sh-add-cancel">Avbryt</button><button type="button" class="ed-btn primary" data-act="sh-add-save">Lägg till</button></div></div>`
+            : `<button type="button" class="ed-text-btn" style="margin:6px 0 0 -8px;height:32px;font-size:13px" data-act="sh-add">+ Ny kontaktperson</button>`}
+        </fieldset>
+        <div><span class="sh-field-label" id="days-l">Giltig i</span><div class="ed-seg" role="radiogroup" aria-labelledby="days-l" style="display:inline-flex">${[7, 30, 90].map(n => `<button type="button" role="radio" aria-checked="${SH.days === n}" data-act="sh-days" data-n="${n}">${n} dagar</button>`).join('')}</div><p class="sh-note" style="margin-top:6px">Till ${fullDay(SH.days)}. Du kan återkalla länken när som helst.</p></div>
+        <div><span class="sh-field-label">Klienten ser</span><p class="sh-sees">${ic.eye(15)}<span>${sees}</span></p></div>
+      </div>
+      <div class="sh-dialog-foot"><button type="button" class="ed-btn" data-act="share-close">Avbryt</button><button class="ed-btn primary" ${SH.contactId ? '' : 'disabled'}>${ch ? `Spara version ${nextN} och skapa länk` : 'Skapa privat länk'}</button></div></form>`;
+    d.querySelector('#sh-form').onsubmit = e => { e.preventDefault(); createLink(); };
+    return;
+  }
+  // created: shown once
+  const L = SH.link;
+  d.innerHTML = `<div class="sh-dialog-head"><span class="sh-done">${ic.check(20)}</span><div><h2 id="share-title">${SH.rotated ? 'Ny länk till' : 'Länken till'} ${L.name} är klar</h2><p>Kopiera den nu. Den visas bara den här gången.${SH.rotated ? ' Den gamla länken fungerar inte längre.' : ''}</p></div></div>
+    <div class="sh-dialog-body">
+      <div class="sh-url"><input readonly value="${SH.url}" aria-label="Privat länk till ${L.name}" data-act="select-url"><button type="button" class="ed-btn primary" data-act="copy" aria-describedby="copy-live">${SH.copied ? `${ic.check(15)}Kopierad` : `${ic.copy(15)}Kopiera länk`}</button></div>
+      <span id="copy-live" class="visually-hidden" aria-live="polite">${SH.copied ? 'Länken är kopierad' : ''}</span>
+      <a class="ed-btn" style="align-self:flex-start" href="mailto:${company(L.companyId).contacts.find(p => p.id === L.contactId)?.email ?? ''}?subject=${encodeURIComponent('Utkast att granska: Uppdragsavtal')}&body=${encodeURIComponent('Hej ' + first(L.name) + '!\n\nHär är utkastet att läsa och kommentera:\n' + SH.url + '\n\nVänliga hälsningar\nJohan')}">${ic.mail(15)}Skicka i e-post…</a>
+      <ul class="sh-facts">
+        <li>${ic.eye(15)}<span>Visar version ${L.from} och de versioner du sparar senare.</span></li>
+        <li>${ic.msg(15)}<span>Kan läsa och kommentera. Kan inte signera.</span></li>
+        <li>${ic.clock(15)}<span>Gäller till ${fullDay(L.until)}. Du kan återkalla den under Granskning.</span></li>
+        <li>${ic.users(15)}<span>Alla som har länken kan öppna den. Skicka den bara till ${first(L.name)}.</span></li>
+      </ul>
+    </div>
+    <div class="sh-dialog-foot">${SH.guard ? `<span class="sh-guard" role="alert">Du har inte kopierat länken. Den går inte att visa igen.</span><button type="button" class="ed-btn" data-act="share-force">Stäng ändå</button><button type="button" class="ed-btn primary" data-act="copy">Kopiera länk</button>` : `<button type="button" class="ed-btn primary" data-act="share-done">Klar</button>`}</div>`;
+}
+function setRecipient(id) {
+  S.draft.companyId = id; S.draft.signer = company(id).contacts[0].id; S.picking = false; S.switchAsk = false;
+  S.auto = 'saving'; render(); setTimeout(() => { S.auto = 'saved'; render(true); }, 600);
+}
+function createLink() {
+  const st = stale().length;
+  if (dirty()) { const n = (latest()?.n ?? 0) + 1; S.versions.push({ n, at: `16 okt ${now()}`, snap: snap(S.draft) }); stale().forEach(l => { l.state = 'revoked'; l.when = 'nyss'; }); }
+  const c = company(S.draft.companyId), p = c.contacts.find(x => x.id === SH.contactId);
+  sameClient().filter(l => l.contactId === p.id).forEach(l => { l.state = 'revoked'; l.when = 'nyss'; });
+  const link = { id: 'l' + Date.now(), contactId: p.id, companyId: c.id, name: p.name, from: latest().n, until: SH.days, state: 'active' };
+  S.links.unshift(link);
+  SH = { step: 'created', link, url: 'https://sign.prpl.se/review#' + token(), copied: false, guard: false };
+  render(); drawShare(); focusShare();
+}
+async function copyUrl() {
+  const d = document.getElementById('share'), input = d.querySelector('.sh-url input');
+  let ok = false;
+  try { await navigator.clipboard.writeText(SH.url); ok = true; } catch { input.select(); ok = document.execCommand?.('copy') ?? false; }
+  SH.copied = true; SH.guard = false; drawShare(); d.querySelector('[data-act=copy]').focus();
+  if (!ok) { const n = d.querySelector('#copy-live'); n.textContent = 'Markera länken och kopiera den.'; }
+}
+
+/* ---------- Events ---------- */
+function live(text) { const l = document.getElementById('live'); l.textContent = ''; setTimeout(() => { l.textContent = text; }, 30); }
+document.addEventListener('click', e => {
+  const el = e.target.closest('[data-act]'); if (!el) return;
+  const a = el.dataset.act, id = el.dataset.id;
+  switch (a) {
+    case 'save': if (sameClient().length || stale().length) openSaveConfirm(el); else doSave(); break;
+    case 'share': document.getElementById('toast').hidden = true; if (document.getElementById('sheet').open) document.getElementById('sheet').close(); openShare(el); break;
+    case 'rotate': openShare(el, id); break;
+    case 'revoke': S.revokeAsk = id; render(true); document.querySelector('[data-act=revoke-cancel]')?.focus(); break;
+    case 'revoke-cancel': S.revokeAsk = null; render(true); break;
+    case 'revoke-confirm': { const l = S.links.find(x => x.id === id); l.state = 'revoked'; l.when = 'nyss'; S.revokeAsk = null; render(true); toast(`${first(l.name)}s länk är återkallad.`); break; }
+    case 'switch': if (sameClient().length) S.switchAsk = true; else S.picking = true; render(true); break;
+    case 'switch-go': S.switchAsk = false; S.picking = true; render(true); break;
+    case 'switch-cancel': S.switchAsk = false; S.picking = false; render(true); break;
+    case 'pick-recipient': setRecipient(id); break;
+    case 'filter': S.filter = el.dataset.block || null; render(true); if (mobile() && S.filter) openSheet(el); break;
+    case 'sheet': openSheet(el); break;
+    case 'sheet-close': document.getElementById('sheet').close(); break;
+    case 'explain': toast('Bara du ser utkastet. Klienter med länk ser den senast sparade versionen.'); break;
+    case 'toast': toast(el.dataset.msg); break;
+    case 'share-close': document.getElementById('share').close(); break;
+    case 'share-done': if (!SH.copied) { SH.guard = true; drawShare(); document.querySelector('#share [data-act=copy]').focus(); } else document.getElementById('share').close(); break;
+    case 'share-force': document.getElementById('share').close(); break;
+    case 'copy': copyUrl(); break;
+    case 'select-url': el.select(); break;
+    case 'sh-pick': setRecipient(id); SH.step = 'contact'; SH.contactId = company(id).contacts[0].id; drawShare(); focusShare(); break;
+    case 'sh-new': SH.step = 'new'; drawShare(); focusShare(); break;
+    case 'sh-back': SH.step = 'client'; drawShare(); focusShare(); break;
+    case 'sh-change': SH.step = 'client'; SH.query = ''; drawShare(); focusShare(); break;
+    case 'sh-days': SH.days = Number(el.dataset.n); drawShare(); document.querySelector(`#share [data-n="${SH.days}"]`).focus(); break;
+    case 'sh-add': SH.adding = true; drawShare(); document.getElementById('nc-name').focus(); break;
+    case 'sh-add-cancel': SH.adding = false; drawShare(); document.querySelector('#share [data-act=sh-add]').focus(); break;
+    case 'sh-add-save': {
+      const n = document.getElementById('nc-name').value.trim(), m = document.getElementById('nc-mail').value.trim(), r = document.getElementById('nc-role').value.trim(), err = document.getElementById('nc-err');
+      if (!n) { err.textContent = 'Ange ett namn.'; return; }
+      if (!/^\S+@\S+\.\S+$/.test(m)) { err.textContent = 'Ange en giltig e-postadress.'; return; }
+      const pid = 'p' + Date.now(); company(S.draft.companyId).contacts.push({ id: pid, name: n, role: r || 'Kontakt', email: m });
+      SH.adding = false; SH.contactId = pid; render(true); drawShare(); focusShare(); break;
+    }
+  }
+});
+document.addEventListener('change', e => { if (e.target.name === 'contact') { SH.contactId = e.target.value; drawShare(); document.querySelector(`#share input[value="${SH.contactId}"]`).focus(); } });
+document.addEventListener('input', e => { if (e.target.dataset?.sh === 'query') { SH.query = e.target.value; const pos = e.target.selectionStart; drawShare(); const q = document.getElementById('sh-q'); q.focus(); q.setSelectionRange(pos, pos); } });
+document.getElementById('share').addEventListener('cancel', e => { if (SH?.step === 'created' && !SH.copied) { e.preventDefault(); SH.guard = true; drawShare(); document.querySelector('#share [data-act=copy]').focus(); } });
+function openSheet(opener) {
+  const d = document.getElementById('sheet');
+  d.innerHTML = `<div class="sh-sheet-head"><h2 id="sheet-title">Granskning och kommentarer</h2><button type="button" class="sh-x" data-act="sheet-close" aria-label="Stäng">${ic.x(18)}</button></div><div class="sh-sheet-body">${panel(true)}</div>`;
+  d.__opener = opener; if (!d.open) d.showModal();
+}
+document.getElementById('sheet').addEventListener('click', e => { if (e.target.id === 'sheet') e.target.close(); });
+
+/* Background refresh (implemented by root): new comments simply appear, with a quiet toast. */
+function incoming() {
+  S.threads.unshift({ id: 't' + Date.now(), v: latest()?.n ?? 1, block: 'villkor', resolved: false, fresh: true, comments: [{ who: 'Anna Lindqvist', at: `16 okt ${now()}`, body: 'Kan uppsägningstiden räknas från lansering i stället?' }] });
+  render(true);
+  const card = document.querySelector('#panel .rd-discussion'); card?.scrollIntoView({ block: 'nearest' });
+  toast('Ny kommentar från Anna Lindqvist', ['Visa', 'show-comment']);
+}
+document.addEventListener('click', e => { if (e.target.closest('[data-act=show-comment]')) { S.filter = 'villkor'; render(true); if (mobile()) openSheet(document.querySelector('[data-act=sheet]')); else document.querySelector('[data-block=villkor]').scrollIntoView({ block: 'center', behavior: 'smooth' }); } });
+
+document.getElementById('p-scenario').onchange = e => { SC = e.target.value; S = scenario(SC); history.replaceState(null, '', '#' + SC); render(); scrollTo(0, 0); };
+document.getElementById('p-reset').onclick = () => { S = scenario(SC); render(); };
+document.getElementById('p-comment').onclick = incoming;
+window.proto = { get S() { return S; }, openShare: () => openShare(document.querySelector('[data-act=share]')), incoming, render };
+render();
+</script>
+</body>
+</html>

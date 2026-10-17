@@ -12,6 +12,8 @@ export interface PdfSigner { name: string; signedName?: string; email: string; s
 export interface PdfPreparation { kind: 'flatten'; engine: 'mupdf'; engineVersion: string; sourceHash: string; sourceSize: number; annotationCount: number; formFieldCount: number; noteCount: number; }
 export interface AuditCheckpoint { sequence: number; hash: string; }
 export interface PdfAttachmentOf { documentId: string; title: string; completedHash: string; number: number; }
+/** The team's whitelabel for the signature page. The logo travels as base64 because worker arguments are JSON. */
+export interface PdfBrand { name: string; showName: boolean; accent: string; logoPngBase64?: string; }
 let active = 0;
 const waiters: Array<() => void> = [];
 async function acquire() {
@@ -72,6 +74,6 @@ export async function preparePdf(bytes: Buffer) {
   const result = await run<{ bytes: Uint8Array; pages: number; hash: string; preparation: PdfPreparation | null }>('prepare', [bytes]);
   return { ...result, bytes: Buffer.from(result.bytes) };
 }
-export async function finalizePdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], auditCheckpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf) {
-  return Buffer.from(await run<Uint8Array>('finalize', [original, title, documentId, originalHash, consent, signers, auditCheckpoint, sealExpected, ...(attachmentOf ? [attachmentOf] : [])]));
+export async function finalizePdf(original: Uint8Array, title: string, documentId: string, originalHash: string, consent: { text: string; version: string }, signers: PdfSigner[], auditCheckpoint?: AuditCheckpoint, sealExpected = false, attachmentOf?: PdfAttachmentOf, brand?: PdfBrand) {
+  return Buffer.from(await run<Uint8Array>('finalize', [original, title, documentId, originalHash, consent, signers, auditCheckpoint, sealExpected, attachmentOf ?? null, ...(brand ? [brand] : [])]));
 }

@@ -4,12 +4,16 @@ import { ArrowRight, Check, X } from 'lucide-react';
 import '@fontsource-variable/source-serif-4';
 import { EditorContext, useEditorApi, type EditorApi } from './context';
 import { BlockFrame, BlockView, SignatureSection, UnitList } from './blocks';
-import { SidePanel } from './sidebar';
+import { SidePanel, RecipientsCard } from './sidebar';
 import { SendSheet, type SendPhase } from './send';
 import { createDocument, type Created } from '../created';
-import { fileBase64, message } from '../api';
+import { EditorReviewPanel, isActiveLink, linkMatchesDraft, useEditorReview } from './review-panel';
+import { SaveVersionDialog, ShareDialog } from './share';
+import { ReadOnlyDraft } from './read-only';
+import { DraftStorage } from './storage';
+import { fileBase64, message, request } from '../api';
 import {
-  BLOCK_LABELS, createBlock, createDraft, deleteDraft, duplicateBlock, FONTS, loadDraft, saveDraft, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, UNTITLED, signingContacts, validate,
+  BLOCK_LABELS, canonicalContent, createBlock, duplicateBlock, FONTS, SIGNATURE_ID, SINGLE_BLOCKS, TEMPLATES, templateBlocks, TRAY_ORDER, UNTITLED, signingContacts, validate,
   type Block, type BlockType, type Draft, type Issue, type TemplateKey,
 } from './model';
 import type { User } from '../types';
@@ -38,8 +42,14 @@ function Tray({ label, index, onClose }: { label: string; index: number; onClose
  * Skicka confirms the signers chosen here, renders the draft to a PDF, creates the document and hands it to `onSent`.
  * With `attachment`, the draft becomes a bilaga: its PDF goes to `attachment.onUse`, where the parties are chosen.
  */
-export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = false, attachment }: { draftId: string; user: User; onClose: () => void; onSent: (result: Created) => void; emailEnabled?: boolean; attachment?: { onUse: (file: File) => void } }) {
-  const [draft, setDraft] = useState<Draft>(() => loadDraft(draftId) ?? createDraft(draftId, user));
+export function DocumentEditor({ draftId, user, onClose, onSent, initialDraft, initialRevision, emailEnabled = false, attachment }: { initialDraft: Draft; initialRevision: number; draftId: string; user: User; onClose: () => void; onSent: (result: Created) => void; emailEnabled?: boolean; attachment?: { onUse: (file: File) => void } }) {
+  const [draft, setDraft] = useState<Draft>(initialDraft);
+  const [storage] = useState(() => new DraftStorage(initialRevision, initialDraft));
+  const [mobileReview, setMobileReview] = useState(() => window.matchMedia('(max-width:859px)').matches);
+  const reviewDialog = useRef<HTMLDialogElement>(null);
+  const [sharing, setSharing] = useState<{ contactId?: string } | null>(null), [savingVersion, setSavingVersion] = useState(false);
+  const [unsharedChanges, setUnsharedChanges] = useState(false);
+  const [reviewed, setReviewed] = useState(false);
   const [revision, setRevision] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [insertAt, setInsertAt] = useState<number | 'end' | null>(null);
@@ -49,6 +59,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
   const [toast, setToast] = useState<Toast | null>(null);
   const [flash, setFlash] = useState(false);
   const [saveState, setSaveState] = useState<'saved' | 'saving' | 'error'>('saved');
+  const [saveError, setSaveError] = useState('');
   const [rendering, setRendering] = useState(false);
   const [renderError, setRenderError] = useState('');
   const [sheet, setSheet] = useState(false);
@@ -57,7 +68,6 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
   const past = useRef<Draft[]>([]);
   const future = useRef<Draft[]>([]);
   const lastSnapshot = useRef(0);
-  const firstRender = useRef(true);
   const activeEditor = useRef<Editor | null>(null);
   const paper = useRef<HTMLElement>(null);
   const flip = useRef<Map<string, number> | null>(null);
@@ -65,6 +75,9 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
   const latest = useRef(draft);
   const sentRef = useRef(false);
   latest.current = draft;
+  const review = useEditorReview(draftId, () => persist(latest.current));
+  useEffect(() => { const query = window.matchMedia('(max-width:859px)'); const change = () => setMobileReview(query.matches); query.addEventListener('change', change); return () => query.removeEventListener('change', change); }, []);
+  useEffect(() => { if (!review.commentRequest) return; if (mobileReview) reviewDialog.current?.showModal(); else { document.querySelector('.ed-panel .rd-discussion')?.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); document.querySelector<HTMLTextAreaElement>('.ed-panel .rd-discussion textarea')?.focus(); } }, [review.commentRequest]);
 
   const later = useCallback((name: string, ms: number, run: () => void) => { window.clearTimeout(timers.current[name]); timers.current[name] = window.setTimeout(run, ms); }, []);
   useEffect(() => () => Object.values(timers.current).forEach(window.clearTimeout), []);
@@ -79,7 +92,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
         future.current = [];
       }
       lastSnapshot.current = options.structural ? 0 : now;
-      return next;
+      return { ...next, updatedAt: new Date().toISOString() };
     });
   }, []);
   const travel = useCallback((direction: 'undo' | 'redo') => {
@@ -173,18 +186,29 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
   const api = useMemo<EditorApi>(() => ({
     draft, user, preview, selectedId, fresh, paperWidth, select, jump, focusRecipients, update, addBlock, moveBlock, copyBlock, removeBlock, activeEditor,
     updateBlock: (id, patch) => update(current => ({ ...current, blocks: current.blocks.map(block => block.id === id ? { ...block, ...(typeof patch === 'function' ? patch(block as never) : patch) } as Block : block) })),
-  }), [draft, user, preview, selectedId, fresh, paperWidth, select, jump, focusRecipients, update, addBlock, moveBlock, copyBlock, removeBlock]);
+    review: !attachment && review.shared && review.data?.versions[0] ? { threads: review.data.threads, version: review.data.versions[0].version, sharedIds: new Set(review.shared.blocks.map(block => block.id)), changed: new Set(draft.blocks.filter(block => canonicalContent(block) !== canonicalContent(review.shared!.blocks.find(shared => shared.id === block.id))).map(block => block.id)), comment: review.comment } : undefined,
+  }), [draft, user, preview, selectedId, fresh, paperWidth, select, jump, focusRecipients, update, addBlock, moveBlock, copyBlock, removeBlock, review.shared, review.data]);
 
+  const persist = useCallback(async (current: Draft) => {
+    setSaveState('saving'); setSaveError('');
+    try {
+      const revision = await storage.save(current);
+      setSaveState(JSON.stringify(latest.current) === storage.saved ? 'saved' : 'saving');
+      return revision;
+    } catch (error) { setSaveState('error'); setSaveError(message(error)); throw error; }
+  }, [storage]);
   useEffect(() => {
-    if (firstRender.current) { firstRender.current = false; return; }
-    if (sentRef.current) return;
+    if (sentRef.current || JSON.stringify(draft) === storage.saved) return;
     setSaveState('saving');
-    const timer = window.setTimeout(() => {
-      if (sentRef.current) return;
-      try { saveDraft({ ...draft, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
-    }, 500);
+    const timer = window.setTimeout(() => { if (!sentRef.current) void persist(draft).catch(() => {}); }, 700);
     return () => window.clearTimeout(timer);
-  }, [draft]);
+  }, [draft, persist, storage]);
+  useEffect(() => {
+    const warn = (event: BeforeUnloadEvent) => { if (JSON.stringify(latest.current) !== storage.saved) { event.preventDefault(); event.returnValue = ''; } };
+    window.addEventListener('beforeunload', warn);
+    return () => window.removeEventListener('beforeunload', warn);
+  }, [storage]);
+  const close = async () => { try { await persist(latest.current); onClose(); } catch {} };
 
   useLayoutEffect(() => {
     const tops = flip.current;
@@ -214,7 +238,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
 
   // A bilaga's signers come from the main document, so recipient checks do not apply.
   const issues = validate(draft).filter(issue => !attachment || issue.target?.kind !== 'recipients' || issue.message.startsWith('Tomt fält'));
-  const openSend = () => {
+  const openSend = async () => {
     if (issues.length) {
       setPreview(false); setFlash(true);
       later('flash', 1400, () => setFlash(false));
@@ -223,17 +247,27 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
     }
     select(null);
     if (attachment) { void useAsAttachment(); return; }
-    setSendError(''); setSheet(true);
+    try {
+      const savedRevision = await persist(latest.current);
+      const review = await request<{ versions: { sourceRevision: number; sharedAt: string | null; clientId: string | null }[] }>(`/api/drafts/${draftId}`);
+      const shared = review.versions.filter(version => version.sharedAt && version.clientId === latest.current.company?.id);
+      setUnsharedChanges(Boolean(shared.length && shared[0].sourceRevision !== savedRevision));
+      setReviewed(shared.length > 0);
+      setSendError(''); setSheet(true);
+    } catch (error) { setRenderError(message(error)); }
   };
   const renderPdf = async () => {
     const { draftPdf } = await import('./pdf-export');
     const current = latest.current;
-    const blob = await draftPdf(current);
+    const sourceRevision = await persist(current);
+    const review = await request<{ versions: { version: number; sourceRevision: number }[] }>(`/api/drafts/${draftId}`);
+    const published = review.versions.find(version => version.sourceRevision === sourceRevision);
+    const frozenAt = published ? (await request<{ draft: Draft }>(`/api/drafts/${draftId}/versions/${published.version}`)).draft.frozenAt : new Date().toISOString();
+    const blob = await draftPdf({ ...current, frozenAt });
     if (blob.size > 10 * 1024 * 1024) throw new Error(`${attachment ? 'Bilagan' : 'Dokumentet'} blir större än 10 MB. Använd mindre bilder.`);
     // Leaving the editor cancels the debounced save, so keep the latest edits.
-    try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); }
     const name = current.title.trim().replace(/[\\/\u0000-\u001f\u007f]+/g, ' ').slice(0, 150);
-    return { file: new File([blob], `${name}.pdf`, { type: 'application/pdf' }), draft: current };
+    return { file: new File([blob], `${name}.pdf`, { type: 'application/pdf' }), draft: current, sourceRevision };
   };
   const useAsAttachment = async () => {
     if (!attachment || rendering) return;
@@ -246,17 +280,17 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
     if (phase !== 'idle') return;
     setPhase('rendering'); setSendError('');
     try {
-      const { file, draft: sent } = await renderPdf();
+      const { file, draft: sent, sourceRevision } = await renderPdf();
       setPhase('creating');
       const result = await createDocument({
         title: sent.title.trim().slice(0, 160), fileName: file.name, pdfBase64: await fileBase64(file),
         // The server trims names; send them trimmed so the sender check compares like with like.
         recipients: signingContacts(sent).map(contact => ({ name: contact.name.trim(), email: contact.email.trim() })),
         includeSender: sent.settings.senderSigns,
+        draftSource: { id: draftId, revision: sourceRevision },
       }, user);
       // The draft has become a document; nothing may save it again.
       sentRef.current = true;
-      deleteDraft(draftId);
       onSent(result);
     } catch (error) { setSendError(message(error)); setPhase('idle'); }
   };
@@ -272,7 +306,7 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
       const typing = target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName);
       const mod = event.metaKey || event.ctrlKey;
       const key = event.key.toLowerCase();
-      if (mod && key === 's') { event.preventDefault(); try { saveDraft({ ...latest.current, updatedAt: new Date().toISOString() }); setSaveState('saved'); } catch { setSaveState('error'); } return; }
+      if (mod && key === 's') { event.preventDefault(); void persist(latest.current).catch(() => {}); return; }
       if (event.key === 'Escape') {
         if (event.defaultPrevented) return;
         if (typing) target.blur();
@@ -298,25 +332,44 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
   const deselect = (event: React.MouseEvent) => { if (event.target === event.currentTarget) select(null); };
   const font = FONTS.find(([key]) => key === draft.theme.font)?.[2] ?? FONTS[0][2];
   const paperStyle = { fontFamily: font, '--doc-accent': draft.theme.accent } as CSSProperties;
+  const savedVersion = review.data?.versions[0];
+  const hasVersionChanges = !savedVersion || savedVersion.sourceRevision !== storage.revision || saveState !== 'saved';
+  const activeLinks = review.data?.links.filter(isActiveLink) ?? [];
+  const activeClientNames = activeLinks.filter(link => linkMatchesDraft(link, draft)).map(link => link.name);
+  const openShare = (contactId?: string) => { reviewDialog.current?.close(); setSharing({ contactId }); };
+  const savedVersionNotice = (version: number) => {
+    setSavingVersion(false); setToast({ message: `Version ${version} sparad. ${activeClientNames.length ? `${activeClientNames.join(' och ')} ser den nu.` : 'Bara du ser den.'}` });
+    later('toast', 6000, () => setToast(null));
+  };
+  const saveVersion = () => {
+    if (review.busy || !hasVersionChanges) return;
+    if (activeLinks.length) setSavingVersion(true);
+    else void review.saveVersion().then(result => savedVersionNotice(result.version)).catch(() => {});
+  };
+  const saveVersionButton = (mobile = false) => <button type="button" className={`ed-btn large sh-save-button${mobile ? ' primary' : ' sh-hide-m'}`} disabled={!hasVersionChanges || phase !== 'idle' || review.busy || Boolean(review.historical)} title={hasVersionChanges ? `Spara utkastet som version ${(savedVersion?.version ?? 0) + 1}` : `Inga ändringar sedan version ${savedVersion?.version}`} onClick={saveVersion}>{hasVersionChanges && <span className="sh-save-dot" aria-hidden="true" />}Spara utkast</button>;
+  const reviewPanel = !attachment ? <EditorReviewPanel review={review} draft={draft} changed={hasVersionChanges} onShare={openShare} /> : null;
 
-  return <EditorContext.Provider value={api}><div className={`ed${preview ? ' is-preview' : ''}`}>
+  return <EditorContext.Provider value={api}><div className={`ed rd-editor${!attachment ? ' has-review' : ''}${preview ? ' is-preview' : ''}`}>
     <header className="ed-topbar">
       <div className="ed-topbar-inner">
-        <button type="button" className="ed-logo" aria-label="Tillbaka till dokument" title="Tillbaka till dokument" onClick={onClose}><span><i /></span></button>
+        <button type="button" className="ed-logo" aria-label="Tillbaka till dokument" title="Tillbaka till dokument" disabled={rendering || phase !== 'idle'} onClick={() => void close()}><span><i /></span></button>
         <span className="ed-slash" aria-hidden="true">/</span>
         <input className="ed-title" aria-label="Dokumentnamn" value={draft.title} placeholder={UNTITLED} onChange={event => update(current => ({ ...current, title: event.target.value }))} />
-        <span className={`ed-save ${saveState}`} role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <><Check size={13} strokeWidth={3} aria-hidden="true" />Sparat</>}</span>
+        <button type="button" className={`sh-chip ${saveState === 'error' ? 'error' : ''}`} title="Bara du ser utkastet. Klienter med länk ser den senast sparade versionen." onClick={() => { setToast({ message: 'Bara du ser utkastet. Klienter med länk ser den senast sparade versionen.' }); later('toast', 6000, () => setToast(null)); }}><span role="status">{saveState === 'saving' ? <><span className="ed-pulse" aria-hidden="true" />Sparar…</> : saveState === 'error' ? 'Kunde inte spara' : <>{!hasVersionChanges ? <Check size={13} aria-hidden="true" /> : <span className="sh-save-dot" aria-hidden="true" />}<span className="sh-long">{attachment ? 'Sparat' : !hasVersionChanges ? `Version ${savedVersion?.version} sparad` : savedVersion ? 'Ändringar sparade för dig' : 'Utkast sparat för dig'}</span><span className="sh-short">{!hasVersionChanges ? `v${savedVersion?.version}` : 'Sparat'}</span></>}</span></button>
         <div className="ed-topbar-actions">
-          <button type="button" className="ed-btn large" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
-          <button type="button" className="ed-btn primary large" disabled={rendering || phase !== 'idle'} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
+          {!attachment && saveVersionButton()}
+          {review.historical && <button type="button" className="ed-btn large" onClick={() => review.setHistorical(null)}>Till mitt utkast</button>}
+          <button type="button" className="ed-btn large sh-hide-m" onClick={() => { setPreview(value => !value); select(null); }}>{preview ? 'Redigera' : 'Förhandsgranska'}</button>
+          <button type="button" className="ed-btn primary large" disabled={rendering || phase !== 'idle' || Boolean(review.historical)} onClick={openSend}>{rendering ? 'Skapar PDF…' : attachment ? 'Använd som bilaga' : 'Skicka'}{issues.length > 0 && <span className="ed-count" aria-label={`${issues.length} saker kvar`}>{issues.length}</span>}</button>
         </div>
       </div>
     </header>
 
-    <div className="ed-main">
+    <div className="ed-main" inert={rendering || phase !== 'idle'}>
       <div className="ed-canvas" onMouseDown={deselect}>
         {preview && <p className="ed-preview-note"><span aria-hidden="true" />Förhandsgranskning – så här ser mottagaren dokumentet.</p>}
-        <article ref={paper} className="ed-paper" style={paperStyle} onMouseDown={deselect}>
+        {review.historical && <><p className="rd-version-note">Du visar delad version {review.historical.version}. Ditt privata utkast är bevarat.</p><ReadOnlyDraft key={review.historical.version} draft={review.historical.draft} threads={review.data?.threads.filter(thread => thread.version === review.historical?.version) ?? []} selected={review.filter} onSelect={review.setFilter} onComment={review.comment} /></>}
+        {!review.historical && <article ref={paper} className="ed-paper" style={paperStyle} onMouseDown={deselect}>
           {!draft.blocks.length ? <div className="ed-start">
             <div className="ed-mono">Börja med</div>
             <h2>Vad vill du skicka?</h2>
@@ -333,13 +386,18 @@ export function DocumentEditor({ draftId, user, onClose, onSent, emailEnabled = 
           {!preview && draft.blocks.length > 0 && (insertAt === 'end' ? <Tray label="Lägg till" index={draft.blocks.length} />
             : <button type="button" className="ed-add-end" onClick={() => { setSelectedId(null); setInsertAt('end'); }}>+ Lägg till block</button>)}
           {draft.blocks.length > 0 && (attachment ? <p className="ed-attachment-note">Bilagan signeras av parterna du väljer i nästa steg. En signatursida läggs till automatiskt.</p> : <SignatureSection />)}
-        </article>
+        </article>}
       </div>
-      {!preview && <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} />}
+      {!preview && !review.historical ? <SidePanel issues={issues} flash={flash} onIssue={onIssue} attachment={Boolean(attachment)} review={!mobileReview ? reviewPanel : null} activeClientNames={activeClientNames} /> : !mobileReview && !attachment ? <aside className="ed-panel" aria-label="Granskning och kommentarer">{reviewPanel}</aside> : null}
     </div>
     <UnitList />
 
-    {sheet && <SendSheet emailEnabled={emailEnabled} phase={phase} error={sendError} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
+    {mobileReview && !attachment && <div className="sh-bar"><button type="button" className="ed-btn large" onClick={() => reviewDialog.current?.showModal()}>Granskning<span className="ed-count">{review.data?.threads.filter(thread => !thread.resolved).length ?? 0}</span></button>{saveVersionButton(true)}</div>}
+    {mobileReview && !attachment && <dialog ref={reviewDialog} className="rd-sheet" aria-labelledby="editor-comments-title"><header><h2 id="editor-comments-title">Granskning och kommentarer</h2><button type="button" className="ed-btn" onClick={() => reviewDialog.current?.close()}>Stäng</button></header><div className="rd-sheet-body">{reviewPanel}<RecipientsCard activeClientNames={activeClientNames} /></div></dialog>}
+    {sharing && <ShareDialog review={review} changed={hasVersionChanges} contactId={sharing.contactId} onClose={() => setSharing(null)} />}
+    {savingVersion && <SaveVersionDialog review={review} draft={draft} onClose={() => setSavingVersion(false)} onSaved={savedVersionNotice} />}
+    {saveError && <div className="rd-save-error" role="alert">{saveError} <button type="button" className="ed-btn" onClick={() => void persist(latest.current).catch(() => {})}>Försök spara igen</button></div>}
+    {sheet && <SendSheet emailEnabled={emailEnabled} phase={phase} error={sendError} unsharedChanges={unsharedChanges} reviewed={reviewed} onConfirm={() => void send()} onClose={() => setSheet(false)} />}
     {renderError && <div className="ed-toast-wrap"><div className="ed-toast" role="alert"><span>{renderError}</span><button type="button" onClick={() => setRenderError('')}>Stäng</button></div></div>}
     {toast && <div className="ed-toast-wrap"><div className="ed-toast" role="status"><span>{toast.message}</span>{toast.restore && <button type="button" onClick={restore}>Ångra</button>}</div></div>}
   </div></EditorContext.Provider>;
