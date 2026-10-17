@@ -11,7 +11,8 @@ import { validateChatGPTClient, type OAuthMetadataLoader } from './oauth-client.
 
 export type OAuthOptions = { enabled?: boolean; metadataLoader?: OAuthMetadataLoader; rateLimit?: boolean };
 const opaque = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
-const minutes = z.number().int().min(15).max(1440);
+const defaultAccessMinutes = 90 * 24 * 60;
+const minutes = z.number().int().min(15).max(365 * 24 * 60);
 const defaults = agentScopes.filter(scope => scope !== 'reviews:share');
 function cookie(req: Request, name: string) { return (req.get('cookie') ?? '').split(';').map(value => value.trim()).find(value => value.startsWith(name + '='))?.slice(name.length + 1); }
 function sessionHash(req: Request) {
@@ -80,7 +81,7 @@ export function installOAuth(app: Express, pool: Pool, requireUser: RequestHandl
   app.get('/api/oauth/authorization/:request', requireEnabled, requireUser, async (req, res) => {
     const details = await transaction(pool, async db => {
       const pending = await pendingRequest(db, req, res.locals.user, true);
-      return { client: { name: 'ChatGPT' }, user: { name: res.locals.user.name }, workspace: { name: res.locals.user.team_name }, scopes: pending.scope, expiresInMinutes: 60 };
+      return { client: { name: 'ChatGPT' }, user: { name: res.locals.user.name }, workspace: { name: res.locals.user.team_name }, scopes: pending.scope, expiresInMinutes: defaultAccessMinutes };
     });
     res.json(details);
   });
@@ -117,7 +118,7 @@ export function installOAuth(app: Express, pool: Pool, requireUser: RequestHandl
     return new OAuth2Server({ model, requirePKCE: true, requireClientAuthentication: { authorization_code: false } });
   }
   app.post('/api/oauth/authorization/:request', requireEnabled, requireUser, async (req, res) => {
-    const input = z.object({ approved: z.boolean(), expiresInMinutes: minutes.default(60) }).strict().parse(req.body);
+    const input = z.object({ approved: z.boolean(), expiresInMinutes: minutes.default(defaultAccessMinutes) }).strict().parse(req.body);
     const result = await transaction(pool, async db => {
       const user = res.locals.user;
       const pending = await pendingRequest(db, req, user, false);

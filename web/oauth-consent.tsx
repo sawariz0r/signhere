@@ -14,7 +14,7 @@ export function consentReturnPath(path: string, query: URLSearchParams): string 
 
 export function OAuthConsent({ authorizationRequest }: { authorizationRequest: string }) {
   const [data, setData] = useState<Authorization | null>(null);
-  const [minutes, setMinutes] = useState('60');
+  const [minutes, setMinutes] = useState('129600');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const valid = /^[A-Za-z0-9_-]{8,256}$/.test(authorizationRequest);
@@ -23,7 +23,7 @@ export function OAuthConsent({ authorizationRequest }: { authorizationRequest: s
     let active = true;
     void request<Authorization>('/api/oauth/authorization/' + encodeURIComponent(authorizationRequest)).then(result => {
       if (!active) return;
-      setData(result); setMinutes(['15', '60', '240', '1440'].includes(String(result.expiresInMinutes)) ? String(result.expiresInMinutes) : '60');
+      setData(result); setMinutes(['1440', '10080', '43200', '129600', '525600'].includes(String(result.expiresInMinutes)) ? String(result.expiresInMinutes) : '129600');
     }).catch(error => { if (active) setError(message(error)); });
     return () => { active = false; };
   }, [authorizationRequest, valid]);
@@ -47,7 +47,7 @@ export function OAuthConsent({ authorizationRequest }: { authorizationRequest: s
           const permission = agentPermissions.find(permission => permission.scope === scope);
           return <li key={scope}><strong>{permission?.title ?? scope}</strong>{permission && <span className="settings-help">{permission.description}</span>}</li>;
         })}</ul>
-        <label className="field"><span>Åtkomstens giltighet</span><select value={minutes} onChange={event => setMinutes(event.target.value)} disabled={busy}><option value="15">15 minuter</option><option value="60">1 timme</option><option value="240">4 timmar</option><option value="1440">24 timmar</option></select></label>
+        <label className="field"><span>Åtkomstens giltighet</span><select value={minutes} onChange={event => setMinutes(event.target.value)} disabled={busy}><option value="1440">24 timmar</option><option value="10080">7 dagar</option><option value="43200">30 dagar</option><option value="129600">90 dagar</option><option value="525600">1 år</option></select></label>
         <p className="settings-help">Åtkomsten gäller hela teamet inom dessa behörigheter. Den förnyas inte automatiskt. Du kan återkalla den under Inställningar → Agenter. Ditt lösenord lämnas aldrig till agenten.</p>
         <div className="actions end oauth-consent-actions"><button type="button" className="button secondary" disabled={busy} onClick={() => void decide(false)}>Avböj</button><button className="button" disabled={busy}>{busy ? 'Återvänder till agenten…' : 'Godkänn åtkomst'}</button></div>
       </form>}

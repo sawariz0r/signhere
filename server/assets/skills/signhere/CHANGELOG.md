@@ -1,5 +1,9 @@
 # Signhere skill changes
 
+## 1.0.5
+
+Updates OAuth connection guidance for 90-day approvals by default, with consent choices from 24 hours to one year. Existing approvals retain their original expiry, and users can revoke a connection immediately. Manual API-token lifetimes and human reconnection on expiry remain unchanged.
+
 ## 1.0.4
 
 Documents native blocks, party data, reusable fields and supported Tiptap formatting. Adds a synthetic service agreement fixture, pricing guidance for unknown rates, and signing-flow guidance. Documents current signing-PDF fidelity limits and distinguishes stored editor preferences from signing behavior. JSON examples are validated against the draft schema; the agreement fixture is exercised through MCP and the editor, including reusable-value updates. Authentication, revision, retry and sharing safeguards remain in place.

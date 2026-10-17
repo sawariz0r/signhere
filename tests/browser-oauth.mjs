@@ -63,13 +63,13 @@ try {
   await expect(page.locator('.oauth-permission-list')).not.toContainText('Skriva kommentarer');
   await expect(page.locator('.oauth-permission-list')).not.toContainText('Uppdatera delade versioner');
   await expect(page.getByRole('checkbox')).toHaveCount(0);
-  await expect(page.getByLabel('Åtkomstens giltighet')).toHaveValue('60');
+  await expect(page.getByLabel('Åtkomstens giltighet')).toHaveValue('129600');
+  await expect(page.getByRole('option', { name: '1 år', exact: true })).toHaveCount(1);
   assert.equal((await (await context.request.get(baseURL + '/api/oauth/connections')).json()).connections.length, 0, 'login and reading the screen do not grant access');
   await page.screenshot({ path: output + '/01-human-consent-desktop.png', fullPage: true });
   await page.setViewportSize({ width: 390, height: 844 });
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   await page.screenshot({ path: output + '/02-human-consent-mobile.png', fullPage: true });
-  await page.getByLabel('Åtkomstens giltighet').selectOption('15');
   await page.getByRole('button', { name: 'Godkänn åtkomst', exact: true }).click();
   await page.waitForURL(redirectUri + '?**');
   const callback = new URL(page.url());
@@ -82,7 +82,7 @@ try {
   const token = await exchanged.json();
   assert.equal(token.refresh_token, undefined);
   assert.equal(token.scope, scopes.join(' '));
-  assert.ok(token.expires_in > 0 && token.expires_in <= 15 * 60);
+  assert.ok(token.expires_in > 90 * 24 * 60 * 60 - 60 && token.expires_in <= 90 * 24 * 60 * 60);
   await client.connect(new StreamableHTTPClientTransport(new URL(baseURL + '/mcp/oauth'), { requestInit: { headers: { Authorization: 'Bearer ' + token.access_token } } }));
   const workspace = await client.callTool({ name: 'signhere_workspace', arguments: {} });
   assert.equal(workspace.isError, undefined);
@@ -91,7 +91,7 @@ try {
   assert.equal((await (await context.request.get(baseURL + '/api/agent-keys')).json()).keys.length, 0, 'OAuth grants do not become visible manual API keys');
   const connections = (await (await context.request.get(baseURL + '/api/oauth/connections')).json()).connections;
   assert.equal(connections.length, 1);
-  assert.equal(Date.parse(connections[0].expiresAt) - Date.parse(connections[0].createdAt), 15 * 60000);
+  assert.equal(Date.parse(connections[0].expiresAt) - Date.parse(connections[0].createdAt), 90 * 24 * 60 * 60000);
 
   const denied = authorization();
   await page.goto(denied.url);
