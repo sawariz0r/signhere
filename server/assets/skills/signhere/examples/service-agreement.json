@@ -1,0 +1,475 @@
+{
+  "id": "service_agreement_example",
+  "version": 2,
+  "title": "Serviceavtal – exempel",
+  "createdAt": "2026-10-16T12:00:00.000Z",
+  "updatedAt": "2026-10-16T12:00:00.000Z",
+  "blocks": [
+    {
+      "id": "cover",
+      "type": "header",
+      "layout": "boxed",
+      "eyebrow": "Avtal",
+      "title": "Serviceavtal – {{customer.company}}",
+      "showMeta": true,
+      "background": "lines",
+      "align": "left"
+    },
+    {
+      "id": "parties",
+      "type": "parties"
+    },
+    {
+      "id": "scope",
+      "type": "text",
+      "title": "Uppdrag och ersättning",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "heading",
+            "attrs": {
+              "level": 3,
+              "textAlign": "left"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Arbetssätt"
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Uppdraget utförs för "
+              },
+              {
+                "type": "field",
+                "attrs": {
+                  "key": "customer.company"
+                }
+              },
+              {
+                "type": "text",
+                "text": ". "
+              },
+              {
+                "type": "text",
+                "text": "Omfattningen bekräftas före start.",
+                "marks": [
+                  {
+                    "type": "italic"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Alternativ A: ",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": "Löpande stöd efter godkänd beställning."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Alternativ B: ",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": "En separat avgränsad leverans enligt skriftlig överenskommelse."
+              }
+            ]
+          },
+          {
+            "type": "bulletList",
+            "content": [
+              {
+                "type": "listItem",
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Timpris: ",
+                        "marks": [
+                          {
+                            "type": "bold"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "attrs": {
+                          "key": "custom.hourlyRate"
+                        }
+                      },
+                      {
+                        "type": "text",
+                        "text": " SEK exkl. moms."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Resekostnad: ",
+                        "marks": [
+                          {
+                            "type": "bold"
+                          }
+                        ]
+                      },
+                      {
+                        "type": "field",
+                        "attrs": {
+                          "key": "custom.travelCost"
+                        }
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "orderedList",
+            "attrs": {
+              "start": 1
+            },
+            "content": [
+              {
+                "type": "listItem",
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Bekräfta omfattning och pris."
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "listItem",
+                "content": [
+                  {
+                    "type": "paragraph",
+                    "content": [
+                      {
+                        "type": "text",
+                        "text": "Planera uppstart."
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Projektbeskrivning: https://example.com/project",
+                "marks": [
+                  {
+                    "type": "link",
+                    "attrs": {
+                      "href": "https://example.com/project"
+                    }
+                  }
+                ]
+              },
+              {
+                "type": "text",
+                "text": " före beställning."
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "delivery-plan",
+      "type": "text",
+      "title": "Leveransplan",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "attrs": {
+              "textAlign": "center"
+            },
+            "content": [
+              {
+                "type": "text",
+                "text": "Planerad uppstart",
+                "marks": [
+                  {
+                    "type": "bold"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "table",
+            "content": [
+              {
+                "type": "tableRow",
+                "content": [
+                  {
+                    "type": "tableHeader",
+                    "attrs": {
+                      "colspan": 1,
+                      "rowspan": 1,
+                      "colwidth": null
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Steg"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "tableHeader",
+                    "attrs": {
+                      "colspan": 1,
+                      "rowspan": 1,
+                      "colwidth": null
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Ansvarig"
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              },
+              {
+                "type": "tableRow",
+                "content": [
+                  {
+                    "type": "tableCell",
+                    "attrs": {
+                      "colspan": 1,
+                      "rowspan": 1,
+                      "colwidth": null
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "text",
+                            "text": "Uppstart"
+                          }
+                        ]
+                      }
+                    ]
+                  },
+                  {
+                    "type": "tableCell",
+                    "attrs": {
+                      "colspan": 1,
+                      "rowspan": 1,
+                      "colwidth": null
+                    },
+                    "content": [
+                      {
+                        "type": "paragraph",
+                        "content": [
+                          {
+                            "type": "field",
+                            "attrs": {
+                              "key": "sender.name"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "type": "paragraph"
+          }
+        ]
+      }
+    },
+    {
+      "id": "fixed-price",
+      "type": "pricing",
+      "title": "Avtalad uppstart",
+      "mode": "single",
+      "packages": [
+        {
+          "id": "startup",
+          "name": "Uppstart",
+          "description": "Ett avtalat startmöte",
+          "priceForm": "fixed",
+          "cap": 0,
+          "selected": true,
+          "items": [
+            {
+              "id": "meeting",
+              "name": "Startmöte",
+              "quantity": 1,
+              "unit": "st",
+              "price": 2400,
+              "vat": 25,
+              "discount": 0
+            }
+          ]
+        }
+      ],
+      "showDiscount": false,
+      "vatPerRow": true
+    },
+    {
+      "id": "illustration",
+      "type": "image",
+      "src": "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+a4e0AAAAASUVORK5CYII=",
+      "caption": "Exempelbild (1 pixel); ersätt med en tillhandahållen bild.",
+      "width": "narrow",
+      "ratio": "auto"
+    },
+    {
+      "id": "new-page",
+      "type": "break"
+    },
+    {
+      "id": "conditions",
+      "type": "terms",
+      "title": "Villkor",
+      "content": {
+        "type": "doc",
+        "content": [
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Betalning sker mot faktura, 30 dagar netto."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Löpande arbete debiteras med "
+              },
+              {
+                "type": "field",
+                "attrs": {
+                  "key": "custom.hourlyRate"
+                }
+              },
+              {
+                "type": "text",
+                "text": " SEK per timme exkl. moms efter godkänd beställning."
+              }
+            ]
+          },
+          {
+            "type": "paragraph",
+            "content": [
+              {
+                "type": "text",
+                "text": "Ändringar i omfattningen bekräftas skriftligen före genomförande."
+              }
+            ]
+          }
+        ]
+      }
+    }
+  ],
+  "company": null,
+  "theme": {
+    "font": "grotesk",
+    "accent": "#0e1116"
+  },
+  "settings": {
+    "currency": "SEK",
+    "pricesIncludeVat": false,
+    "expiresInDays": 30,
+    "remind": false,
+    "allowDecline": true,
+    "senderSigns": false
+  },
+  "fields": {
+    "sender.company": "Exempelleverantören AB",
+    "sender.name": "Exempelavsändare",
+    "sender.email": "sender@example.test",
+    "custom.hourlyRate": "",
+    "custom.travelCost": "",
+    "custom.internalNote": "Bevara oanvänd intern information vid privata ändringar."
+  },
+  "customFields": [
+    {
+      "key": "custom.hourlyRate",
+      "label": "Timpris (anges senare)",
+      "group": "custom"
+    },
+    {
+      "key": "custom.travelCost",
+      "label": "Resekostnad (anges senare)",
+      "group": "custom"
+    },
+    {
+      "key": "custom.internalNote",
+      "label": "Intern anteckning",
+      "group": "custom"
+    }
+  ]
+}
