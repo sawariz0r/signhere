@@ -1,6 +1,6 @@
 # Signhere: editor drafts and private client review
 
-Status: the editor/review workspace and client-sharing revision are deployed. The API-key-first agent connection is implemented and undergoing release validation. Original takeover findings below are retained as historical context.
+Status: the editor/review workspace, client-sharing revision and API-key-first agent connection are implemented. Optional browser-approved ChatGPT OAuth is implemented locally alongside manual API tokens and undergoing release validation. Original takeover findings below are retained as historical context.
 
 ## Immediate outcome
 
@@ -116,11 +116,11 @@ Claude delivered the client selection and private-link design in `design/editor-
 
 Desired outcome: a user connects Signhere once, gives their agent the Signhere skill, then asks it to create or revise a document and receives a link to the updated draft. Signhere should not require the user to switch models or buy inference through Signhere for this workflow.
 
-Confirmed direction (2026-10-16): Signhere is primarily self-hosted, so instance-issued API keys are the default. An administrator should not need to configure OAuth or an external identity provider to enable agent access. OAuth is an optional later integration, not a prerequisite for this phase.
+Confirmed direction (2026-10-16): Signhere is primarily self-hosted, so instance-issued API keys are the default. An administrator should not need to configure an external identity provider or manually register OAuth clients to enable agent access. Optional ChatGPT OAuth is a separate connection path; API-key use remains independently available.
 
 The connection flow is: create a named, scoped key in Signhere; configure the instance's MCP URL and key in a compatible agent host; then load the Signhere skill. Signhere issues and validates its own keys. No Anthropic or OpenAI API key is required by Signhere for this workflow.
 
-Clarification (2026-10-17): the user supplies a short-lived API token to the agent. The MCP skill covers only token authentication and document operations. Agents never log into the website with email/password or browser cookies, recover accounts, create/refresh tokens or extend their lifetime. Missing/expired tokens require a replacement supplied by the user. New tokens default to one hour with a 15-minute to 24-hour range; existing issued keys retain their original expiry until revoked or expired.
+Clarification (2026-10-17): in manual mode the user supplies a short-lived API token to the agent. Agents never log into the website with email/password or browser cookies, recover accounts, create/refresh tokens or extend their lifetime. Missing/expired manual tokens require a replacement supplied by the user. New tokens default to one hour with a 15-minute to 24-hour range; existing issued keys retain their original expiry until revoked or expired. In optional OAuth mode, the human signs in and approves scopes in their own browser; the host completes the protocol and uses the same tools. The model never handles browser credentials or the authorization code. OAuth access also has a fixed lifetime, without refresh, and expiry requires human reconnection.
 
 ### API and MCP
 
@@ -141,7 +141,7 @@ The first useful tool set is workspace identity, list/get/create/update draft, s
 
 A key-based connection is practical for Codex and Claude Code: both document support for authenticated remote MCP headers. Claude's web custom connectors also document fixed API-key/bearer credentials through request headers. Validate each target host's actual connection flow; merely pasting a key into a conversation does not configure tool access. On Claude Team/Enterprise, connector request-header credentials are shared by the connector's users, so document that behavior and limit the key's permissions accordingly.
 
-ChatGPT's authenticated plugin connection expects OAuth 2.1, so do not promise the same key setup there. Defer OAuth and that connection path until a later explicit milestone; the initial API-key release must be useful independently. If added, OAuth should authorize the same document services and scopes using an established implementation. Sources: [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Claude Code MCP](https://code.claude.com/docs/en/mcp), [Claude custom connectors and request-header authentication](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), [OpenAI plugin authentication](https://developers.openai.com/plugins/build/auth). Checked 2026-10-16.
+ChatGPT's authenticated plugin connection expects OAuth, so its optional endpoint is `/mcp/oauth`, distinct from the manual `/mcp` endpoint. Signhere uses supported ChatGPT client metadata (CIMD), exact callback validation, PKCE and browser consent over the same document services and scopes. It requires no manually registered client ID/secret or external identity provider. Settings show both paths and list approved OAuth connections separately, with revocation. Consent displays the exact requested scopes and team; it does not silently add permissions. Sources: [Codex MCP configuration](https://learn.chatgpt.com/docs/extend/mcp?surface=cli), [Claude Code MCP](https://code.claude.com/docs/en/mcp), [Claude custom connectors and request-header authentication](https://support.claude.com/en/articles/11175166-get-started-with-custom-connectors-using-remote-mcp), [OpenAI plugin authentication](https://developers.openai.com/plugins/build/auth). Checked 2026-10-17.
 
 ### Portable skill and updates
 
@@ -160,7 +160,7 @@ An update never installs itself, executes a downloaded installer, changes MCP cr
 3. An editor change made while the agent is working produces a conflict that the agent reconciles against the latest source rather than erasing it.
 4. Another team's draft, a revoked key and an ungranted share/send operation are denied by the server.
 5. A newer skill manifest produces an update offer; accepting installs only the skill, declining leaves it usable, and an offline check leaves the current compatible version in place.
-6. On a self-hosted instance without OAuth or an external identity provider configured, connect Claude's web custom connector using the instance MCP URL and a scoped key in request headers, then run the same document operations. Verify the actual connector flow. OAuth-dependent host integrations are outside this first milestone.
+6. On a self-hosted instance without an external identity provider configured, connect Claude's web custom connector using the manual MCP URL and a scoped key in request headers. Separately connect ChatGPT using `/mcp/oauth`, human consent, fixed expiry and no manually issued client ID/secret. Verify the actual host interfaces when account access is available; local protocol/browser tests do not prove host availability.
 
 ### Implemented agent connection
 
@@ -169,3 +169,9 @@ An update never installs itself, executes a downloaded installer, changes MCP cr
 The first eight tools cover workspace identity, draft listing/reading/creation/editing, immutable saves, discussion reading and comment/reply writes. Saved results report actual private/shared visibility. Updating an existing client link requires both `reviews:share` and `allowSharedUpdate: true`; ordinary edits remain private. Creating/revoking client links, sending and signing are outside the tool set. Comments in an already shared discussion may be visible to the client and use their own discussion-write permission.
 
 The maintained MCP SDK is pinned (server/client 2.3.1, Node adapter 2.1.1). Official SDK client integration verifies protocol `2025-11-25`, with an explicit `2025-06-18` compatibility handshake. Transport validation, input size and concurrency are bounded. These checks verify MCP interoperability, not a completed sign-in/configuration inside a user's Claude or Codex account. Actual host setup remains to be exercised with the user's account. See [connection and API documentation](agent-connection.md).
+
+### Optional ChatGPT connection
+
+Schema 10 separates OAuth grants from manual API keys and binds access to `/mcp/oauth`. The browser consent screen returns to the same validated local request after login, shows the current account/team and exact requested scopes, and offers 15-minute, 1-hour, 4-hour or 24-hour access. Approval and rejection return to the validated ChatGPT callback. There is no refresh grant or agent-operated credential management. OAuth connections have a separate settings list and immediate revocation; the manual connection path remains available.
+
+The local browser journey verifies fresh human login, consent without an implicit grant, exact scopes, explicit approval/rejection, a 15-minute authorization/code exchange without refresh, a real SDK workspace call, separate OAuth/API-key lists, revocation and mobile/desktop layout. Its client metadata is a deterministic official-shape fixture; it does not establish an actual ChatGPT account connection. The portable skill is version 1.0.3 and describes both modes while keeping passwords, browser sessions, recovery and credential renewal outside the model's workflow.

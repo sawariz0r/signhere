@@ -3,7 +3,7 @@ import { message, request } from './api';
 import type { User } from './types';
 import { Brand, ErrorBox, Field } from './ui';
 
-export function Auth({ setup, invitationToken, onLogin, onVerify }: { setup: boolean; invitationToken?: string; onLogin: (user: User) => void; onVerify: () => void }) {
+export function Auth({ setup, invitationToken, returnTo, onLogin, onVerify }: { setup: boolean; invitationToken?: string; returnTo?: string; onLogin: (user: User) => void; onVerify: () => void }) {
   const [step, setStep] = useState(1);
   const [name, setName] = useState('');
   const [email, setEmail] = useState('');
@@ -23,12 +23,12 @@ export function Auth({ setup, invitationToken, onLogin, onVerify }: { setup: boo
         : setup
           ? await request<{ user: User }>('/api/setup', { setupToken, name, email, password, teamName })
           : await request<{ user: User }>('/api/login', { email, password });
-      setPassword(''); setSetupToken(''); history.replaceState({}, '', '/'); onLogin(result.user);
+      setPassword(''); setSetupToken(''); history.replaceState({}, '', returnTo ?? '/'); onLogin(result.user);
     } catch (error) { setError(message(error)); } finally { setBusy(false); }
   };
   return <div className="auth-screen"><header className="auth-header"><Brand publicBrand /><button className="text-button underlined" onClick={onVerify}>Verifiera ett dokument</button></header><main className="auth-body"><form className="auth-form" onSubmit={submit}>
     {setup && !invitation && <div className="eyebrow">Steg {step} av 2</div>}
-    <div className="auth-title"><h1>{invitation ? 'Gå med i teamet' : setup ? step === 1 ? 'Skapa konto' : 'Ditt team' : 'Välkommen tillbaka'}</h1><p>{invitation ? 'Skapa ditt konto för att börja samarbeta.' : setup ? step === 1 ? 'Skicka ditt första avtal för signering på en minut.' : 'Vad heter företaget eller teamet?' : 'Logga in för att hantera dina dokument.'}</p></div>
+    <div className="auth-title"><h1>{invitation ? 'Gå med i teamet' : setup ? step === 1 ? 'Skapa konto' : 'Ditt team' : 'Välkommen tillbaka'}</h1><p>{invitation ? 'Skapa ditt konto för att börja samarbeta.' : setup ? step === 1 ? 'Skicka ditt första avtal för signering på en minut.' : 'Vad heter företaget eller teamet?' : returnTo ? 'Logga in i Signhere för att granska agentens förfrågan. Du godkänner åtkomsten i nästa steg.' : 'Logga in för att hantera dina dokument.'}</p></div>
     {step === 1 ? <>
       {(setup || invitation) && <Field label="Namn" value={name} onChange={e => setName(e.target.value)} placeholder="För- och efternamn" autoComplete="name" required maxLength={160} />}
       {!invitation && <Field label="E-post" value={email} onChange={e => setEmail(e.target.value)} placeholder="namn@foretag.se" type="email" autoComplete="email" required maxLength={254} />}

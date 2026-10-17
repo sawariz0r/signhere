@@ -22,6 +22,7 @@ import { createNotifier, type Message, type Notifier } from './notify.js';
 import { ACCENTS, MAX_LOGO_BYTES, accentSchema, brandOf, checkLogoPng } from './brand.js';
 import type { PdfBrand } from './pdf.js';
 import { installAgentApi, authenticateAgent, AgentConflict } from './agent-api.js';
+import { installOAuth, type OAuthOptions } from './oauth.js';
 import { registerMcp } from './mcp.js';
 import { createAgentSkillRouter } from './agent-skill.js';
 import { installReviews } from './reviews.js';
@@ -41,6 +42,7 @@ export interface AppConfig {
   delivery?: { autoStart?: boolean; pollMs?: number; retryBaseMs?: number };
   /** Optional best-effort e-mail of signing links. Without it, personal links are shared manually. */
   notifier?: Notifier;
+  oauth?: OAuthOptions;
 }
 const DAY = 86400000;
 /** The build writes assets/version.json next to the server; development reads package.json. */
@@ -396,7 +398,8 @@ export async function createApp(config: AppConfig) {
 
   const reviews = installReviews(app, pool, requireUser, origin, now);
   const agentService = installAgentApi(app, pool, requireUser, origin, now, reviews);
-  registerMcp(app, agentService, { origin, rateLimit: config.rateLimit });
+  const oauthService = installOAuth(app, pool, requireUser, origin, now, agentService, { ...config.oauth, rateLimit: config.rateLimit });
+  registerMcp(app, agentService, { origin, rateLimit: config.rateLimit, oauthService, oauthResourceMetadataUrl: origin + '/.well-known/oauth-protected-resource/mcp/oauth' });
   app.use('/skills/signhere', createAgentSkillRouter());
 
   app.get('/api/documents', requireUser, async (_req, res) => {
