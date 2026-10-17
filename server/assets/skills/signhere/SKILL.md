@@ -2,7 +2,7 @@
 name: signhere
 description: Create and revise Signhere editor drafts, save versions, and work with client review comments through MCP using a supplied API token or a user-approved host OAuth connection.
 metadata:
-  version: "1.0.4"
+  version: "1.0.5"
   api-version: "v1"
 ---
 
@@ -26,7 +26,7 @@ For ChatGPT's OAuth connector, use the instance's `/mcp/oauth` endpoint through 
 
 The agent never asks for or handles the user's Signhere email/password, browser session, cookies, recovery data or authorization code. Do not automate the browser login or consent screen, create credentials, exchange an authorization code yourself, or inspect the host's token store. The host completes the protocol after the human's approval and supplies its credential to MCP. Discover available tools and verify `signhere_workspace` before acting. A skill download alone does not create this connection.
 
-OAuth access lasts 15 minutes to 24 hours as chosen by the user, with no refresh token or automatic renewal. If the connection is missing, expired, revoked or returns **401**, pause authenticated work and ask the human to reconnect through the host and approve again. Do not renew it yourself, request a password, or silently switch to another credential. Keep this mode distinct from the manual user-supplied token workflow above.
+New OAuth approvals default to 90 days; the human can choose 24 hours, 7 days, 30 days, 90 days or one year. Existing approvals keep their original expiry. Use the actual returned `expiresAt`; there is no refresh token or automatic renewal. If the connection is missing, expired, revoked or returns **401**, pause authenticated work and ask the human to reconnect through the host and approve again. Do not renew it yourself, request a password, or silently switch to another credential. Keep this mode distinct from the manual user-supplied token workflow above.
 
 ## Work on a document
 
