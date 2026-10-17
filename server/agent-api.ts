@@ -72,7 +72,7 @@ export function createAgentService(pool: Pool, origin: string, now: () => number
           }
         }
         let result: unknown;
-        if (operation === 'workspace') result = { apiVersion: 'v1', workspace: { id: actor.teamId, name: actor.teamName }, user: { id: actor.userId, name: actor.userName }, scopes: actor.scopes, baseUrl: origin };
+        if (operation === 'workspace') result = { apiVersion: 'v1', workspace: { id: actor.teamId, name: actor.teamName }, user: { id: actor.userId, name: actor.userName }, scopes: actor.scopes, expiresAt: new Date(key.expires_at).toISOString(), baseUrl: origin };
         else if (operation === 'list_drafts') {
           const drafts = (await db.query(`SELECT id,content->>'title' AS title,revision,updated_at AS "updatedAt",(SELECT max(version) FROM review_versions WHERE draft_id=drafts.id) AS "savedVersion" FROM drafts WHERE team_id=$1 AND archived_at IS NULL ORDER BY updated_at DESC,id LIMIT $2`, [actor.teamId, input.limit])).rows;
           result = { drafts: drafts.map(draft => ({ ...draft, url: url(draft.id) })) };
@@ -132,13 +132,14 @@ export function installAgentApi(app: Express, pool: Pool, requireUser: RequestHa
     res.json({ keys, scopes: agentScopes, ...urls });
   });
   app.post('/api/agent-keys', requireUser, async (req, res) => {
-    const input = z.object({ name: z.string().trim().min(1).max(100), scopes: z.array(z.enum(agentScopes)).min(1).max(agentScopes.length).refine(values => new Set(values).size === values.length), expiresInDays: z.number().int().min(1).max(365).default(90) }).strict().parse(req.body);
+    const input = z.object({ name: z.string().trim().min(1).max(100), scopes: z.array(z.enum(agentScopes)).min(1).max(agentScopes.length).refine(values => new Set(values).size === values.length), expiresInMinutes: z.number().int().min(15).max(1440).default(60) }).strict().parse(req.body);
     const raw = 'shk_' + token();
     const key = await transaction(pool, async db => {
       await db.query('SELECT id FROM users WHERE id=$1 FOR UPDATE', [res.locals.user.id]);
-      if (Number((await db.query('SELECT count(*) FROM agent_keys WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>$2', [res.locals.user.id, new Date(now()).toISOString()])).rows[0].count) >= 20) throw new ApiError(409, 'Revoke an existing API key before creating another (maximum 20 active keys).');
-      const metadata = (await db.query('INSERT INTO agent_keys(id,user_id,team_id,name,prefix,token_hash,scopes,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ' + keyColumns, [uid(), res.locals.user.id, res.locals.user.team_id, input.name, raw.slice(0, 12), sha256(raw), JSON.stringify(input.scopes), new Date(now()).toISOString(), new Date(now() + input.expiresInDays * 86400000).toISOString()])).rows[0];
-      await db.query('INSERT INTO agent_audit(id,key_id,operation,created_at) VALUES($1,$2,$3,$4)', [uid(), metadata.id, 'key.created', new Date(now()).toISOString()]);
+      const issuedAt = now();
+      if (Number((await db.query('SELECT count(*) FROM agent_keys WHERE user_id=$1 AND revoked_at IS NULL AND expires_at>$2', [res.locals.user.id, new Date(issuedAt).toISOString()])).rows[0].count) >= 20) throw new ApiError(409, 'Revoke an existing API key before creating another (maximum 20 active keys).');
+      const metadata = (await db.query('INSERT INTO agent_keys(id,user_id,team_id,name,prefix,token_hash,scopes,created_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING ' + keyColumns, [uid(), res.locals.user.id, res.locals.user.team_id, input.name, raw.slice(0, 12), sha256(raw), JSON.stringify(input.scopes), new Date(issuedAt).toISOString(), new Date(issuedAt + input.expiresInMinutes * 60000).toISOString()])).rows[0];
+      await db.query('INSERT INTO agent_audit(id,key_id,operation,created_at) VALUES($1,$2,$3,$4)', [uid(), metadata.id, 'key.created', new Date(issuedAt).toISOString()]);
       return metadata;
     });
     res.status(201).json({ key, token: raw, ...urls });

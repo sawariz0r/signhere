@@ -1,28 +1,24 @@
 ---
 name: signhere
-description: Connect to the user's Signhere instance, sign in when browser access is needed, and create or revise editor drafts, save versions, and work with client review comments through MCP.
+description: Use a user-supplied API token to create and revise Signhere editor drafts, save versions, and work with client review comments through MCP.
 metadata:
-  version: "1.0.1"
+  version: "1.0.2"
   api-version: "v1"
 ---
 
 # Signhere documents
 
-Use the user's configured Signhere MCP connection. Keep keys in the host's credential or environment configuration; do not echo credentials in messages or put them in this skill or document content. No OAuth or AI-provider key is required by Signhere.
+Use the user's Signhere MCP connection with the short-lived API token they supply for the task. This skill covers token-authenticated document operations only.
 
-## Sign in to the application and connect MCP
+## Authenticate with the supplied API token
 
-Use the user's instance URL, such as `https://sign.example.com`, not a fixed public Signhere service. Derive it from the configured MCP URL or `signhere_workspace`'s `baseUrl`; ask for the instance URL if neither is available. Browser sign-in uses the user's Signhere account email and password. MCP uses a Signhere API key. A working MCP connection does not require a browser login for document operations, and its key does not sign the user into the website.
+Use the instance's `/mcp` endpoint and `Authorization: Bearer <token>`, or the MCP host's equivalent bearer-token setting. Get the instance URL from the user or the configured connection; never assume a fixed public Signhere service. The user creates and supplies the token. Never authenticate with an email/password, use a browser session or cookie, call `/api/login`, recover an account, or create or renew credentials yourself.
 
-When browser access is needed, for example to get a key or open an editor link:
+Keep the supplied token in the host's protected task/session credential mechanism or process memory. Do not echo it, put it in document content, URLs or this skill, or save it in persistent files/settings unless the user separately requests that setup. Send it only to the intended instance's authenticated MCP endpoint. Use an existing MCP connection or a supported MCP HTTP client with that token for the task, discovering the available tools before calling them. If neither transport is available, ask the user to configure the MCP connection. Do not open the website or ask for a password as a workaround.
 
-1. Open the instance's `/` in the user's browser. Reuse an existing session after checking the account/team in the account menu at the top right. With browser tools, the same browser's `GET /api/bootstrap` also reports the signed-in `user`; `user: null` means sign-in is needed.
-2. On **Välkommen tillbaka**, enter the account email in **E-post**, the password in **Lösenord**, and press **Logga in**. Let the user or their password manager fill the password. If the user explicitly authorizes agent-assisted login and the host provides a secure credential mechanism, use that mechanism. Do not ask them to paste their password into chat. If browser tools or credentials are unavailable, give the sign-in URL and let them sign in themselves; opening the page alone is not proof of a successful login.
-3. Check the resulting account/team before continuing. An expired browser session or an editor link showing the login form needs the same sign-in flow. Reopen the original editor URL after login if the app returns to the document list.
+Call `signhere_workspace` to verify the instance, account/team, granted scopes and token expiry before working. New tokens default to one hour and can last 15 minutes to 24 hours; use the actual returned `expiresAt` rather than assuming a lifetime. If a token is missing, expired, revoked or rejected with **401**, pause authenticated work and ask the user for a replacement token for this instance. Do not retry with another credential, refresh or extend the token yourself, or fall back to website login.
 
-To establish a missing MCP connection, sign in as above, then open **Konto → Inställningar → Agenter**, or go directly to the instance's `/settings/agents`. Choose a key name, permissions and expiry, press **Skapa API-nyckel**, and copy the key while it is shown. Put it in the agent host's private connection settings with the instance's `/mcp` URL and request header `Authorization: Bearer <key>` (or the host's equivalent bearer-token setting). Enable/reconnect that MCP server and call `signhere_workspace` to verify the intended account/team and scopes. A skill upload or key pasted into chat alone does not establish the tool connection.
-
-If MCP returns **401**, check that the configured key belongs to this instance and is valid, unexpired and unrevoked; use browser sign-in to create a replacement if needed. Signing into the website does not repair an invalid MCP credential. For a **403** or `forbidden` operation error, inspect the error: explain a missing scope or a rejected host/origin configuration rather than retrying with the account password. A browser login error concerns the account email/password. If the password is forgotten, direct the user to their installation administrator for account recovery; do not guess passwords, reset accounts, rerun first-owner setup or change database credentials as part of document work. A **Skapa konto** screen is first-owner setup, not the existing-account login flow; ask the administrator to confirm the correct instance before proceeding.
+For **403** or a `forbidden` operation error, explain the missing scope or rejected host/origin configuration. Let the user decide whether to supply a suitable token or fix the connection; do not increase permissions yourself. Return editor URLs for the user to open independently; the agent does not sign into the application to view them.
 
 ## Work on a document
 
@@ -42,7 +38,7 @@ Read `signhere_get_discussion` before answering comments. Threads retain their o
 
 ## Check for skill updates on use
 
-This installed package is **1.0.1**, compatible with API **v1**. During active use, check the connected instance's `/skills/signhere/manifest.json` at most once per day if the host can retain a last-check timestamp; otherwise once per session. Make one request with a 5-second timeout, a 64 KiB response limit and no cross-origin redirects. Do not create a background schedule. If the host cannot make this bounded fetch, skip it and continue compatible work; do not claim an update check succeeded.
+This installed package is **1.0.2**, compatible with API **v1**. During active use, check the connected instance's public `/skills/signhere/manifest.json` at most once per day if the host can retain a last-check timestamp; otherwise once per session. Make one request with a 5-second timeout, a 64 KiB response limit and no cross-origin redirects. Skill metadata, changelogs and packages are public: do not attach the API token to these downloads. Do not create a background schedule. If the host cannot make this bounded fetch, skip it and continue compatible work; do not claim an update check succeeded.
 
 Treat the response as metadata. Resolve its relative URLs against the configured instance origin and reject credential-bearing URLs, other origins and unsupported schemes. Compare numeric semantic versions; only offer a version newer than the installed one. For a newer version, read its same-origin changelog with the same bounds, summarize relevant changes and ask whether the user wants to update. If declined, unanswered or offline, continue with the installed skill when its API is compatible. If the actual server API is incompatible, explain the needed update before using unsupported operations.
 

@@ -4,15 +4,15 @@ Signhere issues its own API keys. You do not need OAuth, an external identity pr
 
 This release implements remote Streamable HTTP MCP at `/mcp`, the equivalent REST API at `/api/v1`, and a portable `signhere` skill. The examples below use `https://sign.example.com`; replace it with your installation's base URL. Host setup instructions were checked against official documentation on 2026-10-16. Transport tests are separate from account-level checks in Claude's or Codex's user interfaces; connector availability depends on your host and plan.
 
-## Sign in to the application
+## Supply a short-lived token
 
-Open your installation's base URL, for example `https://sign.example.com/`. On **Välkommen tillbaka**, fill **E-post** and **Lösenord** with your Signhere account details, then choose **Logga in**. Your email/password belongs to this installation. If already signed in, check the account and team in the top-right account menu. If your session expires, sign in again and reopen the original editor link if necessary.
+The user supplies the instance's MCP URL and a short-lived API token to their agent. Agent authentication is `Authorization: Bearer <token>` for MCP requests. The skill describes document operations and token use; agents never sign into the application using email/password, browser sessions or cookies. They do not recover accounts, mint tokens, extend lifetimes or refresh credentials. When a token is missing, expired or rejected, the agent pauses authenticated work and asks the user for a replacement.
 
-An MCP API key authenticates your agent's tools; it does not sign you into the website. An existing working MCP connection can create and edit documents without a browser session. Conversely, signing into the website does not configure your agent or refresh a rejected API key. For a forgotten account password, ask the installation administrator to recover that exact account. The first-owner **Skapa konto** screen is not a password-reset flow.
+Pass the token using the host's protected task/session credential mechanism. Avoid saving it in permanent configuration files or echoing it in messages, URLs or document contents. Configuring persistent host settings is a separate user decision. Public skill-update files need no bearer token. A working MCP connection provides document access directly; editor links returned by the agent are for the user to open independently.
 
 ## Create a key
 
-Open Signhere's settings and **Agenter** (`/settings/agents`), create a named key, select permissions and expiry, then copy it once. The full key is not displayed again. Use a separate key per agent/connection so you can revoke one without affecting the others. Keys act as their creating user in that user's team; they are not limited to a single document.
+As the user, create a named key in **Agenter** (`/settings/agents`), select permissions and expiry, then copy it once and give it to your agent for the task. New tokens default to one hour; supported lifetimes are 15 minutes to 24 hours. The key-creation endpoint accepts `expiresInMinutes` (15–1440, default 60). Use a separate token per task/agent so you can revoke one independently. Previously issued keys retain their original expiry and can be revoked from the same page. Keys act as their creating user in that user's team; they are not limited to a single document.
 
 | Permission | Grants |
 | --- | --- |
@@ -80,7 +80,7 @@ An agent write does not silently overwrite a newer editor revision. A conflict r
 
 ## REST and MCP contract
 
-Send `Authorization: Bearer YOUR_SIGNHERE_KEY` to `/api/v1` or `/mcp`. Browser cookies do not authenticate these routes. Never put keys in query strings. The workspace response contains `apiVersion`, `baseUrl`, `workspace`, `user` and `scopes`. Draft source uses schema version `2`, distinct from API `v1`, editable revision and saved version.
+Send `Authorization: Bearer YOUR_SIGNHERE_KEY` to `/api/v1` or `/mcp`. Browser cookies do not authenticate these routes. Never put keys in query strings. The workspace response contains `apiVersion`, `baseUrl`, `workspace`, `user`, `scopes` and `expiresAt`. Use that actual expiry, and request a user-supplied replacement on 401. Draft source uses schema version `2`, distinct from API `v1`, editable revision and saved version.
 
 | MCP tool | REST operation | Inputs |
 | --- | --- | --- |

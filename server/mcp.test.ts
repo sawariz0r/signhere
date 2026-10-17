@@ -137,7 +137,7 @@ test('MCP calls use real workspace services with revision conflicts, discussion,
   const post = (path: string, data: unknown) => owner.post(path).set('Origin', origin).send(data);
   const setup = await post('/api/setup', { setupToken: 'mcp-tests-installation-key-long-enough', name: 'Owner', email: 'owner@example.test', password: 'correct horse battery staple', teamName: 'MCP workspace' });
   assert.equal(setup.status, 201, setup.text);
-  const key = await post('/api/agent-keys', { name: 'Integration agent', scopes: ['drafts:read', 'drafts:write', 'discussion:read', 'discussion:write'], expiresInDays: 1 });
+  const key = await post('/api/agent-keys', { name: 'Integration agent', scopes: ['drafts:read', 'drafts:write', 'discussion:read', 'discussion:write'], expiresInMinutes: 15 });
   assert.equal(key.status, 201, key.text);
   const { client } = await connect(url, key.body.token);
   t.after(() => client.close());
@@ -147,6 +147,7 @@ test('MCP calls use real workspace services with revision conflicts, discussion,
   };
   const identity = await call('workspace');
   assert.equal(identity.data.workspace.name, 'MCP workspace');
+  assert.equal(identity.data.expiresAt, key.body.key.expiresAt);
   const draft = createDraft('mcpdraft000001', setup.body.user);
   draft.title = 'MCP service proposal';
   draft.blocks = templateBlocks('agreement');
@@ -191,6 +192,6 @@ test('MCP calls use real workspace services with revision conflicts, discussion,
   assert.equal((forbidden.structuredContent as any).error.code, 'forbidden');
   assert.equal((await post('/api/agent-keys/' + key.body.key.id + '/revoke', {})).status, 200);
   await assert.rejects(call('workspace'), /401|Unauthorized|invalid|revoked/i, 'an established client loses access immediately on key revocation');
-  clock += 366 * 86400000;
+  clock = Date.parse(readKey.body.key.expiresAt);
   await assert.rejects(read.client.callTool({ name: 'signhere_workspace', arguments: {} }), /401|Unauthorized|invalid|expired/i, 'expired keys are rejected independently of MCP sessions');
 });

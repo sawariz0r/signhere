@@ -30,6 +30,8 @@ try {
   await page.goto(baseURL + '/settings/agents');
   await expect(page.getByRole('heading', { name: 'Anslut din agent' })).toBeVisible();
   await expect(page.getByLabel('MCP-adress')).toHaveValue(baseURL + '/mcp');
+  await expect(page.getByLabel('Giltighet')).toHaveValue('60');
+  await page.getByLabel('Giltighet').selectOption('15');
   await expect(page.getByRole('checkbox', { name: /^Uppdatera delade versioner/ })).not.toBeChecked();
   await page.getByLabel('Nyckelns namn').fill('Claude för offerter');
   await page.getByRole('button', { name: 'Skapa API-nyckel', exact: true }).click();
@@ -37,6 +39,8 @@ try {
   await expect(created).toBeVisible();
   const token = await created.getByLabel('API-nyckel', { exact: true }).inputValue();
   assert.match(token, /^shk_[A-Za-z0-9_-]{43}$/);
+  const metadata = (await (await api.get(baseURL + '/api/agent-keys')).json()).keys[0];
+  assert.equal(Date.parse(metadata.expiresAt) - Date.parse(metadata.createdAt), 15 * 60000);
   await created.getByRole('button', { name: 'Kopiera nyckel', exact: true }).click();
   assert.equal(await page.evaluate(() => navigator.clipboard.readText()), token);
   await created.getByRole('button', { name: 'Jag har sparat nyckeln' }).click();
@@ -58,6 +62,7 @@ try {
   };
   const workspace = await call('signhere_workspace', {});
   assert.equal(workspace.workspace.name, 'PRPL');
+  assert.equal(workspace.expiresAt, metadata.expiresAt);
   const timestamp = new Date().toISOString(), id = randomBytes(10).toString('hex');
   const draft = {
     id, version: 2, title: 'Offert från min agent', createdAt: timestamp, updatedAt: timestamp,

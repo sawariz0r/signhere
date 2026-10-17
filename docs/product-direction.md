@@ -120,6 +120,8 @@ Confirmed direction (2026-10-16): Signhere is primarily self-hosted, so instance
 
 The connection flow is: create a named, scoped key in Signhere; configure the instance's MCP URL and key in a compatible agent host; then load the Signhere skill. Signhere issues and validates its own keys. No Anthropic or OpenAI API key is required by Signhere for this workflow.
 
+Clarification (2026-10-17): the user supplies a short-lived API token to the agent. The MCP skill covers only token authentication and document operations. Agents never log into the website with email/password or browser cookies, recover accounts, create/refresh tokens or extend their lifetime. Missing/expired tokens require a replacement supplied by the user. New tokens default to one hour with a 15-minute to 24-hour range; existing issued keys retain their original expiry until revoked or expired.
+
 ### API and MCP
 
 The versioned authenticated application API at `/api/v1` and remote MCP adapter at `/mcp` now use the same document services. The current cookie-authenticated editor API and private recipient capabilities remain intact. Release validation is recorded below.

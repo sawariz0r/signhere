@@ -19,7 +19,7 @@ export function AgentSettings() {
   const [data, setData] = useState<KeyList | null>(null);
   const [created, setCreated] = useState<CreatedKey | null>(null);
   const [name, setName] = useState('');
-  const [days, setDays] = useState('90');
+  const [minutes, setMinutes] = useState('60');
   const [scopes, setScopes] = useState<Scope[]>(['drafts:read', 'drafts:write', 'discussion:read', 'discussion:write']);
   const [busy, setBusy] = useState('');
   const [error, setError] = useState('');
@@ -33,7 +33,7 @@ export function AgentSettings() {
   const create = async (event: FormEvent) => {
     event.preventDefault(); setBusy('create'); setError('');
     try {
-      const result = await request<CreatedKey>('/api/agent-keys', { name: name.trim(), scopes, expiresInDays: Number(days) });
+      const result = await request<CreatedKey>('/api/agent-keys', { name: name.trim(), scopes, expiresInMinutes: Number(minutes) });
       setCreated(result); setName('');
       setData(previous => previous ? { ...previous, keys: [result.key, ...previous.keys] } : previous);
     } catch (error) { setError(message(error)); } finally { setBusy(''); }
@@ -48,7 +48,7 @@ export function AgentSettings() {
     } catch (error) { setError(message(error)); } finally { setBusy(''); }
   };
   return <div className="agent-settings stack">{toast}
-    <div><h2>Anslut din agent</h2><p className="settings-help">Låt Claude, Codex eller en annan MCP-klient arbeta med dina dokument. Skapa en personlig API-nyckel och anslut den till denna instans.</p></div>
+    <div><h2>Anslut din agent</h2><p className="settings-help">Skapa en kortlivad API-nyckel och ge den till din agent för uppgiften. Agenten använder nyckeln för MCP-anrop.</p></div>
     <ErrorBox error={error} />
     {!data && !error && <Loading />}
     {data && <>
@@ -60,7 +60,7 @@ export function AgentSettings() {
           <p><strong>Claude:</strong> Öppna Anpassa → Anslutningar och lägg till en egen anslutning med MCP-adressen ovan. Välj ingen inloggning och lägg till request-headern <code>Authorization</code> med värdet <code>Bearer DIN_API_NYCKEL</code>.</p>
           <p><strong>Claude Code:</strong> Lägg till en HTTP-server med adressen ovan och en <code>Authorization: Bearer …</code>-header. Förvara nyckeln i klientens privata konfiguration.</p>
           <p><strong>Codex:</strong> Lägg till adressen som en MCP-server och ange namnet på en miljövariabel med din nyckel i <code>bearer_token_env_var</code>.</p>
-          <p className="settings-help">OAuth behövs inte. En nyckel i chattmeddelandet ansluter inte verktygen; konfigurera anslutningen i din agent först. I Claude Team och Enterprise delas en anslutnings fasta nyckel av dem som använder anslutningen.</p>
+          <p className="settings-help">Agenten använder bara API-nyckeln, aldrig ditt lösenord eller en webbläsarinloggning. När nyckeln löper ut ger du agenten en ny. Konfigurera MCP-anslutningen i klienten; en nyckel i ett chattmeddelande lägger inte till verktygen automatiskt. I Claude Team och Enterprise delas en anslutnings fasta nyckel av dem som använder anslutningen.</p>
         </div></details>
       </section>
       {created ? <section className="card settings-card agent-created" aria-label="Din nya API-nyckel" role="region">
@@ -71,7 +71,7 @@ export function AgentSettings() {
         <div className="actions end"><button className="button secondary small" type="button" onClick={() => setCreated(null)}>Jag har sparat nyckeln</button></div>
       </section> : <section className="card settings-card"><h2>Skapa API-nyckel</h2>
         <form onSubmit={event => void create(event)} className="stack">
-          <div className="agent-form-row"><Field label="Nyckelns namn" placeholder="t.ex. Claude på min dator" value={name} onChange={event => setName(event.target.value)} required maxLength={80} disabled={Boolean(busy)} /><label className="field"><span>Giltighet</span><select value={days} onChange={event => setDays(event.target.value)} disabled={Boolean(busy)}><option value="30">30 dagar</option><option value="90">90 dagar</option><option value="365">1 år</option></select></label></div>
+          <div className="agent-form-row"><Field label="Nyckelns namn" placeholder="t.ex. Offertutkast med Claude" value={name} onChange={event => setName(event.target.value)} required maxLength={80} disabled={Boolean(busy)} /><label className="field"><span>Giltighet</span><select value={minutes} onChange={event => setMinutes(event.target.value)} disabled={Boolean(busy)}><option value="15">15 minuter</option><option value="60">1 timme</option><option value="240">4 timmar</option><option value="1440">24 timmar</option></select></label></div>
           <fieldset className="agent-permissions"><legend>Vad får agenten göra?</legend>{permissions.filter(item => data.scopes.includes(item.scope)).map(item => <label className="checkbox" key={item.scope}><input type="checkbox" checked={scopes.includes(item.scope)} disabled={Boolean(busy)} onChange={event => setScopes(previous => event.target.checked ? [...previous, item.scope] : previous.filter(scope => scope !== item.scope))} /><span><strong>{item.title}</strong><span>{item.description}</span></span></label>)}</fieldset>
           <div className="actions end"><button className="button" disabled={Boolean(busy) || !name.trim() || !scopes.length}>{busy === 'create' ? 'Skapar…' : 'Skapa API-nyckel'}</button></div>
         </form>
