@@ -1,7 +1,9 @@
 # CEN-012: Adversarial review and phased release gates
 
+> Historical task, superseded for launch on 2026-10-17. Its scope and dependencies are not active MVP requirements. Read the [current plan](../../central-service-plan.md) and [CEN-016–022](README.md); this file is retained for future research only.
+
 - ID: CEN-012
-- Status: Backlog
+- Status: Historical / deferred
 - Priority: P0
 - Milestone: Production release
 - Owner: Security reviewer and release owner (unassigned)

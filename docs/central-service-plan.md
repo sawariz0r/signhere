@@ -1,139 +1,141 @@
-# signhere.se central service: proposed architecture and delivery plan
+# Central trust platform: simple connection and digest-only receipts
 
-Status: planning only. Updated: 2026-09-25. No service, deployment, signing method or retention promise is introduced by this document.
+Status: proposed implementation plan, 2026-10-17. Documentation only; no service, payment, deployment or new signing assurance exists yet. This is the current scope for draft PR #12. The [earlier extended design](central-service-extended-design.md) and CEN-001–015 are historical research, not launch requirements. Start implementation from [CEN-016–022](backlog/signhere-central/README.md).
 
-Start with the [delivery backlog](backlog/signhere-central/README.md). The [Fable review](reviews/2026-09-24-fable-non-bankid-trust.md) and [assessment](reviews/2026-09-24-fable-trust-dispositions.md) explain the decisions; the assessment qualifies its claims about passkeys, deceptive viewers, certificate expiry and stateless receipts.
+## Product decision
 
-## Outcome and scope
+Install Signhere, choose **Använd centrala tillitsplattformen**, and receive 14 days free. No account, card, certificate purchase, inbound network access or pasted API key. After the trial, the owner can sign up and buy a small yearly plan or a lifetime plan. Self-hosted signing remains available without central registration. Checking previously issued receipts never requires payment.
 
-People holding a Signhere document should be able to check its supported cryptographic evidence without the original installation. Operators can optionally add independent time evidence. People without BankID can optionally approve the exact document through a service independent of the hosting operator, while keeping PDF content out of the central server.
+The first release records the SHA-256 fingerprint of an exact completed PDF and returns a portable central signature over that record. The backend receives no PDF, title, filename, document ID, parties, addresses, drawings, consent, prepared-file hash or audit evidence. Billing contact information has a separate purpose and never enters document receipts.
 
-| Capability | Central role and supported claim | Boundary |
+Suggested owner copy:
+
+> Gör det möjligt att kontrollera dokumentets fingeravtryck även om din instans stängs. Vi sparar bara fingeravtrycket och ett verifieringskvitto – aldrig dokumentet eller uppgifter om parterna. Prova gratis i 14 dagar, utan konto eller kort. Därefter väljer du årsbetalning eller engångsbetalning. Tidigare kvitton kan fortsätta verifieras utan kostnad.
+
+Explain in a short expandable detail that network metadata is processed and that registering a fingerprint does not verify people's identity or consent. Final Swedish copy needs UX review.
+
+## Supported trust claim
+
+| Result | Supported statement |
+| --- | --- |
+| Central record matches | This exact file fingerprint was registered by an enrolled installation at the service's recorded time. |
+| Portable receipt signature matches | A trusted central receipt key signed the receipt covering this file's SHA-256. Online lookup is unnecessary. |
+| Local seal/evidence checks pass | The separate existing verifier reports supported PDF integrity/evidence and issuer trust results. |
+| No central record | No record was found; this does not establish forgery or invalidate local signing. |
+| Central unavailable | Online status is unavailable; a retained receipt can still be checked offline. |
+
+A blind digest service cannot inspect a PDF, establish completion, validate its seal, witness consent, establish civil/organisation identity or prevent a hostile operator registering invented records. Enrollment proves possession of an installation credential. Do not present a universal green “valid signature” badge. Registration time is durable first central admission of this hash, not human signing time; later receipt signing/delivery preserves that recorded time. No RFC 3161, Adobe/OS certificate trust, qualified signature, independent approval or non-equivocation claim.
+
+The approved-A/completed-B attack in the earlier plan remains relevant: receipt(B) registers B; it never proves anyone approved B or its visible pages equal A. Keep registration, local cryptographic integrity, issuer trust, identity and approval separate in verifier output.
+
+## One-click connection
+
+1. The instance owner enables the feature in **Inställningar → Instans**, also offered during setup, default off. The browser calls its own server. Protect owner mutations with session authorization, origin and CSRF checks.
+2. The server generates a dedicated Ed25519 connection key in the private key volume, separate from the PDF seal key. PostgreSQL retains its public thumbprint, central installation ID and service identity. Include both key and state in coherent backup/restore.
+3. Obtain a five-minute central enrollment challenge, sign it, and enroll idempotently by public-key thumbprint. The central clock records `trialStartedAt` on first successful enrollment and `trialEndsAt = start + 14 × 24 hours`. Retries and same-key restores return original dates. The button states that enabling starts the trial, even before the first document.
+4. Authenticate operations with a maintained HTTP Message Signatures implementation (RFC 9421) over HTTPS. Bind method, authority/path, content type/digest, key ID, fresh authentication nonce and creation/expiry times. Proposed validity: five minutes and maximum two minutes clock skew; nonce retention ten minutes. Keep business idempotency IDs separate from authentication nonces; each retry signs a fresh request. CEN-016 supplies exact covered-component rules and vectors.
+5. Only outbound HTTPS is needed. No central fetch of the instance, domain ownership check, webhook callback or arbitrary URL supplied by a PDF. Private/NAT installations work.
+
+Use single-use challenges, body-bound business request IDs and bounded replay state. A clock error never resets the trial. PDF seal rotation does not change enrollment. Connection-key rotation requires proof from old and new keys, preserving plan and key history. Paid-account recovery replaces a lost key and disables the old credential without rewriting receipts. Anonymous lost-key continuity cannot be proven: disclose new enrollment and abuse limits. Clones sharing a key share the same trial/quota. One plan covers one logical installation, including recovery, rather than arbitrary fleets.
+
+## Minimal wire contract and stored data
+
+These are proposed contracts for CEN-016, not implemented endpoints. Reject unknown fields, duplicate JSON keys, unsupported versions, wrong content type and oversized/malformed inputs. Proposed request cap: 8 KiB.
+
+| Operation | Allowed data and result |
+| --- | --- |
+| `POST /v1/enrollment-challenges` | Public key → random challenge and expiry; no email/instance URL. |
+| `POST /v1/installations` | Public key and signed challenge → installation ID, original trial dates, entitlement. |
+| `POST /v1/records` | Authenticated payload exactly `{schema: "signhere-register-v1", sha256: <64 lowercase hex>}` → immutable signed receipt. Request ID is random and unrelated to local document IDs. |
+| `POST /v1/lookup` | Exactly one SHA-256 → one retained receipt or `not_found`; public, no account or file. |
+| `GET /v1/entitlement` | Instance authentication → server-derived state/dates. |
+| Key rotation / billing linking | Separate authenticated control operations specified in CEN-017/021; no document fields. |
+| Public trust material | Release-root-authenticated current/historical receipt keys, stable service identity and incident status. |
+
+Receipt: protected JWS header with fixed `alg`, `kid`, `typ`; payload exactly `schema`, stable `serviceId`, random `receiptId`, `sha256` and server `registeredAt`. No installation identifier, PDF certificate, document context, billing data or subscription expiry. Default proposal is Ed25519/EdDSA for compact receipts; CEN-016 must prove browser/server/offline compatibility before freezing it. ES256 is the alternative if custody or supported clients require it. Never negotiate algorithms from an untrusted artifact.
+
+Central tables:
+
+| Table | Minimum fields |
+| --- | --- |
+| `installations`, `connection_keys` | Random IDs, public keys/thumbprints, original trial dates, key status/history, optional opaque billing-account relation. |
+| `records` | Unique SHA-256, receipt ID, central time, signing-key ID, exact immutable signed receipt. No permanent submitter/account relation. |
+| `submission_operations` | Temporary installation/request-ID relation, hash, central admission state/time and result reference; purge terminal operations within 30 days; retain unresolved admitted work until recovered. |
+| `request_replays`, `enrollment_challenges` | Expiring random IDs, request digest/result relation, challenge/expiry; no document context. |
+| `entitlements` | Installation/account relation, yearly/lifetime type, effective dates, payment references, suspension. |
+| Billing state | Customer contact/processor IDs, purchase terms/version, deduplicated events; separate access from public records. No hashes, receipt IDs or document counts in processor metadata. |
+
+Deduplicate globally by SHA-256 and return the original signed receipt/time, including after expiry or submission from another installation. Public exact-hash lookup reveals no submitter or document list. The receipt records first central observation, never unique ownership or a fresh time for a later submission. A known hash reveals membership; hashes and temporary submission metadata are not anonymous. POST bodies keep digests out of ordinary URL logs. Strict schemas cannot stop a malicious caller encoding arbitrary bits into a purported hash; supported clients send only genuine digests and rejected payloads are never persisted.
+
+No document parser/upload handler in the central backend. No PDFs in storage, backups, queues, diagnostics, analytics, support tools or mail. Disable body capture throughout proxy, app, tracing, error reporting and provider defaults. Process network metadata minimally: propose ten-minute nonce retention and challenge cleanup within one hour, rotating keyed IP-abuse buckets up to 24 hours, scrubbed error codes seven days and encrypted rolling backups 30 days. No raw persistent access logs on sensitive routes. Final region/provider and billing retention obligations are launch decisions, not legal retention claims.
+
+Issued records remain available independently of subscription while the service operates. Publish deletion, backup-aging and shutdown terms; keep offline proof exports available. Account deletion does not silently imply removal of historical proof; choose and disclose that policy before real customers.
+
+## Integration with completion
+
+Keep the final PDF byte-for-byte. Its own whole-file hash and receipt cannot be embedded in the same final file without circularity or a new signature revision. Deliver `trust-receipt.jws` beside the PDF and in a portable package.
+
+Apply the MVP to newly created evidence-v2 documents, including each bilaga independently; no automatic legacy/history backfill. Capture opt-in for each new transaction. Later settings affect future transactions and never rewrite completed artifacts. MVP registration is additive; it does not promise “required central proof before completion.” Existing required timestamp policy remains separate and fails closed as designed.
+
+Use the transactional publication hook in `server/finalization.ts` to enqueue one local `trust_registrations` row alongside completed bytes/hash and completion event. Compose with the existing email enqueue hook. Store local document ID, frozen hash, destination/service identity, stable request ID, state/lease/generation, attempts, next retry and safe error code. No network call inside document transactions or PDF/key workers.
+
+A PostgreSQL-leased worker registers the frozen completed hash after publication. Validate receipt signature, trusted key, service identity and exact hash before storing exact receipt bytes. Fence stale workers. Retry transient errors with bounded exponential backoff/jitter and `Retry-After`; proposed range five seconds to one hour for up to 48 hours, then visible owner-action state. No silently abandoned work. `payment_required` pauses until purchase, retaining queued work and existing receipts. A receipt already present is always freely retrievable. New work durably admitted centrally before expiry completes under that admission even if signing happens later; new, unadmitted hashes require current entitlement. Admission and deduplication are atomic and recoverable after crashes. Late registration uses actual central acceptance time, never backdated document time.
+
+Display document completion separately from central states: `pending`, `registered`, `retrying`, `payment_required`, `action_required`, `disabled`. Only a verified receipt enables `registered`. Turning the connection off stops further sends and retains proofs; the owner can explicitly resume eligible queued work. Central outage must not turn local success into a false central-success badge.
+
+Extend `server/verification-package.ts` with the receipt and instructions. Give recipients a narrowly scoped receipt/proof download through existing document access, without the private audit core or other parties' details. Immediate PDF delivery must not wait for central registration. A separate follow-up receipt or later proof download resolves that race; it never changes the emailed PDF. CEN-019 must choose one clear default and test pending/ready delivery.
+
+## Verification
+
+Use a dedicated trust origin without marketing scripts. Selecting a PDF hashes its bytes locally. An explicit “Kontrollera fingeravtryck” action sends only that digest to public lookup. No automatic upload, filename telemetry, remote PDF viewer, error attachment, certificate-directed fetch or third-party script. Restrictive CSP, no account required.
+
+Online verification checks the returned receipt signature against independently trusted central keys and reports exact-file registration/time. Full browser-local CMS/PDF validation needs a separate library/profile spike and is deferred. The existing offline seal/evidence verifier remains a separate cryptographic path; a database hash match cannot stand in for it.
+
+Portable verification takes PDF plus receipt, hashes locally and verifies against installed trusted keys, without lookup. The CLI supports receipt checking without a private evidence package and optionally combines it with existing seal/evidence results. Receipt verification and authenticated historical public-key distribution ship together. Distribute authenticated verifier releases separately; software bundled by an untrusted sender is not itself trustworthy.
+
+Bootstrap from a shipped release root/manifest, never a receipt-supplied key or arbitrary `jku` URL. Keep historical keys, rotation proofs and incident cutoffs. A stable service ID is independent of TLD and endpoint configuration; a domain move must not invalidate receipts or silently replace authority. Central compromise can produce false receipts/time, and offline checks cannot discover new incidents without fresh status. A compromised key can sign a falsely old time; a receipt’s own date does not prove it predates compromise. Report historical uncertainty unless independent evidence establishes the cutoff. Describe this residual trust; no independent timestamp, permanent availability or transparency guarantee.
+
+## Trial and payment lifecycle
+
+| State | New registrations | Historical checks |
 | --- | --- | --- |
-| Local verification | Distribute a browser/offline verifier and authenticated trust material; check supported artifact integrity/evidence | No enrollment required for integrity; unknown issuer stays unknown |
-| Independent timestamp | Forward a bounded signature imprint to an approved RFC 3161 authority; establish existence by a trusted time | Does not establish who consented or the truth of audit events |
-| Independent approval | Confirm email access and explicit approval through a separate interface; sign a portable receipt | Email control is not civil identity; trust shifts to the confirmation service, its code and the participant's device/mailbox |
+| Disabled | None | Free |
+| Trial before central `trialEndsAt` | Allowed within published quota | Free |
+| Trial expired / unpaid | Pause; prompt owner to sign up | Free |
+| Yearly before `paidUntil` | Allowed | Free |
+| Lifetime | Allowed under purchased one-installation terms | Free |
+| Yearly cancelled | Allowed until paid-through date, then paused | Free |
+| Refund/chargeback/abuse suspension | Defined billing policy controls future issuance | Existing proofs stay intact; security incidents reported separately |
 
-Self-hosted operation stays available without central enrollment. Central protections are opt-in for new transactions and frozen before invitations. Required protections cannot silently downgrade during an outage. Local-only transactions remain supported.
+Trial boundary is durable central admission time, not local clock or enqueue time. No card, mandatory signup, automatic charge or silent renewal for the trial. Show dates immediately and prompt the owner near/after expiry. Signers never see payment demands. No anonymous-trial reminder emails.
 
-The service does not store customer PDFs, drawings or full private audit bundles. It is not a document archive, public document directory, BankID substitute, qualified-signature service or automatic compliance certification. Passkeys, issuer recognition and archival renewal are separate later tasks.
+Recommend one year prepaid with explicit renewal, plus one-time lifetime purchase. If auto-renewal is later selected, obtain checkout consent. One logical installation, with recovery/transfer rules; no per-signer fee. Actual small yearly/lifetime amounts remain the owner's pricing decision. Buying during the trial preserves its remaining time; yearly access extends from the later of payment, trial end or current paid-through date. CEN-021 defines a calendar anniversary/leap-day rule before implementation.
 
-## Current starting point
+The authenticated owner creates a short-lived billing-link session bound to that instance and one-time state. Open central signup/hosted checkout; poll entitlement outbound. A browser redirect never grants a paid plan. Verified, deduplicated processor webhooks or server reconciliation update entitlements from authoritative payment state. Out-of-order events cannot extend access twice or resurrect a refunded purchase; lost local responses recover on refresh. No card data in Signhere. Central account authentication must not grant document access on the self-hosted instance.
 
-Evidence-v2 documents have an installation seal and commitments to the prepared PDF and private evidence core. A Node/Python offline verifier checks these bindings. Public `/verify` only hashes locally and queries the instance database. Full evidence is team-only; recipients receive the completed PDF. Central approval, browser-local cryptographic verification and trusted timestamping are not implemented.
+Before sale, define “lifetime” plainly: proposed meaning is use of this hosted service for its operating lifetime, for one installation, with no renewal fee. No perpetual infrastructure promise. Choose sustainable quotas, price, replacement/transfer, refund and service-exit terms. Receipt payloads have no subscription-expiry field.
 
-Keep evidence-v1 artifacts explicitly legacy/unsealed. Do not rewrite historical artifacts, imply a later timestamp is the original signing time, or strand pending transactions using old policies. References: [security boundaries](signing-security.md), [timestamp spike](rfc3161-feasibility.md), [integration boundaries](signing-methods.md).
+Anonymous trials cannot be made one-per-human with this setup. Rate-limit enrollment/issuance, publish per-instance quotas, and accept bounded repeat-trial abuse initially. No hidden device fingerprinting or mandatory email to pretend Sybil abuse is solved. Costed launch limits and paid limits are implementation gates; capacity does not change assurance.
 
-## Components and deployment boundaries
+## Deployment and delivery
 
-Deploy the central service separately from self-hosted instances. Reusing TypeScript/Node and PostgreSQL is the planning preference, subject to CEN-002. Browser PDF/CMS validation requires an interoperability and hostile-input spike; existing Python code cannot simply be imported into the browser.
+Prefer a separate TypeScript/Express service plus PostgreSQL, one supervised PostgreSQL worker loop and a static verifier. Reuse maintained validation/crypto libraries, not the document database or private handlers. No Redis, object storage, blockchain, transparency log, remote PDF parser or PDF-key upload is required. Separate billing/admin privileges and trust-origin frontend code. Receipt keys live outside the database; use secure key backup, an offline release trust root, rotation and incident procedures. Choose the custody/hosting product before production.
 
-Proposed entry points: `signhere.se/verifiera` and `signhere.se/bekrafta`. Prefer a dedicated trust origin, e.g. `verify.signhere.se`, with the entry points redirecting there. Marketing scripts, administration, cookies, service workers and user-generated content must not share its authority. Final DNS/provider choices remain open; this PR deploys nothing.
+Implement seven reviewable changes in [CEN-016–022](backlog/signhere-central/README.md): protocol/vectors; service/enrollment; local outbox; verifier/exports; onboarding; billing; operational/adversarial release evidence. These are planned changes, not features delivered by this PR. Zero central credentials must remain a supported self-hosted setup.
 
-| Component | Responsibility and constraint |
-| --- | --- |
-| Trust web application | Local PDF display/hashing, explicit consent and verification; the same byte buffer feeds display and digest; no PDF upload or automatic artifact lookup |
-| API and state store | Scoped instance admission, challenges, replay/idempotency and bounded receipt retrieval; an operator cannot assert its own independent confirmation succeeded |
-| Email worker | Central challenges and bounded delivery retries; mail provider sees necessary addresses/message data, never PDFs or private audit evidence |
-| Receipt signing service | Sign versioned approval assertions after verified approval; keys isolated from parsing, ordinary request handlers and customer instances |
-| Timestamp gateway | Bounded allowlisted TSA requests; imprint/protocol data only; no arbitrary URLs or certificate-directed fetches |
-| Trust distribution | Authenticated current/historical public keys and incident status; a supplied certificate is not its own trust anchor |
-| Offline verifier distribution | Authenticated releases, documented dependencies and retained trust material for shutdown resilience |
-| Operations/admin plane | Quotas, providers, incidents and retention; separate access boundary; no signing keys in repository, logs, images or database dumps |
+Release evidence must cover all privacy boundaries, arbitrary hostile-instance registration with honest labels, receipt substitution/tampering, lost responses/replay/concurrency, trial/payment races, restore/rotation, verification after expiry/local shutdown, outages and central database/key recovery. No implementation tests are claimed by this documentation PR.
 
-## Independent approval flow
+## Decisions before launch
 
-1. The instance freezes the prepared PDF, participant intent, exact consent and protection policy. It requests a session with scoped credentials and minimal metadata. API admission does not establish company identity.
-2. The participant enters the independent trust application in a top-level browsing context. It obtains the exact prepared PDF directly into browser memory from the instance or a locally selected file. The central backend never fetches/proxies it. CEN-003/CEN-005 specify CORS, private-network installations, capability transfer and local-file fallback.
-3. Independent code renders and hashes the same bytes, checks the frozen context, and displays the exact consent. A fingerprint merely printed by the self-hosted page is not evidence of matching viewed bytes.
-4. The service independently confirms access to the intended email address. Email scanners, forwarded links, compromised/shared mailboxes and address changes are explicit risks. Opening a link is not approval; contact verification and document consent are separate state transitions.
-5. The service atomically consumes an approval challenge and issues a receipt binding the verified address, instance/document/revision/participant, prepared hash, intent/consent, nonce, method/policy versions and observed time. Operator-supplied callback flags cannot replace these checks.
-6. The participant receives the signed receipt directly. The instance retrieves that same receipt through scoped authenticated delivery, checks the frozen transaction, and retains exact bytes before sealing. Legitimate retries return the same result.
-7. Final publication binds the receipt through the agreed evidence/PDF profile. Required receipts/timestamps must validate before completion. Participants obtain completed PDFs and appropriate proof packages without a team account.
-8. Later verification checks receipt signature/trust, prepared-byte binding, final seal and required inclusion proof. Missing evidence and unchecked historical status remain explicit.
+- Domain/TLD, dedicated origin, EU hosting provider/region, key custody, service owner and recovery targets. Availability has not been checked; no domain is purchased here.
+- Actual yearly/lifetime prices, sustainable quotas and precise lifetime/transfer/refund/retention terms.
+- Strict wire formats, algorithm interoperability, idempotency/replay retention, public lookup bounds and incident behavior (CEN-016).
+- Receipt delivery/download UX and working browser/network privacy evidence (CEN-019/020).
 
-[CEN-001](backlog/signhere-central/CEN-001-protocol-and-threat-model.md) owns normative formats and vectors. Use standard envelopes and maintained implementations with exact signed-byte rules and domain separation. Do not concatenate ambiguous strings or invent cryptographic primitives.
+Browser CMS validation, RFC 3161 timestamps, independent participant approval and organisation recognition each need a separate proposal. They do not block this narrower registration feature and cannot silently add document metadata to its API.
 
-Receipts bind prepared bytes, not a final file hash that does not exist until receipts/appendices are assembled. Define how a receipt links to the final artifact. Redacting private evidence JSON cannot preserve its original full-evidence digest.
+## References and review
 
-## Approved original versus completed PDF
+The [architecture](architecture.md), [local seal design](sealing-plan.md), [timestamp feasibility](rfc3161-feasibility.md) and [extended research](central-service-extended-design.md) explain existing boundaries. Standard-envelope references: [JWS, RFC 7515](https://www.rfc-editor.org/rfc/rfc7515) and [Ed25519 in JOSE, RFC 8037](https://www.rfc-editor.org/rfc/rfc8037), and [HTTP Message Signatures, RFC 9421](https://www.rfc-editor.org/rfc/rfc9421). [RFC 3161](https://www.rfc-editor.org/rfc/rfc3161) describes the separate timestamp protocol, not this receipt service.
 
-A final seal containing hash(A) and a valid receipt for A does not prove its visible pages are A. A dishonest operator could seal document B while including correct commitments and receipts for A. Receipt inclusion proves inclusion, not content equivalence.
-
-CEN-001 must specify an independently checkable relationship between approved prepared bytes and completed content within a supported profile. Do not assume that preserving a prefix, embedding an original, or comparing a server-supplied hash establishes identical display. Preserve the exact approved original in participant exports. If the verifier cannot establish the completed-content relationship safely, it must report approval of the preserved original separately and mark completed content as unverified for that approval. It must never report that B was approved merely because its manifest claims hash(A).
-
-CEN-005/CEN-008/CEN-009/CEN-012 must include an adversarial fixture with approved A, completed visible B, valid seal, valid receipt(A), and otherwise matching metadata. General renderer equivalence is not presumed solved by this plan.
-
-Likewise, a malicious operator can reseal a different claim about which protections were requested. Detecting a downgrade requires independently retained expected policy/context or a signed central receipt. Without that anchor, report missing independent evidence rather than inventing the original requested policy.
-
-## Proposed API responsibilities
-
-These are operations for CEN-001 to specify, not implemented endpoints or a frozen wire contract.
-
-| Operation | Caller and required behaviour |
-| --- | --- |
-| Create approval session | Scoped instance; freeze minimal context, cap inputs, return opaque capability idempotently, reject cross-instance reuse |
-| Start/complete email confirmation | Participant on independent origin; bounded attempts/validity, origin/session binding, no approval on GET or email prefetch |
-| Approve document | Independent participant session; check document commitment/consent, atomic one-time transition |
-| Retrieve receipt / notification | Scoped instance or participant capability; immutable exact response, bounded retrieval, authenticated/idempotent delivery |
-| Request timestamp | Scoped instance; enforce allowed provider/policy, budgets and bounds, verify response |
-| Obtain public trust material | Public verifier/offline package; versioned historical keys/status with independently authenticated bootstrap |
-
-Prefer authenticated polling for initial receipt delivery unless CEN-001 justifies webhooks. Any webhook design must constrain destinations, address resolution, credentials, replay, redirects, retries and signatures. Do not create a general central URL fetcher.
-
-## Data and retention boundaries
-
-| Data | Location and rule |
-| --- | --- |
-| PDF bytes/drawings | Instance and participant browser/copies; never central requests, logs, backups, crash reports or email delivery |
-| Full audit/IP/user-agent history | Instance/private authorised exports; not sent for central verification, timestamping or approval |
-| Email and confirmation state | Central API/mail provider; necessary for confirmation, scoped access and explicitly chosen deletion policy |
-| Intent/document/consent commitments and receipts | Transient workflow and participant/instance copies; linkable metadata, bounded retrieval/state, no public registry |
-| Timestamp requests/responses | Instance, gateway, TSA and artifacts; content-free but traffic/usage metadata remains observable |
-| Public trust keys/status | Public distribution/offline copies; preserve necessary history separately from participant data |
-| Access/security/support/delivery diagnostics | Relevant infrastructure/provider; redaction, TTLs, backup aging and access controls decided before release |
-
-CEN-010 must choose concrete purpose-based retention periods and provider obligations before processing real personal data. Do not invent a universal legal retention period. Challenge/download expiry does not delete the instance's document or invalidate preserved proof. Backups/restoration must respect deletion policy.
-
-Short-lived challenge/replay state is required without a permanent document registry. A stateless receipt does not discover conflicting versions, supply complete history or recover lost evidence. Additional retained records need a separate justified scope/privacy decision.
-
-## Verification results and user copy
-
-Show separate results for cryptographic integrity, issuer recognition, timestamp verification, participant authentication/approval and evidence completeness. Unknown, unsupported, absent, unchecked, expired access and invalid are different. Do not combine them into a green "verified" badge.
-
-Suggested controls, subject to UX/privacy review:
-
-- **Lägg till oberoende tidsstämpel via signhere.se**: sends a signature imprint and connection metadata, not document content.
-- **Bekräfta signering via signhere.se**: independently confirms email access and explicit approval; discloses the address and minimal metadata while keeping the PDF in the browser.
-
-Passkey use is not verified civil identity; domain control is not verified company identity. Local drawn signatures retain their honest assurance labels when central features are disabled or absent.
-
-## Failure, compromise and shutdown
-
-Handle duplicate/concurrent requests, delayed email, expired sessions, interrupted receipt delivery, unavailable TSA and key rotation without changing accepted approvals or silently changing policy. Required failures leave visible pending/error states and documented recovery. Local-only transactions stay independent.
-
-Separate installation, receipt and timestamp authorities. Record incident cutoffs and historical uncertainty without declaring all old artifacts invalid merely because a key expired or rotated. A compromised central frontend can mislead users; independently authenticated offline releases reduce dependence but do not eliminate trust.
-
-The exit plan must enable evidence/verifier/trust-material exports, describe which capabilities stop, and preserve public historical verification material as appropriate. This is not contract backup. Offline checks cannot recover missing PDFs/receipts.
-
-## Delivery sequence and release claims
-
-| Milestone | Work | Gate |
-| --- | --- | --- |
-| Foundation | CEN-001, CEN-002, CEN-006, CEN-010 | Threat model, protocol/vectors, scoped runtime, key/trust and data lifecycle resolved |
-| Portable verification beta | CEN-007, CEN-008 and timestamp slice of CEN-005 | CEN-011/CEN-012 gates for enabled components; advertise integrity/time only |
-| Independent approval beta | CEN-003, CEN-004, CEN-005, CEN-009 | Trusted interface, confirmation, receipts and participant exports proven end-to-end |
-| Production operations/release | CEN-011, CEN-012 | Privacy, recovery/shutdown, key incident, abuse and adversarial gates passed for enabled capabilities |
-| Later capabilities | CEN-013, CEN-014, CEN-015 | Separately reviewed enrollment, identity and preservation claims |
-
-Work can run in parallel after task prerequisites. Release gates do not prevent starting the work they assess. Verification-only beta must not imply independent participant approval; approval cannot ship without its receipt/export path.
-
-## Decisions still to make
-
-- Service origins, hosting region/provider, operational ownership, load assumptions, budgets and recovery objectives.
-- Receipt/enrollment format, maintained browser validation engine, proof inclusion and compatibility transitions.
-- Admission/quotas, email provider, challenge/retrieval/log/backup retention periods.
-- TSA provider, accepted policies/trust roots, outages, cost controls and historical-status availability.
-- Key-custody products, public trust distribution, incident handling and deployment-specific legal/provider review.
-
-Every decision has an owning backlog task and must be closed before its release criteria pass. This PR does not buy services, create secrets, deploy infrastructure or claim future checks have passed.
+The requested [Fable 5.1 and OpenAI Astra consultations and assessed corrections](reviews/2026-10-17-central-trust-dispositions.md) informed this plan. Both read source and the earlier PR snapshot; they did not approve this final synthesized revision or certify an implementation.

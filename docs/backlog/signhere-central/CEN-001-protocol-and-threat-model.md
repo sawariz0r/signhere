@@ -1,7 +1,9 @@
 # CEN-001: Define the central protocol and threat model
 
+> Historical task, superseded for launch on 2026-10-17. Its scope and dependencies are not active MVP requirements. Read the [current plan](../../central-service-plan.md) and [CEN-016–022](README.md); this file is retained for future research only.
+
 - ID: CEN-001
-- Status: Backlog
+- Status: Historical / deferred
 - Priority: P0
 - Milestone: Foundation
 - Owner: Security and protocol engineering (unassigned)

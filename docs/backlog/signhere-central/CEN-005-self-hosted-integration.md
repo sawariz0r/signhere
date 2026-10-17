@@ -1,7 +1,9 @@
 # CEN-005: Self-hosted integration and frozen protection policy
 
+> Historical task, superseded for launch on 2026-10-17. Its scope and dependencies are not active MVP requirements. Read the [current plan](../../central-service-plan.md) and [CEN-016–022](README.md); this file is retained for future research only.
+
 - ID: CEN-005
-- Status: Backlog
+- Status: Historical / deferred
 - Priority: P0
 - Milestone: Portable verification beta (timestamp slice); Independent approval beta
 - Owner: Self-hosted application/backend engineering (unassigned)

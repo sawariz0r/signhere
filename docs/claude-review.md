@@ -83,3 +83,7 @@ At the user's request, Claude CLI ran a brief-only design review with the exact 
 The [full response and review scope](reviews/2026-09-24-fable-non-bankid-trust.md) are preserved alongside [assessed recommendations and corrections](reviews/2026-09-24-fable-trust-dispositions.md). In particular, self-hosted passkey enrollment and deterministic challenges do not alone defeat a dishonest operator or viewer; historical timestamp validity is not automatically lost on certificate expiry. The recommended next design is optional independent, document-bound approval with portable participant receipts.
 
 Claude received the prepared architecture brief only. It did not inspect source, browse, or execute tests. This consultation changed documentation only and is not a security audit, legal certification, or implemented feature.
+
+## 2026-10-17: current central-service scope
+
+The earlier independent email-approval recommendation is deferred. The [current digest-only plan](central-service-plan.md) prioritizes one-click instance enrollment, a 14-day trial and portable central hash-registration receipts. It excludes signer/contact/context processing centrally; it does not claim independent consent, organisation identity or trusted signing time.
