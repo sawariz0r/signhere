@@ -62,6 +62,40 @@ Keep assurance explicit. Avoid a generic `verified: true` field that conflates l
 
 BankID signing should use the signing operation and preserve what the user was shown together with the exact bound non-visible data. Bind the return flow to the originating attempt and verify the final order server-side. Client credentials and provider response validation belong on the backend. [BankID sign API](https://developers.bankid.com/api-references/auth--sign/sign).
 
+### Draft BankID methods
+
+There are two draft methods, and neither is **registered** yet, so neither can be selected. Both share [`server/bankid-shared.ts`](../server/bankid-shared.ts), which holds the BankID consent, the text shown in the app, the signed binding, the QR helper, the hint messages and the signature-coverage check. Choose one of them per installation.
+
+| | `bankid` 1.0.0 ([`server/bankid.ts`](../server/bankid.ts)) | `tic-bankid` 1.0.0 ([`server/tic-bankid.ts`](../server/tic-bankid.ts)) |
+| --- | --- | --- |
+| Provider | BankID RP API v6.0 directly | [TIC Identity](https://id.tic.io/docs/getting-started) broker |
+| Credentials | An RP certificate (PKCS#12) from a BankID reseller bank, used for mutual TLS | A TIC API key |
+| Trust in the response | Mutual TLS pinned to BankID's CA (`ca` replaces the default trust store) | TIC's HTTPS response |
+| Start / status / cancel | `sign` / `collect` / `cancel` | `auth/bankid/sign` / `auth/{id}/poll` / `DELETE auth/{id}` |
+| Configuration | `BANKID_ENV` (`test` or `production`), `BANKID_P12_FILE`, `BANKID_P12_PASSWORD_FILE`, `BANKID_CA_FILE`, optional `BANKID_BASE_URL` and `BANKID_REFERRING_DOMAIN` | `TIC_API_KEY_FILE` or `TIC_API_KEY`, optional HTTPS `TIC_BASE_URL` |
+| Extra evidence | `device` (`ipAddress`, `uhi`), `bankIdIssueDate`, and `stepUp` and `risk` when present | None |
+
+Both methods work the same way:
+
+- **Starting (`begin`):**
+  - `userVisibleData` shows the title, document ID, prepared SHA-256 and the BankID consent.
+  - `userNonVisibleData` is a canonical binding of the document, recipient, prepared hash, signing-intent hash and consent version.
+  - Browser-safe `client` data (`attemptId`, `autoStartToken`) is returned separately from `persist` data, which includes `qrStartSecret` and must stay server-side.
+- **Checking the result (`complete`):** a completed order is accepted only if BankID's signature XML contains exactly the expected visible and non-visible data.
+  - Evidence records the verified name and personal number, plus hashes of the binding, the signature XML and the OCSP response.
+  - The raw signature and OCSP response are returned as `rawProof`.
+- **QR code:** `bankIdQrData` computes the animated QR payload server-side.
+
+Required before enabling either method:
+
+1. Persist attempts (`persist` data, state, expiry) and make provider calls outside the document transaction. `/api/sign/session` currently calls `begin` while it holds the lock. The browser should then receive a Signhere attempt ID; today it gets BankID's `orderRef` or TIC's `sessionId`.
+2. Select consent per method. The global `CONSENT` refers to a drawn signature, and both methods reject it.
+3. Pass `documentTitle`, `signingIntentHash`, `endUserIp` and `userAgent` into `SignatureContext`.
+4. Store `rawProof` unmodified. `providerEvidence` is limited to 16 KB, and BankID signature XML does not fit.
+5. Add API/UI routes for polling (every 2 seconds), QR refresh and cancellation, and allow the method in document creation.
+6. Decide on a name-mismatch policy. Verified BankID names are recorded, but they are not compared with the sender-assigned name. Handle the personal number as sensitive data in exports.
+7. Record real responses from the BankID test environment or the TIC sandbox, and pin the schemas against them. Consider independent XML-DSig, certificate-chain and OCSP validation.
+
 Freja requires an initiation/result/cancellation lifecycle. Preserve returned JWS evidence and explicitly track the selected signature type and identity registration/assurance level. Request only necessary identity attributes. An authentication result must not be relabeled as a signature over a document that the provider did not cover. [Freja signature service](https://frejaeid.atlassian.net/wiki/spaces/DOC/pages/2162814).
 
 Before implementing either adapter, pin and review the then-current provider API contract, obtain operator-controlled credentials, implement proof validation, and add deterministic tests for bad signatures, wrong documents, mismatched identities, timeouts, replays and concurrent callbacks. The provider's own onboarding and agreement requirements remain separate from installing Signhere.

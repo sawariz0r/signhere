@@ -7,9 +7,12 @@ export const CONSENT = Object.freeze({
 export type Strokes = number[][][];
 export interface SignatureContext {
   documentId: string; documentHash: string; recipientId: string; name: string; consent: Readonly<{ version: string; text: string }>;
+  /** Optional until an identity provider is wired in; external methods need them to bind and start orders. */
+  documentTitle?: string; signingIntentHash?: string; endUserIp?: string; userAgent?: string;
 }
 export type SignatureResult =
-  | { status: 'completed'; visualSignature?: { strokes: Strokes }; providerEvidence: Record<string, unknown> }
+  /** `rawProof` is provider proof too large for `providerEvidence` and must be stored alongside it, unmodified. */
+  | { status: 'completed'; visualSignature?: { strokes: Strokes }; providerEvidence: Record<string, unknown>; rawProof?: Record<string, string> }
   | { status: 'pending'; attemptId: string; providerEvidence: Record<string, unknown> }
   | { status: 'failed' | 'cancelled'; reason: string };
 export interface SigningMethod {
