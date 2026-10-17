@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import type { Editor } from '@tiptap/react';
-import { ArrowDown, ArrowUp, Check, Plus, X } from 'lucide-react';
+import { ArrowDown, ArrowUp, Check, MessageSquare, MessageSquarePlus, Plus, X } from 'lucide-react';
 import { useEditorApi } from './context';
 import { FieldToken, insertField, RichText, TokenText } from './rich-text';
 import {
@@ -85,7 +85,7 @@ export function BlockFrame({ block, index, count, children }: { block: Block; in
       <button type="button" className="text danger" title="Ta bort (Delete)" onClick={() => api.removeBlock(block.id)}>Ta bort</button>
     </div>}
     {review?.changed.has(block.id) && <div className="rd-private-change">Ändrat sedan version {review.version}</div>}
-    {!selected && review?.sharedIds.has(block.id) && <button type="button" className={`rd-marker rd-editor-marker${comments.some(thread => !thread.resolved) ? ' open' : ''}`} aria-label={`Kommentera avsnitt ${index + 1}`} onMouseDown={event => event.stopPropagation()} onClick={() => review.comment(block.id)}>{comments.length || '+'}</button>}
+    {!selected && review?.sharedIds.has(block.id) && <button type="button" className={`rd-marker rd-editor-marker${comments.some(thread => !thread.resolved) ? ' open' : ''}`} aria-label={`Kommentera avsnitt ${index + 1}`} title="Kommentera avsnitt" onMouseDown={event => event.stopPropagation()} onClick={() => review.comment(block.id)}>{comments.length ? <><MessageSquare size={14} aria-hidden="true" />{comments.length}</> : <MessageSquarePlus size={14} aria-hidden="true" />}</button>}
     {children}
   </div>;
 }
