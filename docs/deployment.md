@@ -1,10 +1,12 @@
-# Deployment, keys, and recovery
+# Operations, keys and recovery
 
-This is a local-sealing development preview until the Docker lifecycle/isolation CI and independent reader checks have passed on a working Linux host. Docker and the installed Ubuntu WSL distribution cannot run on the current development machine. Static configuration checks and Windows tests do not establish Linux sandbox or container execution success.
+Start with [self-hosting on Coolify or Docker Compose](self-hosting.md) for installation. This guide covers email, database roles, sandbox requirements, backups and key recovery.
+
+This is a development preview. See the [implementation status](sealing-implementation.md) for outstanding release validation, including Linux container isolation and independent PDF-reader checks.
 
 ## Fresh Docker installation
 
-The stack remains two services: Signhere and PostgreSQL. Python and the maintained PDF/CMS library are bundled inside the application image. There is no certificate purchase, certificate-generation command, central Signhere account, Redis, or separate worker service.
+The stack runs Signhere and PostgreSQL, plus a one-shot `postgres-upgrade` job. Python and the PDF/CMS library are bundled inside the application image. No central Signhere account, certificate purchase, Redis or separate worker service is required.
 
 Run `npm run setup:env`, or copy `.env.example` and set **two different** long URL-safe random passwords: `POSTGRES_PASSWORD` for the schema owner/migrator and `APP_DATABASE_PASSWORD` for the application role. Keep the file private. Existing `.env` files are preserved; add the second value explicitly when upgrading an old configuration. Set `BASE_URL` to the exact public HTTPS origin and use a TLS reverse proxy for public access.
 
@@ -38,9 +40,11 @@ E-mail never blocks startup. Empty variables count as unset. An incomplete or in
 
 A bilaga is a separate signing document with its own recipients, audit chain, seal and evidence export. Its creation event, every signing intent and its frozen evidence core record `attachmentOf` (main document ID, title, completed SHA-256 and bilaga number), so the offline verifier rejects evidence moved to another main document. A party's signing or receipt link also reaches the main document and the bilagor that the same party signs; a signature made that way records the link used in `accessRecipientId` and `accessDocumentId`.
 
+## Persistent storage and health checks
+
 The setup token is an administrator credential; enter it only into the first-owner setup form. It is not written to application logs.
 
-Three persistent named volumes retain PostgreSQL data (`postgres-data`), existing setup state (`signhere-data`), and private sealing keys (`signhere-keys`). Keeping the small existing setup-state volume avoids moving or reinterpreting prior installations. Key files are in `/keys`, owned by the application UID with a private directory. Keys are never part of the image or database rows. `docker compose down` preserves the volumes; `down -v` deletes the installation and must not be used for ordinary updates.
+Persistent named volumes retain PostgreSQL data (`postgres-data`), existing setup state (`signhere-data`), private sealing keys (`signhere-keys`) and legacy upgrade dumps (`postgres-upgrade-backups`). Keeping the small existing setup-state volume avoids moving or reinterpreting prior installations. Key files are in `/keys`, owned by the application UID with a private directory. Keys are never part of the image or database rows. `docker compose down` preserves the volumes; `down -v` deletes the installation and must not be used for ordinary updates.
 
 A fresh database and empty key volume create a unique local identity. Existing database identity plus a missing or mismatched key is an operator-action condition, never permission to silently create another identity. Preserve read/download access while resolving it. Public certificate discovery is `/.well-known/signhere-sealing.json`; an independently retained fingerprint can be used for explicit issuer trust. Merely downloading that URL from the same server is not independent trust.
 
